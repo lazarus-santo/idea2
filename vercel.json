@@ -9,8 +9,12 @@
       "schedule": "0 8 * * 0"
     },
     {
-      "path": "/api/curate",
+      "path": "/api/curate/hourly",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/curate",
+      "schedule": "0 9 * * *"
     }
   ]
 }

@@ -9,10 +9,15 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
+  const db = getSupabaseAdmin()
 
-  const { error } = await getSupabaseAdmin()
+  // Read current end_date — if absent, mark is_ongoing on publish
+  const { data: current } = await db.from('exhibitions').select('end_date').eq('id', id).single()
+  const isOngoing = !current?.end_date
+
+  const { error } = await db
     .from('exhibitions')
-    .update({ status: 'published', missing_fields: [] })
+    .update({ status: 'published', missing_fields: [], ...(isOngoing ? { is_ongoing: true } : {}) })
     .eq('id', id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

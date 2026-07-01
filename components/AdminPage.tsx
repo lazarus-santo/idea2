@@ -6,8 +6,9 @@ import PublicationsTab from '@/components/admin/PublicationsTab'
 import EditorPicksTab from '@/components/admin/EditorPicksTab'
 import PublishedTab from '@/components/admin/PublishedTab'
 import SeedTool from '@/components/admin/SeedTool'
+import ScrapeIssuesTab from '@/components/admin/ScrapeIssuesTab'
 
-type Tab = 'pending' | 'publications' | 'picks' | 'published' | 'seed'
+type Tab = 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues'
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
 
@@ -15,6 +16,7 @@ export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('pending')
   const [pendingCount, setPendingCount] = useState(0)
   const [pubCount, setPubCount] = useState(0)
+  const [issueCount, setIssueCount] = useState(0)
 
   function tabStyle(t: Tab): React.CSSProperties {
     const active = tab === t
@@ -37,6 +39,7 @@ export default function AdminPage() {
     if (t === 'publications') return `Publications${pubCount > 0 ? ` (${pubCount})` : ''}`
     if (t === 'picks') return `Editor's Picks`
     if (t === 'seed') return 'Seed'
+    if (t === 'issues') return `Scrape Issues${issueCount > 0 ? ` (${issueCount})` : ''}`
     return 'Published'
   }
 
@@ -47,13 +50,22 @@ export default function AdminPage() {
           <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#000' }}>
             Admin
           </span>
-          <a href="/" style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)', textDecoration: 'none' }}>
-            ← Site
-          </a>
+          <div style={{ display: 'flex', gap: 20, alignItems: 'baseline' }}>
+            <a
+              href="/api/admin/scraper-feedback"
+              download
+              style={{ fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.4)', textDecoration: 'none', borderBottom: '1px solid rgba(0,0,0,0.2)' }}
+            >
+              Export Scraper Feedback
+            </a>
+            <a href="/" style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)', textDecoration: 'none' }}>
+              ← Site
+            </a>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 32, borderBottom: '1px solid rgba(0,0,0,0.12)', marginBottom: 36 }}>
-          {(['pending', 'publications', 'picks', 'published', 'seed'] as Tab[]).map(t => (
+          {(['pending', 'publications', 'picks', 'published', 'issues', 'seed'] as Tab[]).map(t => (
             <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
               {label(t)}
             </button>
@@ -64,6 +76,7 @@ export default function AdminPage() {
         {tab === 'publications' && <PublicationsTab onCount={setPubCount} />}
         {tab === 'picks' && <EditorPicksTab />}
         {tab === 'published' && <PublishedTab />}
+        {tab === 'issues' && <ScrapeIssuesTab onCount={setIssueCount} />}
         {tab === 'seed' && <SeedTool inline />}
       </div>
     </div>

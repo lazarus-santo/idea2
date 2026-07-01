@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scrapeGallery, getActiveInstitutions, getInstitutionsDueForRefresh } from '@/lib/scraper'
+import { writeFileSync } from 'fs'
+import { scrapeInstitution, getActiveInstitutions, getInstitutionsDueForRefresh } from '@/lib/scraper'
 import { auditAndRepairPrereads } from '@/lib/audit'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
@@ -24,6 +25,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: 'All institutions up to date', scraped: 0 })
   }
 
+  // Reset the diagnostic log file for this run
+  try { writeFileSync('/tmp/scrape-diag.jsonl', '') } catch {}
+
   if (!force) {
     console.log(`Refreshing ${institutions.length} institutions due for refresh:`, institutions.map((v) => v.name))
   }
@@ -34,7 +38,7 @@ export async function POST(request: NextRequest) {
 
     for (const institution of institutions) {
       try {
-        const count = await scrapeGallery(institution, skipPrereads)
+        const count = await scrapeInstitution(institution, skipPrereads)
         console.log(`Scraped ${institution.name}: ${count} exhibition(s)`)
         scrapedInstitutionIds.push(institution.id)
       } catch (err) {

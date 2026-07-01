@@ -2,13 +2,11 @@ import { NextResponse } from 'next/server'
 import { curateReadings } from '@/lib/readings-curator'
 
 function isAuthorized(request: Request): boolean {
-  // Vercel Cron: GET with Authorization: Bearer <CRON_SECRET>
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret) {
     const auth = request.headers.get('authorization')
     if (auth === `Bearer ${cronSecret}`) return true
   }
-  // Manual trigger: any method with x-admin-secret
   const adminSecret = request.headers.get('x-admin-secret')
   if (adminSecret && adminSecret === process.env.ADMIN_PASSWORD) return true
   return false
@@ -17,28 +15,28 @@ function isAuthorized(request: Request): boolean {
 function runInBackground() {
   Promise.resolve().then(async () => {
     try {
-      const result = await curateReadings('non-t1')
-      console.log('Daily curation complete:', result)
+      const result = await curateReadings('t1')
+      console.log('Hourly curation complete:', result)
     } catch (err) {
-      console.error('Daily curation error:', err)
+      console.error('Hourly curation error:', err)
     }
   })
 }
 
-// GET — called by Vercel Cron (daily, non-T1 publications)
+// GET — called by Vercel Cron (hourly, T1 publications only)
 export async function GET(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   runInBackground()
-  return NextResponse.json({ message: 'Daily curation started (non-T1)' })
+  return NextResponse.json({ message: 'Hourly curation started (T1 only)' })
 }
 
-// POST — manual trigger (admin UI, curl, testing)
+// POST — manual trigger
 export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   runInBackground()
-  return NextResponse.json({ message: 'Daily curation started (non-T1)' })
+  return NextResponse.json({ message: 'Hourly curation started (T1 only)' })
 }

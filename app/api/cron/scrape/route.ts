@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scrapeGallery, getActiveInstitutions, getInstitutionsDueForRefresh } from '@/lib/scraper'
-import { auditAndRepairPrereads } from '@/lib/audit'
+import { scrapeInstitution, getActiveInstitutions, getInstitutionsDueForRefresh } from '@/lib/scraper'
+import { auditAndRepairPrereads, repairZeroPrereads } from '@/lib/audit'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
 // GET /api/cron/scrape          — daily: scrape venues whose check_back_date has passed
@@ -13,6 +13,9 @@ export async function GET(request: NextRequest) {
   }
 
   const force = request.nextUrl.searchParams.get('force') === 'true'
+  // FIX 4 CONFIRMED: both getActiveInstitutions and getInstitutionsDueForRefresh
+  // filter .eq('manual_entry_required', false), so Met/MoMA/Brooklyn Museum
+  // are automatically excluded from both daily and force-scrape cron runs.
   const institutions = force ? await getActiveInstitutions() : await getInstitutionsDueForRefresh()
 
   if (institutions.length === 0) {
@@ -26,7 +29,7 @@ export async function GET(request: NextRequest) {
 
     for (const institution of institutions) {
       try {
-        const count = await scrapeGallery(institution)
+        const count = await scrapeInstitution(institution)
         console.log(`Scraped ${institution.name}: ${count} exhibition(s)`)
         scrapedInstitutionIds.push(institution.id)
       } catch (err) {
@@ -50,6 +53,13 @@ export async function GET(request: NextRequest) {
       } catch (err) {
         console.error('Post-scrape audit failed:', err)
       }
+    }
+
+    try {
+      const { attempted, report } = await repairZeroPrereads()
+      if (attempted > 0) console.log(`Zero-preread retry: ${attempted} attempted, ${report.length} repaired`, JSON.stringify(report))
+    } catch (err) {
+      console.error('Zero-preread retry failed:', err)
     }
 
     console.log('Cron scrape complete.')

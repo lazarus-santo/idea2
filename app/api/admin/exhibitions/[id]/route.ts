@@ -7,11 +7,13 @@ const PATCHABLE = [
   'image_url',
   'start_date',
   'end_date',
+  'is_ongoing',
   'description',
   'press_release',
   'missing_fields',
   'address_override',
   'address_override_neighborhood',
+  'admin_notes',
 ] as const
 
 // PATCH /api/admin/exhibitions/[id]

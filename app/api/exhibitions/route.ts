@@ -28,7 +28,7 @@ export async function GET() {
 
   const normalized = (exhibitions ?? [])
     .filter((ex) => !ex.start_date || ex.start_date <= today)
-    .filter((ex) => ex.end_date || (ex.start_date && ex.start_date >= cutoff))
+    .filter((ex) => ex.is_ongoing || ex.end_date || (ex.start_date && ex.start_date >= cutoff))
     .map((ex) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const raw = ex as any

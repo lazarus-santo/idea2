@@ -1,14 +1,13 @@
 'use client'
 
 import Link from 'next/link'
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect, useMemo } from 'react'
 import type { ExhibitionDetailData } from '@/lib/types'
 import { sortByTier } from '@/lib/publication-tiers'
+import { sanitizeHtml, normalizeToHtml } from '@/lib/sanitize-html'
 import dynamic from 'next/dynamic'
 
 const ExhibitionMiniMap = dynamic(() => import('@/components/ExhibitionMiniMap'), { ssr: false })
-
-const PR_TEASER_LEN = 300
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00')
@@ -20,8 +19,11 @@ function formatDateShort(dateStr: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-function formatDateRange(start: string | null, end: string | null): string {
+function formatDateRange(start: string | null, end: string | null, isOngoing: boolean): string {
   if (!start && !end) return ''
+  if (isOngoing || (!end && start)) {
+    return `${formatDate(start!)} – Ongoing`
+  }
   if (start && end) {
     const sy = new Date(start + 'T00:00:00').getFullYear()
     const ey = new Date(end + 'T00:00:00').getFullYear()
@@ -30,12 +32,13 @@ function formatDateRange(start: string | null, end: string | null): string {
       : `${formatDate(start)} – ${formatDate(end)}`
   }
   if (end) return `Through ${formatDate(end)}`
-  if (start) return `From ${formatDate(start)}`
   return ''
 }
 
 export default function ExhibitionDetail({ exhibition }: { exhibition: ExhibitionDetailData }) {
   const [prShowFull, setPrShowFull] = useState(false)
+  const [prHasMore, setPrHasMore] = useState(false)
+  const prRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLHeadingElement>(null)
 
   // Shrink title font until it fits within 2 lines
@@ -52,14 +55,22 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
     }
   }, [exhibition.show_title])
 
-  const dateRange = formatDateRange(exhibition.start_date, exhibition.end_date)
+  const dateRange = formatDateRange(exhibition.start_date, exhibition.end_date, exhibition.is_ongoing)
+  const isMuseum = exhibition.preread_type === 'coverage_only'
   const hasCollapsibles = !!exhibition.press_release || exhibition.prereads.length > 0
 
-  const prText = exhibition.press_release ?? ''
-  const hasPrMore = prText.length > PR_TEASER_LEN
-  const prDisplayText = hasPrMore && !prShowFull
-    ? prText.slice(0, PR_TEASER_LEN).trimEnd() + '…'
-    : prText
+  const prHtml = useMemo(() => {
+    if (!exhibition.press_release) return ''
+    const normalized = normalizeToHtml(exhibition.press_release)
+    return sanitizeHtml(normalized)
+  }, [exhibition.press_release])
+
+  // Detect real overflow after paint so "Read more" only shows when content is clipped
+  useLayoutEffect(() => {
+    const el = prRef.current
+    if (!el || prShowFull) return
+    setPrHasMore(el.scrollHeight > el.clientHeight + 2)
+  }, [prHtml, prShowFull])
 
   return (
     <div className="ep-body">
@@ -157,13 +168,17 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
             </div>
           )}
 
-          {exhibition.press_release && (
+          {prHtml && (
             <div className="ep-pr-teaser">
-              <p className="ep-pr-label">Press Release</p>
-              {prDisplayText}
-              {hasPrMore && (
+              <p className="ep-pr-label">{isMuseum ? 'Exhibition Description' : 'Press Release'}</p>
+              <div
+                ref={prRef}
+                className={`ep-pr-prose${prShowFull ? ' ep-pr-prose--expanded' : ''}`}
+                dangerouslySetInnerHTML={{ __html: prHtml }}
+              />
+              {(prHasMore || prShowFull) && (
                 <button className="ep-readmore" onClick={() => setPrShowFull(v => !v)}>
-                  {prShowFull ? ' Read less' : ' Read more'}
+                  {prShowFull ? 'Read less' : 'Read more'}
                 </button>
               )}
             </div>
@@ -176,6 +191,7 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
               lng={exhibition.lng}
             />
           )}
+
 
         </div>
       </div>

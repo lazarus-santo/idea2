@@ -11,11 +11,11 @@ function formatDate(dateStr: string | null): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function formatDateRange(start: string | null, end: string | null): string {
+function formatDateRange(start: string | null, end: string | null, isOngoing: boolean): string {
   if (!start && !end) return ''
+  if (isOngoing || (!end && start)) return `${formatDate(start)} – Ongoing`
   if (start && end) return `${formatDate(start)} — ${formatDate(end)}`
   if (end) return `Through ${formatDate(end)}`
-  if (start) return `From ${formatDate(start)}`
   return ''
 }
 
@@ -26,7 +26,7 @@ interface ExhibitionCardProps {
 export default function ExhibitionCard({ exhibition }: ExhibitionCardProps) {
   const [showPrereads, setShowPrereads] = useState(false)
   const prereads = exhibition.prereads ?? []
-  const dateRange = formatDateRange(exhibition.start_date, exhibition.end_date)
+  const dateRange = formatDateRange(exhibition.start_date, exhibition.end_date, exhibition.is_ongoing)
 
   return (
     <article className="exhibition-card">

@@ -1373,7 +1373,7 @@ a:hover { opacity: 0.75; }
   color: #000;
 }
 
-.ep-press-release { white-space: pre-wrap; }
+.ep-press-release { white-space: pre-wrap; } /* legacy — HTML-rendered descriptions use .ep-pr-prose instead */
 .ep-pr-label {
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 14px;
@@ -1386,11 +1386,40 @@ a:hover { opacity: 0.75; }
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 14px;
   font-weight: 400;
-  line-height: 17px;
+  line-height: 1.6;
   color: #000;
-  white-space: pre-wrap;
   margin-bottom: 8px;
 }
+
+/* Collapsed rich-text prose: max 6 lines with fade */
+.ep-pr-prose {
+  overflow: hidden;
+  max-height: calc(1.6em * 6);
+  position: relative;
+}
+.ep-pr-prose::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 36px;
+  background: linear-gradient(to bottom, transparent, #fff);
+  pointer-events: none;
+}
+.ep-pr-prose--expanded {
+  max-height: none;
+}
+.ep-pr-prose--expanded::after { display: none; }
+
+/* Typography inside the prose container */
+.ep-pr-prose p  { margin: 0 0 8px; }
+.ep-pr-prose p:last-child { margin-bottom: 0; }
+.ep-pr-prose ul, .ep-pr-prose ol { padding-left: 18px; margin: 0 0 8px; }
+.ep-pr-prose li { margin: 2px 0; }
+.ep-pr-prose h2 { font-size: 16px; font-weight: 700; margin: 0 0 6px; }
+.ep-pr-prose h3 { font-size: 14px; font-weight: 700; margin: 0 0 5px; }
+.ep-pr-prose blockquote { border-left: 3px solid rgba(0,0,0,0.2); margin: 0 0 8px; padding-left: 10px; color: rgba(0,0,0,0.6); }
+.ep-pr-prose a  { color: #1a5c2a; text-decoration: underline; text-underline-offset: 2px; }
+.ep-pr-prose a:hover { opacity: 0.7; }
 .ep-readmore {
   display: inline;
   background: transparent;
@@ -1421,6 +1450,81 @@ a:hover { opacity: 0.75; }
 .ep-preread-link:hover { opacity: 0.45; text-decoration: underline; text-underline-offset: 2px; }
 .ep-preread-link--no-url { cursor: default; }
 .ep-preread-link--no-url:hover { opacity: 1; text-decoration: none; }
+
+/* ─── Art Historical Context (scholarly preread) ─────────────── */
+.ep-scholarly {
+  margin-top: 24px;
+}
+
+.ep-scholarly-divider {
+  border-top: 1px solid #d0ccc0;
+  margin-bottom: 16px;
+}
+
+.ep-scholarly-label {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+  margin: 0 0 8px;
+}
+
+.ep-scholarly-intro {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  font-style: italic;
+  line-height: 18px;
+  color: #555;
+  margin: 0 0 16px;
+}
+
+.ep-scholarly-item {
+  margin-bottom: 14px;
+}
+
+.ep-scholarly-item-label {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  color: #000;
+  margin: 0 0 6px;
+}
+
+.ep-scholarly-source {
+  margin-bottom: 10px;
+}
+
+.ep-scholarly-source-link {
+  display: block;
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 17px;
+  color: #000;
+  text-decoration: none;
+  transition: opacity 150ms ease;
+  margin-bottom: 3px;
+}
+
+.ep-scholarly-source-link:hover {
+  opacity: 0.55;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ep-scholarly-summary {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  color: #555;
+  margin: 0;
+}
 
 /* Mini-map block in right column */
 .ep-minimap-wrap {
@@ -1597,6 +1701,12 @@ a:hover { opacity: 0.75; }
 .rd-grid--simple .rd-card-img-wrap { aspect-ratio: 3/2; }
 
 /* ── River ───────────────────────────────────────────────── */
+
+.rd-river-filter {
+  display: flex;
+  gap: 12px;
+  padding: 20px 0 24px;
+}
 
 .rd-river {
   display: flex;

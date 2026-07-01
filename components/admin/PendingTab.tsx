@@ -1,18 +1,29 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import TipTapEditor from './TipTapEditor'
+
+type ScrapeFailed = {
+  id: string
+  name: string
+  exhibitions_url: string
+}
 
 type PendingEx = {
   id: string
   show_title: string
   artists: string[]
+  institution_name: string
+  venue_type: string
   venue_name: string
   venue_url: string | null
   start_date: string | null
   end_date: string | null
+  is_ongoing: boolean
   description: string | null
   image_url: string | null
   press_release: string | null
+  admin_notes: string | null
   address_override: string | null
   address_override_neighborhood: string | null
   venue_address: string | null
@@ -26,6 +37,14 @@ const F = 'var(--font-inter-tight), system-ui, sans-serif'
 function fmtDate(d: string | null) {
   if (!d) return '—'
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function fmtDateRange(start: string | null, end: string | null, isOngoing: boolean) {
+  if (!start && !end) return 'Dates TBD'
+  if (start && end) return `${fmtDate(start)} – ${fmtDate(end)}`
+  if (start) return `${fmtDate(start)} – Ongoing`
+  if (isOngoing) return `${fmtDate(start)} – Ongoing`
+  return fmtDate(end)
 }
 
 const lbl: React.CSSProperties = {
@@ -62,24 +81,26 @@ function PendingCard({
   const [imageUrl, setImageUrl]     = useState(ex.image_url ?? '')
   const [addr, setAddr]             = useState(ex.address_override ?? '')
   const [neigh, setNeigh]           = useState(ex.address_override_neighborhood ?? '')
-  const [description, setDesc]      = useState(ex.description ?? '')
-  const [pressRelease, setPR]       = useState(ex.press_release ?? '')
-  const [showDesc, setShowDesc]     = useState(false)
+  const [adminNotes, setAdminNotes] = useState(ex.admin_notes ?? '')
   const [showPR, setShowPR]         = useState(false)
   const [saving, setSaving]         = useState(false)
   const [approving, setApproving]   = useState(false)
   const [deleting, setDeleting]     = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
   const [msg, setMsg]               = useState('')
+  const notesRef = useRef(adminNotes)
+  notesRef.current = adminNotes
+
+  const isMuseum = ex.venue_type === 'museum'
+  const prLabel = isMuseum ? 'exhibition description' : 'press release'
+  const prValue = ex.press_release ?? ex.description ?? ''
 
   const isDirty =
-    startDate   !== (ex.start_date ?? '') ||
-    endDate     !== (ex.end_date ?? '') ||
-    imageUrl    !== (ex.image_url ?? '') ||
-    addr        !== (ex.address_override ?? '') ||
-    neigh       !== (ex.address_override_neighborhood ?? '') ||
-    description !== (ex.description ?? '') ||
-    pressRelease !== (ex.press_release ?? '')
+    startDate !== (ex.start_date ?? '') ||
+    endDate   !== (ex.end_date ?? '') ||
+    imageUrl  !== (ex.image_url ?? '') ||
+    addr      !== (ex.address_override ?? '') ||
+    neigh     !== (ex.address_override_neighborhood ?? '')
 
   const missing = new Set(ex.missing_fields ?? [])
 
@@ -95,13 +116,11 @@ function PendingCard({
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          start_date:                     startDate || null,
-          end_date:                       endDate || null,
-          image_url:                      imageUrl || null,
-          address_override:               addr || null,
-          address_override_neighborhood:  neigh || null,
-          description:                    description || null,
-          press_release:                  pressRelease || null,
+          start_date:                    startDate || null,
+          end_date:                      endDate || null,
+          image_url:                     imageUrl || null,
+          address_override:              addr || null,
+          address_override_neighborhood: neigh || null,
         }),
       })
       if (!res.ok) throw new Error()
@@ -111,6 +130,16 @@ function PendingCard({
     } finally {
       setSaving(false)
     }
+  }
+
+  async function saveNotes() {
+    const val = notesRef.current
+    if (val === (ex.admin_notes ?? '')) return
+    await fetch(`/api/admin/exhibitions/${ex.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_notes: val || null }),
+    })
   }
 
   async function approve() {
@@ -135,6 +164,8 @@ function PendingCard({
     }
   }
 
+  const dateDisplay = fmtDateRange(startDate || null, endDate || null, ex.is_ongoing)
+
   return (
     <div style={{ borderBottom: '1px solid rgba(0,0,0,0.1)', padding: '28px 0', fontFamily: F }}>
 
@@ -157,9 +188,7 @@ function PendingCard({
           </div>
           <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.3, marginBottom: 3 }}>{ex.show_title}</div>
           <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.5)' }}>{ex.artists.join(', ')}</div>
-          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.4)', marginTop: 2 }}>
-            {fmtDate(startDate || null)} – {fmtDate(endDate || null)}
-          </div>
+          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.4)', marginTop: 2 }}>{dateDisplay}</div>
         </div>
       </div>
 
@@ -204,54 +233,45 @@ function PendingCard({
 
       </div>
 
-      {/* Description */}
+      {/* Press release / Exhibition description — rich text */}
       <div style={{ marginBottom: 12 }}>
-        <button
-          onClick={() => setShowDesc(v => !v)}
-          style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: missing.has('description') ? '#92400e' : 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
-        >
-          {showDesc ? 'Hide' : description ? 'Edit' : 'Add'} description
-          {missing.has('description') && ' *'}
-        </button>
-        {showDesc && (
-          <textarea
-            value={description}
-            onChange={e => setDesc(e.target.value)}
-            placeholder="Short description of the exhibition…"
-            rows={4}
-            style={{
-              display: 'block', marginTop: 8, width: '100%', fontFamily: F,
-              fontSize: 13, lineHeight: 1.6, color: '#000', background: '#fff',
-              border: missing.has('description') ? '1px solid #f59e0b' : '1px solid rgba(0,0,0,0.18)',
-              padding: '8px 12px', outline: 'none', resize: 'vertical', boxSizing: 'border-box',
-            }}
-          />
-        )}
-      </div>
-
-      {/* Press release */}
-      <div style={{ marginBottom: 18 }}>
         <button
           onClick={() => setShowPR(v => !v)}
           style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: missing.has('press_release') ? '#92400e' : 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
         >
-          {showPR ? 'Hide' : pressRelease ? 'Edit' : 'Add'} press release
+          {showPR ? 'Hide' : prValue ? 'Edit' : 'Add'} {prLabel}
           {missing.has('press_release') && ' *'}
         </button>
         {showPR && (
-          <textarea
-            value={pressRelease}
-            onChange={e => setPR(e.target.value)}
-            placeholder="Paste press release…"
-            rows={8}
-            style={{
-              display: 'block', marginTop: 8, width: '100%', fontFamily: F,
-              fontSize: 13, lineHeight: 1.6, color: '#000', background: '#fff',
-              border: missing.has('press_release') ? '1px solid #f59e0b' : '1px solid rgba(0,0,0,0.18)',
-              padding: '8px 12px', outline: 'none', resize: 'vertical', boxSizing: 'border-box',
-            }}
+          <TipTapEditor
+            key={ex.id + '-pr'}
+            initialValue={prValue}
+            exhibitionId={ex.id}
+            field="press_release"
+            placeholder={isMuseum ? 'Exhibition description…' : 'Paste press release…'}
+            borderColor={missing.has('press_release') ? '#f59e0b' : 'rgba(0,0,0,0.18)'}
           />
         )}
+      </div>
+
+      {/* Scraper feedback / admin notes — plain textarea, auto-saves on blur */}
+      <div style={{ marginBottom: 18 }}>
+        <label style={{ ...lbl, color: 'rgba(0,0,0,0.35)', marginBottom: 6 }}>
+          Scraper Feedback / Admin Notes
+        </label>
+        <textarea
+          value={adminNotes}
+          onChange={e => setAdminNotes(e.target.value)}
+          onBlur={saveNotes}
+          placeholder="Note anything about scraper quality, data issues, or context for Claude Code improvements…"
+          rows={3}
+          style={{
+            display: 'block', width: '100%', fontFamily: F,
+            fontSize: 12, lineHeight: 1.6, color: '#000', background: '#fafaf7',
+            border: '1px solid rgba(0,0,0,0.12)', padding: '8px 12px',
+            outline: 'none', resize: 'vertical', boxSizing: 'border-box',
+          }}
+        />
       </div>
 
       {/* Actions */}
@@ -293,19 +313,87 @@ function PendingCard({
   )
 }
 
+function ScrapeFailed({ venues, onRetried }: { venues: ScrapeFailed[]; onRetried: (id: string) => void }) {
+  const [retrying, setRetrying] = useState<Record<string, boolean>>({})
+  const [msgs, setMsgs] = useState<Record<string, string>>({})
+
+  async function retry(id: string, name: string) {
+    setRetrying((prev) => ({ ...prev, [id]: true }))
+    try {
+      const res = await fetch(`/api/admin/venues/${id}/retry-scrape`, { method: 'POST' })
+      if (!res.ok) throw new Error()
+      setMsgs((prev) => ({ ...prev, [id]: 'Retry started' }))
+      setTimeout(() => {
+        setMsgs((prev) => ({ ...prev, [id]: '' }))
+        onRetried(id)
+      }, 3000)
+    } catch {
+      setMsgs((prev) => ({ ...prev, [id]: 'Error' }))
+    } finally {
+      setRetrying((prev) => ({ ...prev, [id]: false }))
+    }
+    console.log(`Retry scrape: ${name}`)
+  }
+
+  return (
+    <div style={{ marginTop: 40, borderTop: '1px solid rgba(0,0,0,0.1)', paddingTop: 28 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#dc2626', marginBottom: 16, fontFamily: F }}>
+        Scrape Failed ({venues.length})
+      </div>
+      {venues.map((v) => (
+        <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderBottom: '1px solid rgba(0,0,0,0.06)', fontFamily: F }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{v.name}</div>
+            <a href={v.exhibitions_url} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)', textDecoration: 'none', borderBottom: '1px solid rgba(0,0,0,0.2)' }}>
+              {v.exhibitions_url}
+            </a>
+          </div>
+          <button
+            onClick={() => retry(v.id, v.name)}
+            disabled={retrying[v.id]}
+            style={{ ...btn, background: retrying[v.id] ? 'rgba(0,0,0,0.1)' : '#000', color: '#FFFCEC', opacity: retrying[v.id] ? 0.6 : 1 }}
+          >
+            {retrying[v.id] ? 'Retrying…' : 'Retry Scrape'}
+          </button>
+          {msgs[v.id] && (
+            <span style={{ fontSize: 11, color: msgs[v.id] === 'Retry started' ? '#1a5c2a' : '#dc2626' }}>
+              {msgs[v.id]}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const searchInputStyle: React.CSSProperties = {
+  fontFamily: F, fontSize: 13, color: '#000',
+  background: '#fff', border: '1px solid rgba(0,0,0,0.18)',
+  padding: '6px 8px', outline: 'none', width: '100%', boxSizing: 'border-box',
+}
+
 export default function PendingTab({ onCount }: { onCount: (n: number) => void }) {
   const [exhibitions, setExhibitions] = useState<PendingEx[]>([])
+  const [failedVenues, setFailedVenues] = useState<ScrapeFailed[]>([])
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/admin/exhibitions')
-      const all = await res.json()
+      const [exRes, venueRes] = await Promise.all([
+        fetch('/api/admin/exhibitions'),
+        fetch('/api/admin/venues'),
+      ])
+      const all = await exRes.json()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pending = all.filter((e: any) => e.status === 'pending')
       setExhibitions(pending)
       onCount(pending.length)
+
+      const failed = await venueRes.json()
+      setFailedVenues(Array.isArray(failed) ? failed : [])
     } finally {
       setLoading(false)
     }
@@ -313,22 +401,51 @@ export default function PendingTab({ onCount }: { onCount: (n: number) => void }
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    onCount(exhibitions.length)
+  }, [exhibitions.length, onCount])
+
   function remove(id: string) {
-    setExhibitions(prev => {
-      const next = prev.filter(e => e.id !== id)
-      onCount(next.length)
-      return next
-    })
+    setExhibitions((prev) => prev.filter((e) => e.id !== id))
+  }
+
+  function removeFailedVenue(id: string) {
+    setFailedVenues((prev) => prev.filter((v) => v.id !== id))
   }
 
   if (loading) return <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>Loading…</p>
-  if (exhibitions.length === 0) return <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>No pending exhibitions.</p>
+
+  const q = search.toLowerCase().trim()
+  const filtered = q
+    ? exhibitions.filter(e =>
+        e.show_title.toLowerCase().includes(q) ||
+        e.institution_name.toLowerCase().includes(q)
+      )
+    : exhibitions
 
   return (
     <div>
-      {exhibitions.map(ex => (
-        <PendingCard key={ex.id} ex={ex} onRemove={remove} onPublished={remove} />
-      ))}
+      <input
+        type="text"
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Search by exhibition or institution…"
+        style={{ ...searchInputStyle, marginBottom: 24 }}
+      />
+
+      {filtered.length === 0 && q ? (
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>No exhibitions match your search.</p>
+      ) : filtered.length === 0 ? (
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>No pending exhibitions.</p>
+      ) : (
+        filtered.map((ex) => (
+          <PendingCard key={ex.id} ex={ex} onRemove={remove} onPublished={remove} />
+        ))
+      )}
+
+      {failedVenues.length > 0 && (
+        <ScrapeFailed venues={failedVenues} onRetried={removeFailedVenue} />
+      )}
     </div>
   )
 }

@@ -96,14 +96,16 @@ export async function GET(req: NextRequest) {
     artistIds.length > 0
       ? sb
           .from('readings_tags')
-          .select('artist_id, readings(id, headline, article_url, thumbnail_url, publications(name))')
-          .in('artist_id', artistIds)
+          .select('entity_id, readings(id, headline, article_url, thumbnail_url, publications(name))')
+          .eq('entity_type', 'artist')
+          .in('entity_id', artistIds)
       : Promise.resolve({ data: [] as any[], error: null }), // eslint-disable-line @typescript-eslint/no-explicit-any
     galleryIds.length > 0
       ? sb
           .from('readings_tags')
-          .select('institution_id, readings(id, headline, article_url, thumbnail_url, publications(name))')
-          .in('institution_id', galleryIds)
+          .select('entity_id, readings(id, headline, article_url, thumbnail_url, publications(name))')
+          .eq('entity_type', 'gallery')
+          .in('entity_id', galleryIds)
       : Promise.resolve({ data: [] as any[], error: null }), // eslint-disable-line @typescript-eslint/no-explicit-any
   ])
 
@@ -178,7 +180,7 @@ export async function GET(req: NextRequest) {
   const artistReadingsMap = new Map<string, SubResult[]>()
   for (const tag of artistTagsRaw.data ?? []) {
     const t = tag as any // eslint-disable-line @typescript-eslint/no-explicit-any
-    if (!t.readings?.id || !t.artist_id) continue
+    if (!t.readings?.id || !t.entity_id) continue
     const sub: SubResult = {
       id: t.readings.id,
       title: t.readings.headline,
@@ -187,15 +189,15 @@ export async function GET(req: NextRequest) {
       is_external: true,
       subtitle: t.readings.publications?.name ?? null,
     }
-    const arr = artistReadingsMap.get(t.artist_id) ?? []
+    const arr = artistReadingsMap.get(t.entity_id) ?? []
     arr.push(sub)
-    artistReadingsMap.set(t.artist_id, arr)
+    artistReadingsMap.set(t.entity_id, arr)
   }
 
   const galleryReadingsMap = new Map<string, SubResult[]>()
   for (const tag of galleryTagsRaw.data ?? []) {
     const t = tag as any // eslint-disable-line @typescript-eslint/no-explicit-any
-    if (!t.readings?.id || !t.institution_id) continue
+    if (!t.readings?.id || !t.entity_id) continue
     const sub: SubResult = {
       id: t.readings.id,
       title: t.readings.headline,
@@ -204,9 +206,9 @@ export async function GET(req: NextRequest) {
       is_external: true,
       subtitle: t.readings.publications?.name ?? null,
     }
-    const arr = galleryReadingsMap.get(t.institution_id) ?? []
+    const arr = galleryReadingsMap.get(t.entity_id) ?? []
     arr.push(sub)
-    galleryReadingsMap.set(t.institution_id, arr)
+    galleryReadingsMap.set(t.entity_id, arr)
   }
 
   // Enriched artist results — exhibitions + prereads from each exhibition

@@ -8,9 +8,9 @@ export async function GET() {
   const { data, error } = await db
     .from('exhibitions')
     .select(`
-      id, show_title, start_date, end_date, description, press_release, image_url,
+      id, show_title, start_date, end_date, is_ongoing, description, press_release, image_url,
       status, missing_fields, address_override, address_override_neighborhood,
-      created_at, updated_at,
+      admin_notes, created_at, updated_at,
       venues!inner(name, exhibitions_url, address, neighborhood, institutions!inner(name, type)),
       exhibition_artists(artists(name)),
       prereads(id, article_title, publication, article_url, summary, thumbnail_url)

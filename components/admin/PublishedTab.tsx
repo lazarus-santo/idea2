@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import TipTapEditor from './TipTapEditor'
 
 type Preread = {
   id: string
@@ -13,13 +14,17 @@ type PublishedEx = {
   id: string
   show_title: string
   artists: string[]
+  institution_name: string
+  venue_type: string
   venue_name: string
   venue_url: string | null
   start_date: string | null
   end_date: string | null
+  is_ongoing: boolean
   description: string | null
   image_url: string | null
   press_release: string | null
+  admin_notes: string | null
   address_override: string | null
   address_override_neighborhood: string | null
   venue_address: string | null
@@ -50,6 +55,13 @@ const btnS: React.CSSProperties = {
 function fmtDate(d: string | null) {
   if (!d) return '—'
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function fmtDateRange(start: string | null, end: string | null, isOngoing: boolean) {
+  if (!start && !end) return 'Dates TBD'
+  if (isOngoing || (!end && start)) return `${fmtDate(start)} – Ongoing`
+  if (start && end) return `${fmtDate(start)} – ${fmtDate(end)}`
+  return fmtDate(end)
 }
 
 function AddPrereadForm({ exhibitionId, onAdded }: { exhibitionId: string; onAdded: (p: Preread) => void }) {
@@ -112,26 +124,28 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   const [imageUrl, setImageUrl]     = useState(ex.image_url ?? '')
   const [addr, setAddr]             = useState(ex.address_override ?? '')
   const [neigh, setNeigh]           = useState(ex.address_override_neighborhood ?? '')
-  const [description, setDesc]      = useState(ex.description ?? '')
-  const [pressRelease, setPR]       = useState(ex.press_release ?? '')
-  const [showDesc, setShowDesc]     = useState(false)
+  const [adminNotes, setAdminNotes] = useState(ex.admin_notes ?? '')
   const [showPR, setShowPR]         = useState(false)
   const [prereads, setPrereads]     = useState<Preread[]>(ex.prereads)
   const [showAdd, setShowAdd]       = useState(false)
   const [saving, setSaving]         = useState(false)
   const [unpublishing, setUnpublishing] = useState(false)
   const [msg, setMsg]               = useState('')
+  const notesRef = useRef(adminNotes)
+  notesRef.current = adminNotes
+
+  const isMuseum = ex.venue_type === 'museum'
+  const prLabel = isMuseum ? 'exhibition description' : 'press release'
+  const prValue = ex.press_release ?? ex.description ?? ''
 
   const isDirty =
-    startDate    !== (ex.start_date ?? '') ||
-    endDate      !== (ex.end_date ?? '') ||
-    imageUrl     !== (ex.image_url ?? '') ||
-    addr         !== (ex.address_override ?? '') ||
-    neigh        !== (ex.address_override_neighborhood ?? '') ||
-    description  !== (ex.description ?? '') ||
-    pressRelease !== (ex.press_release ?? '')
+    startDate !== (ex.start_date ?? '') ||
+    endDate   !== (ex.end_date ?? '') ||
+    imageUrl  !== (ex.image_url ?? '') ||
+    addr      !== (ex.address_override ?? '') ||
+    neigh     !== (ex.address_override_neighborhood ?? '')
 
-  async function saveAddr() {
+  async function save() {
     setSaving(true)
     try {
       const res = await fetch(`/api/admin/exhibitions/${ex.id}`, {
@@ -143,8 +157,6 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
           image_url:                     imageUrl || null,
           address_override:              addr || null,
           address_override_neighborhood: neigh || null,
-          description:                   description || null,
-          press_release:                 pressRelease || null,
         }),
       })
       if (!res.ok) throw new Error()
@@ -155,6 +167,16 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
       setSaving(false)
       setTimeout(() => setMsg(''), 2000)
     }
+  }
+
+  async function saveNotes() {
+    const val = notesRef.current
+    if (val === (ex.admin_notes ?? '')) return
+    await fetch(`/api/admin/exhibitions/${ex.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_notes: val || null }),
+    })
   }
 
   async function unpublish() {
@@ -175,6 +197,8 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
     await fetch(`/api/admin/prereads/${prId}`, { method: 'DELETE' })
     setPrereads(prev => prev.filter(p => p.id !== prId))
   }
+
+  const dateDisplay = fmtDateRange(startDate || null, endDate || null, ex.is_ongoing)
 
   return (
     <div style={{ borderBottom: '1px solid rgba(0,0,0,0.1)', padding: '28px 0', fontFamily: F }}>
@@ -200,9 +224,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
           </div>
           <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, marginBottom: 3 }}>{ex.show_title}</div>
           <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.5)' }}>{ex.artists.join(', ')}</div>
-          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.4)', marginTop: 2 }}>
-            {fmtDate(startDate || null)} – {fmtDate(endDate || null)}
-          </div>
+          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.4)', marginTop: 2 }}>{dateDisplay}</div>
         </div>
       </div>
 
@@ -230,29 +252,45 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
         </div>
       </div>
 
-      <div style={{ marginBottom: 10 }}>
-        <button onClick={() => setShowDesc(v => !v)} style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
-          {showDesc ? 'Hide' : description ? 'Edit' : 'Add'} description
+      {/* Press release / Exhibition description — rich text */}
+      <div style={{ marginBottom: 12 }}>
+        <button onClick={() => setShowPR(v => !v)} style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
+          {showPR ? 'Hide' : prValue ? 'Edit' : 'Add'} {prLabel}
         </button>
-        {showDesc && (
-          <textarea value={description} onChange={e => setDesc(e.target.value)} placeholder="Short description…" rows={4}
-            style={{ display: 'block', marginTop: 8, width: '100%', fontFamily: F, fontSize: 13, lineHeight: 1.6, color: '#000', background: '#fff', border: '1px solid rgba(0,0,0,0.18)', padding: '8px 12px', outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} />
+        {showPR && (
+          <TipTapEditor
+            key={ex.id + '-pr'}
+            initialValue={prValue}
+            exhibitionId={ex.id}
+            field="press_release"
+            placeholder={isMuseum ? 'Exhibition description…' : 'Paste press release…'}
+          />
         )}
       </div>
 
+      {/* Scraper feedback / admin notes */}
       <div style={{ marginBottom: 16 }}>
-        <button onClick={() => setShowPR(v => !v)} style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
-          {showPR ? 'Hide' : pressRelease ? 'Edit' : 'Add'} press release
-        </button>
-        {showPR && (
-          <textarea value={pressRelease} onChange={e => setPR(e.target.value)} placeholder="Paste press release…" rows={8}
-            style={{ display: 'block', marginTop: 8, width: '100%', fontFamily: F, fontSize: 13, lineHeight: 1.6, color: '#000', background: '#fff', border: '1px solid rgba(0,0,0,0.18)', padding: '8px 12px', outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} />
-        )}
+        <label style={{ ...labelS, color: 'rgba(0,0,0,0.35)', marginBottom: 6 }}>
+          Scraper Feedback / Admin Notes
+        </label>
+        <textarea
+          value={adminNotes}
+          onChange={e => setAdminNotes(e.target.value)}
+          onBlur={saveNotes}
+          placeholder="Note anything about scraper quality, data issues, or context for Claude Code improvements…"
+          rows={3}
+          style={{
+            display: 'block', width: '100%', fontFamily: F,
+            fontSize: 12, lineHeight: 1.6, color: '#000', background: '#fafaf7',
+            border: '1px solid rgba(0,0,0,0.12)', padding: '8px 12px',
+            outline: 'none', resize: 'vertical', boxSizing: 'border-box',
+          }}
+        />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
         <button
-          onClick={saveAddr}
+          onClick={save}
           disabled={saving || !isDirty}
           style={{ ...btnS, background: isDirty ? '#000' : 'transparent', color: isDirty ? '#FFFCEC' : 'rgba(0,0,0,0.3)', border: isDirty ? 'none' : '1px solid rgba(0,0,0,0.18)', cursor: isDirty ? 'pointer' : 'default' }}
         >
@@ -329,12 +367,19 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   )
 }
 
+const searchInputStyle: React.CSSProperties = {
+  fontFamily: F, fontSize: 13, color: '#000',
+  background: '#fff', border: '1px solid rgba(0,0,0,0.18)',
+  padding: '6px 8px', outline: 'none', width: '100%', boxSizing: 'border-box',
+}
+
 type SubTab = 'active' | 'expired'
 
 export default function PublishedTab() {
   const [exhibitions, setExhibitions] = useState<PublishedEx[]>([])
   const [loading, setLoading] = useState(true)
   const [subTab, setSubTab] = useState<SubTab>('active')
+  const [search, setSearch] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -355,9 +400,16 @@ export default function PublishedTab() {
   }
 
   const today = new Date().toISOString().slice(0, 10)
-  const active = exhibitions.filter(e => !e.end_date || e.end_date >= today)
-  const expired = exhibitions.filter(e => e.end_date && e.end_date < today)
-  const visible = subTab === 'active' ? active : expired
+  const active = exhibitions.filter(e => e.is_ongoing || !e.end_date || e.end_date >= today)
+  const expired = exhibitions.filter(e => !e.is_ongoing && e.end_date && e.end_date < today)
+  const subVisible = subTab === 'active' ? active : expired
+  const q = search.toLowerCase().trim()
+  const visible = q
+    ? subVisible.filter(e =>
+        e.show_title.toLowerCase().includes(q) ||
+        e.institution_name.toLowerCase().includes(q)
+      )
+    : subVisible
 
   function subTabStyle(t: SubTab): React.CSSProperties {
     const on = subTab === t
@@ -374,7 +426,7 @@ export default function PublishedTab() {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 24, marginBottom: 28 }}>
+      <div style={{ display: 'flex', gap: 24, marginBottom: 20 }}>
         <button style={subTabStyle('active')} onClick={() => setSubTab('active')}>
           Active {!loading && `(${active.length})`}
         </button>
@@ -383,12 +435,23 @@ export default function PublishedTab() {
         </button>
       </div>
 
-      {loading
-        ? <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>Loading…</p>
-        : visible.length === 0
-          ? <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>No {subTab} exhibitions.</p>
-          : visible.map(ex => <PublishedCard key={ex.id} ex={ex} onUnpublish={handleUnpublish} />)
-      }
+      <input
+        type="text"
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Search by exhibition or institution…"
+        style={{ ...searchInputStyle, marginBottom: 24 }}
+      />
+
+      {loading ? (
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>Loading…</p>
+      ) : visible.length === 0 && q ? (
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>No exhibitions match your search.</p>
+      ) : visible.length === 0 ? (
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>No {subTab} exhibitions.</p>
+      ) : (
+        visible.map(ex => <PublishedCard key={ex.id} ex={ex} onUnpublish={handleUnpublish} />)
+      )}
     </div>
   )
 }

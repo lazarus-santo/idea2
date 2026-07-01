@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
-import { publicationTier } from '@/lib/publication-tiers'
 import type { Reading } from '@/lib/types'
 
 type Tab = 'top-stories' | 'river'
+type RiverCategory = 'all' | 'news' | 'opinion' | 'conversation'
 
 const LAYOUT_CYCLE = ['a', 'b', 'c', 'a', 'b', 'c'] as const
 type Layout = typeof LAYOUT_CYCLE[number]
@@ -43,6 +43,22 @@ function useIsDesktop() {
     return () => mq.removeEventListener('change', handler)
   }, [])
   return isDesktop
+}
+
+// ── Top stories scoring ──────────────────────────────────────
+
+function scoreReading(r: Reading): number {
+  const ageHours = r.published_at
+    ? (Date.now() - new Date(r.published_at).getTime()) / 3600000
+    : 72
+  const recency = ageHours <= 6
+    ? 1
+    : Math.max(0, 1 - (ageHours - 6) / 66)
+  return (
+    (r.nyc_relevance_score ?? 0.5) * 0.3 +
+    (r.art_relevance_score ?? 0.5) * 0.4 +
+    recency * 0.3
+  )
 }
 
 // ── Paper layout sub-components ──────────────────────────────
@@ -84,75 +100,45 @@ function CardText({ r, left, top, width, height }: {
 }
 
 // ── Layout A — Paper "Layout One" (5A-0) ─────────────────────
-// Canvas 1728px, content origin left=45.5 top=193.5, content size 1637×897.
-// Card 1: left image spans full height, text below.
-// Card 2: right-top image, text between the two right images.
-// Card 3: right-bottom image (ultra-wide panoramic 808×239), text below.
 function LayoutA({ cards }: { cards: Reading[] }) {
   const [c1, c2, c3] = cards
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '1637 / 897', overflow: 'visible' }}>
-      {/* Card 1 — left image */}
       <CardImg  r={c1} left="0%"     top="0%"     width="49.60%" height="85.40%" />
-      {/* Card 1 — text below left image (11px gap in Paper) */}
       <CardText r={c1} left="0%"     top="86.62%" width="49.66%" height="11.15%" />
-      {/* Card 2 — right-top image */}
       <CardImg  r={c2} left="50.34%" top="0%"     width="49.66%" height="51.17%" />
-      {/* Card 2 — text between right images, flush below right-top */}
       <CardText r={c2} left="50.34%" top="51.17%" width="49.66%" height="11.04%" />
-      {/* Card 3 — right-bottom image, flush below Card 2 text */}
       <CardImg  r={c3} left="50.34%" top="62.21%" width="49.36%" height="26.64%" />
-      {/* Card 3 — text below right-bottom image */}
       <CardText r={c3} left="50.34%" top="88.85%" width="49.36%" height="11.15%" />
     </div>
   )
 }
 
 // ── Layout B — Paper "Layout Two" (7H-0) ─────────────────────
-// Canvas 1728px, content origin left=52 top=194, content size 1637×805.
-// Card 1: right tall image spanning full height, text below (11px gap).
-// Card 2: left-top wide panoramic image (1011×251), text flush below.
-// Card 3: left-bottom image (813×459), text appears BESIDE the image to the right.
 function LayoutB({ cards }: { cards: Reading[] }) {
   const [c1, c2, c3] = cards
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '1637 / 805', overflow: 'visible' }}>
-      {/* Card 1 — right tall image */}
       <CardImg  r={c1} left="69.52%" top="0%"     width="29.81%" height="88.70%" />
-      {/* Card 1 — text below right image (11px gap) */}
       <CardText r={c1} left="69.52%" top="90.06%" width="29.81%" height="9.94%"  />
-      {/* Card 2 — left-top wide panoramic image */}
       <CardImg  r={c2} left="0%"     top="0%"     width="61.76%" height="31.18%" />
-      {/* Card 2 — text flush below left-top image */}
       <CardText r={c2} left="0%"     top="31.18%" width="61.76%" height="11.80%" />
-      {/* Card 3 — left-bottom image */}
       <CardImg  r={c3} left="0%"     top="42.98%" width="49.66%" height="57.02%" />
-      {/* Card 3 — text beside left-bottom image, aligned to its top */}
       <CardText r={c3} left="50.52%" top="42.98%" width="11.24%" height="14.29%" />
     </div>
   )
 }
 
 // ── Layout C — Paper "Layout Three" (AB-0) ───────────────────
-// Canvas 1728px, content origin left=52 top=194, content size 1637×887.
-// Card 1: right tall image (504×805), text appears at RIGHT MARGIN beyond container.
-// Card 2: left-top image (812×273), text flush below.
-// Card 3: left-bottom image (813×459), text flush below.
 function LayoutC({ cards }: { cards: Reading[] }) {
   const [c1, c2, c3] = cards
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '1637 / 887', overflow: 'visible' }}>
-      {/* Card 1 — right tall image */}
       <CardImg  r={c1} left="56.08%" top="0%"     width="30.79%" height="90.76%" />
-      {/* Card 1 — text at right margin, beyond container right edge */}
       <CardText r={c1} left="88.03%" top="41.60%" width="14.35%" height="7.67%"  />
-      {/* Card 2 — left-top image */}
       <CardImg  r={c2} left="0%"     top="0%"     width="49.60%" height="30.78%" />
-      {/* Card 2 — text, using Paper's exact top=464→30.44% */}
       <CardText r={c2} left="0%"     top="30.44%" width="49.60%" height="8.57%"  />
-      {/* Card 3 — left-bottom image, flush with Card 2 text bottom */}
       <CardImg  r={c3} left="0%"     top="39.01%" width="49.66%" height="51.75%" />
-      {/* Card 3 — text flush below left-bottom image */}
       <CardText r={c3} left="0%"     top="90.76%" width="49.66%" height="9.24%"  />
     </div>
   )
@@ -220,10 +206,23 @@ function TopStoriesView({ stories }: { stories: Reading[] }) {
 
 // ── River view ────────────────────────────────────────────────
 
-function RiverView({ readings }: { readings: Reading[] }) {
-  if (readings.length === 0) {
-    return <p className="rd-empty">No articles in the last 7 days.</p>
-  }
+function RiverView({
+  readings,
+  category,
+  onCategoryChange,
+  loading,
+}: {
+  readings: Reading[]
+  category: RiverCategory
+  onCategoryChange: (c: RiverCategory) => void
+  loading: boolean
+}) {
+  const CATEGORIES: { value: RiverCategory; label: string }[] = [
+    { value: 'all',          label: 'All'          },
+    { value: 'news',         label: 'News'         },
+    { value: 'opinion',      label: 'Opinion'      },
+    { value: 'conversation', label: 'Conversation' },
+  ]
 
   const groups = readings.reduce<Record<string, Reading[]>>((acc, r) => {
     const key = r.published_at ? localDateKey(r.published_at) : localDateKey(r.created_at)
@@ -235,23 +234,43 @@ function RiverView({ readings }: { readings: Reading[] }) {
   const sortedDates = Object.keys(groups).sort((a, b) => b.localeCompare(a))
 
   return (
-    <div className="rd-river">
-      {sortedDates.map(date => (
-        <div key={date} className="rd-river-group">
-          <p className="rd-river-date">{formatDateHeader(date)}</p>
-          {groups[date].map(r => {
-            const source = [r.author, r.publication_name].filter(Boolean).join(' / ')
-            const entry = source ? `${source} - ${r.headline}` : r.headline
-            return (
-              <div key={r.id} className="rd-river-row">
-                <span className="rd-river-time">{formatTime(r.published_at)}</span>
-                <a href={r.article_url} target="_blank" rel="noopener noreferrer"
-                  className="rd-river-entry">{entry}</a>
-              </div>
-            )
-          })}
+    <div className="rd-river-wrapper">
+      <div className="rd-river-filter">
+        {CATEGORIES.map(({ value, label }) => (
+          <button
+            key={value}
+            className={`rd-tab${category === value ? ' rd-tab--active' : ''}`}
+            onClick={() => onCategoryChange(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="rd-skeleton-grid" />
+      ) : readings.length === 0 ? (
+        <p className="rd-empty">No articles in this category yet.</p>
+      ) : (
+        <div className="rd-river">
+          {sortedDates.map(date => (
+            <div key={date} className="rd-river-group">
+              <p className="rd-river-date">{formatDateHeader(date)}</p>
+              {groups[date].map(r => {
+                const source = [r.author, r.publication_name].filter(Boolean).join(' / ')
+                const entry = source ? `${source} - ${r.headline}` : r.headline
+                return (
+                  <div key={r.id} className="rd-river-row">
+                    <span className="rd-river-time">{formatTime(r.published_at)}</span>
+                    <a href={r.article_url} target="_blank" rel="noopener noreferrer"
+                      className="rd-river-entry">{entry}</a>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   )
 }
@@ -261,28 +280,35 @@ function RiverView({ readings }: { readings: Reading[] }) {
 export default function ReadingsPage() {
   const [tab, setTab] = useState<Tab>('top-stories')
   const [readings, setReadings] = useState<Reading[]>([])
-  const [loading, setLoading] = useState(true)
+  const [riverReadings, setRiverReadings] = useState<Reading[]>([])
+  const [riverCategory, setRiverCategory] = useState<RiverCategory>('all')
+  const [loadingTop, setLoadingTop] = useState(true)
+  const [loadingRiver, setLoadingRiver] = useState(false)
 
   useEffect(() => {
     fetch('/api/readings')
       .then(r => { if (!r.ok) throw new Error(); return r.json() })
-      .then(data => { setReadings(Array.isArray(data) ? data : []); setLoading(false) })
-      .catch(() => setLoading(false))
+      .then(data => { setReadings(Array.isArray(data) ? data : []); setLoadingTop(false) })
+      .catch(() => setLoadingTop(false))
   }, [])
 
-  const topStories = useMemo(() => {
-    const flagged = readings.filter(r => r.top_story).slice(0, 18)
-    if (flagged.length >= 18) return flagged
-    const flaggedIds = new Set(flagged.map(r => r.id))
-    const tier1 = readings.filter(
-      r => !r.top_story && publicationTier(r.publication_name) === 1 && !flaggedIds.has(r.id)
-    )
-    return [...flagged, ...tier1].slice(0, 18)
-  }, [readings])
+  useEffect(() => {
+    if (tab !== 'river') return
+    setLoadingRiver(true)
+    const url = riverCategory === 'all'
+      ? '/api/river'
+      : `/api/river?category=${riverCategory}`
+    fetch(url)
+      .then(r => { if (!r.ok) throw new Error(); return r.json() })
+      .then(data => { setRiverReadings(Array.isArray(data) ? data : []); setLoadingRiver(false) })
+      .catch(() => setLoadingRiver(false))
+  }, [tab, riverCategory])
 
-  const riverReadings = useMemo(() => {
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
-    return readings.filter(r => r.published_at && new Date(r.published_at).getTime() >= cutoff)
+  const topStories = useMemo(() => {
+    const flagged = readings.filter(r => r.top_story)
+    const scored = flagged.map(r => ({ r, score: scoreReading(r) }))
+    scored.sort((a, b) => b.score - a.score)
+    return scored.slice(0, 5).map(s => s.r)
   }, [readings])
 
   return (
@@ -315,12 +341,19 @@ export default function ReadingsPage() {
           </button>
         </div>
 
-        {loading ? (
-          <div className="rd-skeleton-grid" />
-        ) : tab === 'top-stories' ? (
-          <TopStoriesView stories={topStories} />
+        {tab === 'top-stories' ? (
+          loadingTop ? (
+            <div className="rd-skeleton-grid" />
+          ) : (
+            <TopStoriesView stories={topStories} />
+          )
         ) : (
-          <RiverView readings={riverReadings} />
+          <RiverView
+            readings={riverReadings}
+            category={riverCategory}
+            onCategoryChange={setRiverCategory}
+            loading={loadingRiver}
+          />
         )}
       </main>
     </div>

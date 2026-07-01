@@ -9,6 +9,23 @@ export interface Preread {
   created_at: string
 }
 
+export interface CoverageItem {
+  url: string
+  title: string | null
+  author: string | null
+  publication_name: string | null
+  published_date: string | null
+}
+
+export interface CoverageDisplayItem {
+  url: string
+  title: string | null
+  author: string | null
+  publication_name: string | null
+  published_date: string | null
+  reading_id?: string
+}
+
 export interface Exhibition {
   id: string
   institution_name: string
@@ -25,6 +42,7 @@ export interface Exhibition {
   artists: string[]
   start_date: string | null
   end_date: string | null
+  is_ongoing: boolean
   description: string | null
   press_release: string | null
   image_url: string | null
@@ -41,6 +59,7 @@ export interface ExhibitionDetailData {
   show_title: string
   start_date: string | null
   end_date: string | null
+  is_ongoing: boolean
   press_release: string | null
   image_url: string | null
   institution_name: string
@@ -53,6 +72,7 @@ export interface ExhibitionDetailData {
   lat: number | null
   lng: number | null
   artists: string[]
+  preread_type: 'full' | 'coverage_only'
   prereads: {
     id: string
     article_title: string | null
@@ -107,6 +127,10 @@ export interface VenueRecord {
   address?: string | null
   latitude?: number | null
   longitude?: number | null
+  check_back_date?: string | null
+  scrape_failed?: boolean
+  manual_entry_required?: boolean
+  scrape_failure_reason?: string | null
 }
 
 export interface ExhibitionRaw {
@@ -117,6 +141,24 @@ export interface ExhibitionRaw {
   description: string | null
   press_release: string | null
   image_url: string | null
+}
+
+export interface ExhibitionLink {
+  title: string
+  url: string
+  classification: 'current' | 'past' | 'permanent' | 'upcoming'
+  classification_reason: string
+}
+
+export interface ExhibitionDetailExtracted {
+  title: string | null
+  artists: string[]
+  start_date: string | null
+  end_date: string | null
+  date_notes: string | null
+  description: string | null
+  image_url: string | null
+  press_release_url: string | null
 }
 
 export type VenueHours = {
@@ -165,9 +207,14 @@ export interface Reading {
   author: string | null
   headline: string
   article_url: string
-  thumbnail_url: string | null  // requires readings.thumbnail_url column (not yet in schema)
+  thumbnail_url: string | null
   rss_summary: string | null
   top_story: boolean
+  top_story_candidate: boolean
   published_at: string | null
   created_at: string
+  category: 'news' | 'opinion' | 'conversation' | null
+  art_relevance_score: number | null
+  nyc_relevance_score: number | null
+  tier: string | null
 }

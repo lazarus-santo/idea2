@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
-import type { ExhibitionRaw, Preread } from './types'
+import type { ExhibitionRaw, Preread, CoverageItem, ExhibitionLink, ExhibitionDetailExtracted } from './types'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
@@ -137,23 +137,6 @@ Always return a JSON array. Return [] if nothing is currently on view.
 Dates in YYYY-MM-DD format or null.
 Artists as an array of strings.`,
   cache_control: { type: 'ephemeral' },
-}
-
-function decodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&rsquo;/g, '’')
-    .replace(/&lsquo;/g, '‘')
-    .replace(/&rdquo;/g, '”')
-    .replace(/&ldquo;/g, '“')
-    .replace(/&ndash;/g, '–')
-    .replace(/&mdash;/g, '—')
-    .replace(/&hellip;/g, '…')
 }
 
 
@@ -434,4 +417,448 @@ export async function generatePrereads(
   console.log(`Exa selected [${showTitle}]:`, prereads.map((p) => ({ title: p.article_title, pub: p.publication, url: p.article_url })))
 
   return { prereads, hasShowCoverage: valid.some((r) => r.contentPriority === 0) }
+}
+
+// ─── Location filter (Req #2) ─────────────────────────────────────────────────
+// Batch-classifies extracted links as 'nyc' or 'other' using a cheap Haiku call.
+// Catches gallery shows at fairs, biennials, or partner venues in other cities.
+
+export async function filterLinksByLocation(
+  links: ExhibitionLink[],
+  institutionName: string
+): Promise<ExhibitionLink[]> {
+  if (links.length === 0) return []
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: `For each exhibition from ${institutionName}'s website, determine whether it takes place at their primary New York City location or at another location (another city, country, art fair, partner venue, biennale, etc.).
+
+Return ONLY a JSON array (no markdown):
+[{"url":"...","location":"nyc","location_note":"..."}]
+
+Use "other" when the show is clearly outside NYC (e.g. Venice Biennale, Art Basel, London, Paris, LA).
+Use "nyc" when it is at their main NYC gallery/museum or the location is unspecified (default to nyc when uncertain).
+
+Exhibitions:
+${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title })))}`,
+      },
+    ],
+  })
+
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  try {
+    const match = text.match(/\[[\s\S]*\]/)
+    if (!match) return links
+
+    const classified = JSON.parse(match[0]) as Array<{
+      url: string; location: string; location_note?: string
+    }>
+    const byUrl = new Map(classified.map((c) => [c.url, c]))
+
+    return links.filter((link) => {
+      const result = byUrl.get(link.url)
+      if (!result) return true  // not in response → keep (fail open)
+      if (result.location === 'other') {
+        console.log(`[Location] Excluded "${link.title}": ${result.location_note ?? 'non-NYC'}`)
+        return false
+      }
+      return true
+    })
+  } catch {
+    console.error('filterLinksByLocation: failed to parse response — keeping all links')
+    return links
+  }
+}
+
+// ─── Title hallucination check (Req #1) ──────────────────────────────────────
+// Called only when the fast string check in scraper.ts fails.
+// Haiku verifies whether the title appears near-verbatim on the rendered page.
+
+export async function verifyTitleInHtml(title: string, html: string): Promise<boolean> {
+  const pageText = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 8000)
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 5,
+    messages: [
+      {
+        role: 'user',
+        content: `Does the text "${title}" appear verbatim or near-verbatim in the following page content? Answer only "yes" or "no".\n\n${pageText}`,
+      },
+    ],
+  })
+
+  const answer = response.content.find((b) => b.type === 'text')?.text?.toLowerCase().trim() ?? 'no'
+  return answer.startsWith('yes')
+}
+
+// ─── Step 1: listing page link extraction ─────────────────────────────────────
+
+function resolveUrl(href: string, base: string): string {
+  try { return new URL(href, base).href } catch { return href }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+}
+
+// Extracts Next.js __NEXT_DATA__ from raw HTML and returns a CLEAN summary of key fields.
+// Used when the DOM shell is empty (pure CSR apps where React hasn't hydrated).
+// Rather than slicing the raw JSON (which may contain unescaped quotes or 600K of block data),
+// we parse the JSON and extract only the fields Claude needs for detail extraction.
+function extractNextJsData(html: string): string | null {
+  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/i)
+  if (!match) return null
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = JSON.parse(match[1]) as any
+    const tqd = data?.props?.pageProps?.__TEMPLATE_QUERY_DATA__
+    const ex = tqd?.exhibition ?? tqd
+    if (!ex) return null
+    // Sanitize text fields that may contain HTML or smart quotes — Claude echoes these
+    // verbatim in its response JSON, normalizing smart quotes to ASCII, which breaks JSON.parse.
+    const sanitize = (s: string | null | undefined): string | null => {
+      if (!s) return null
+      return s
+        .replace(/<[^>]+>/g, '')              // strip HTML tags
+        .replace(/[\u201c\u201d]/g, "'")  // curly double quotes -> single quote (ASCII double would break Claude JSON output)
+        .replace(/[\u2018\u2019]/g, "'")  // curly single quotes -> ASCII straight apostrophe
+        .trim()
+    }
+    const summary = {
+      title: ex?.seo?.opengraphTitle ?? ex?.seo?.title?.replace(/\s*-\s*[^-]+$/, '') ?? null,
+      exhibitionIntro: sanitize(ex?.exhibitionIntro),
+      startDate: ex?.startDate ?? null,
+      endDate: ex?.endDate || null,
+      dateTextOverride: ex?.dateTextOverride ?? null,
+      imageUrl: ex?.heroAsset?.desktop?.sourceUrl ?? null,
+      seoDescription: sanitize(ex?.seo?.metaDesc),
+    }
+    return JSON.stringify(summary)
+  } catch {
+    // Fallback: return raw slice for sites with non-standard structure
+    return match[1].slice(0, 30000)
+  }
+}
+
+// Aggressively strips scripts, styles, JSON-LD blobs, and HTML comments
+// before passing to Claude — removes bloat that pushes real content past the slice window
+function deepStripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+}
+
+// For detail page retry: focus on semantic content containers
+// before trying the full page. Handles sites where content is in
+// non-standard or deeply nested containers.
+function extractDetailFocused(html: string): string {
+  const patterns = [
+    /<article[\s\S]*?<\/article>/i,
+    /<[^>]+class="[^"]*(?:exhibition|detail|show|content|entry|post)[^"]*"[\s\S]*?<\/(?:div|section|main|article)>/i,
+    /<main[\s\S]*?<\/main>/i,
+  ]
+  for (const re of patterns) {
+    const m = html.match(re)
+    if (m && m[0].length > 1000) return m[0]
+  }
+  return html
+}
+
+// Extract the main content region of a page to avoid wasting token budget on
+// nav/header/footer/sidebar boilerplate. Falls back to the full stripped HTML.
+function extractMainContent(html: string): string {
+  const stripped = stripHtml(html)
+  // Try semantic main content containers in priority order
+  const patterns = [
+    /<main[\s\S]*?<\/main>/i,
+    /<[^>]+role=["']main["'][\s\S]*?>/i,
+    /<article[\s\S]*?<\/article>/i,
+    /<[^>]+id=["'](?:main-content|content|main)["'][\s\S]*?>/i,
+  ]
+  for (const re of patterns) {
+    const m = stripped.match(re)
+    if (m && m[0].length > 1000) return m[0]
+  }
+  return stripped
+}
+
+export async function extractExhibitionLinks(
+  html: string,
+  venueName: string,
+  venueUrl: string
+): Promise<ExhibitionLink[]> {
+  const today = new Date().toISOString().split('T')[0]
+  const stripped = extractMainContent(html).slice(0, 60000)
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4096,
+    messages: [
+      {
+        role: 'user',
+        content: `Extract all exhibition links from this ${venueName} listing page (${venueUrl}).
+
+Today: ${today}
+
+For each exhibition link found, return:
+- title: the exhibition or show title
+- url: full absolute URL to the exhibition detail page (resolve relative URLs against base ${venueUrl})
+- classification: exactly one of 'current' | 'past' | 'permanent' | 'upcoming'
+- classification_reason: brief note (e.g. "labeled On View", "end date passed", "section heading: Past")
+
+Classification rules:
+- "On View", "Current", "Now On View" → 'current'
+- "Past", "Archive", "Previous" → 'past'
+- "Permanent Collection", "The Collection" → 'permanent'
+- "Upcoming", "Coming Soon", "Opening Soon" → 'upcoming'
+- Date range end before today → 'past'
+- Date range start after today → 'upcoming'
+- URL patterns: /current/ or /on-view/ → 'current'; /past/ or /archive/ → 'past'
+- When ambiguous: default to 'current'
+
+Return ONLY a JSON array (no markdown, no commentary):
+[{"title":"...","url":"https://...","classification":"current","classification_reason":"..."}]
+
+Return [] if no exhibition links are found.
+
+HTML:
+${stripped}`,
+      },
+    ],
+  })
+
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  try {
+    const match = text.match(/\[[\s\S]*\]/)
+    if (!match) return []
+    const raw = JSON.parse(match[0]) as Array<{
+      title?: string; url?: string
+      classification?: string; classification_reason?: string
+    }>
+    return raw
+      .filter((item) => item.title && item.url)
+      .map((item) => ({
+        title: item.title!,
+        url: resolveUrl(item.url!, venueUrl),
+        classification: (['current','past','permanent','upcoming'].includes(item.classification ?? '')
+          ? item.classification
+          : 'current') as ExhibitionLink['classification'],
+        classification_reason: item.classification_reason ?? '',
+      }))
+  } catch {
+    console.error(`Failed to parse exhibition links JSON for ${venueName}:`, text.slice(0, 200))
+    return []
+  }
+}
+
+// Classify a list of candidate URLs by exhibition status — used as a fallback
+// when extractExhibitionLinks finds 0 links (e.g. content past the slice window).
+// Claude infers classification from URL path and naming conventions only.
+export async function classifyExhibitionUrls(
+  urls: string[],
+  venueName: string,
+  venueUrl: string
+): Promise<ExhibitionLink[]> {
+  if (urls.length === 0) return []
+  const today = new Date().toISOString().split('T')[0]
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 2048,
+    messages: [{
+      role: 'user',
+      content: `Classify these ${venueName} exhibition URLs as current, upcoming, past, or permanent.
+
+Today: ${today}
+Base: ${venueUrl}
+
+Infer from URL path and slug only (no page content available).
+Default to "current" when uncertain — downstream temporal validation will discard past shows.
+
+Return ONLY a JSON array:
+[{"url":"https://...","title":"human-readable name from URL slug","classification":"current"|"upcoming"|"past"|"permanent","classification_reason":"..."}]
+
+URLs:
+${urls.join('\n')}`,
+    }],
+  })
+
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  try {
+    const match = text.match(/\[[\s\S]*\]/)
+    if (!match) return []
+    const raw = JSON.parse(match[0]) as Array<{
+      url?: string; title?: string; classification?: string; classification_reason?: string
+    }>
+    return raw
+      .filter((item) => item.url && item.title)
+      .map((item) => ({
+        title: item.title!,
+        url: resolveUrl(item.url!, venueUrl),
+        classification: (['current','past','permanent','upcoming'].includes(item.classification ?? '')
+          ? item.classification
+          : 'current') as ExhibitionLink['classification'],
+        classification_reason: item.classification_reason ?? 'href scan fallback',
+      }))
+  } catch {
+    return []
+  }
+}
+
+// ─── Step 2: detail page extraction ──────────────────────────────────────────
+
+const EMPTY_DETAIL: ExhibitionDetailExtracted = {
+  title: null, artists: [], start_date: null, end_date: null,
+  date_notes: null, description: null, image_url: null, press_release_url: null,
+}
+
+const DETAIL_PROMPT = (url: string, content: string) => `Extract exhibition data from this page (${url}).
+
+CRITICAL RULES:
+- Do NOT generate, infer, or hallucinate content not present on the page
+- description must be verbatim extracted text — never AI-generated or summarized
+- If a field is not on the page, return null
+- Dates in YYYY-MM-DD format only
+
+Return ONLY a JSON object (no markdown, no commentary):
+{
+  "title": "exhibition title or null",
+  "artists": ["artist name strings — empty array if none"],
+  "start_date": "YYYY-MM-DD or null",
+  "end_date": "YYYY-MM-DD or null",
+  "date_notes": "verbatim date text that could not be parsed as YYYY-MM-DD (e.g. 'On view through summer 2025') — null if dates were fully parsed or no date info exists",
+  "description": "full verbatim exhibition description or press release text — take the longest body of text about the show, do not truncate, do not summarize — null if nothing found on page",
+  "image_url": "absolute URL of primary exhibition image — prefer hero/banner or og:image meta, not thumbnails/icons/logos — null if none",
+  "press_release_url": "URL to a separate press release PDF or page if explicitly linked — null otherwise"
+}
+
+HTML:
+${content}`
+
+// Dedicated extractor for Next.js __NEXT_DATA__ JSON blobs.
+// Uses a targeted prompt to reliably extract from the JSON field structure
+// without confusing exhibition title with location data.
+async function callClaudeForNextData(nextDataJson: string, url: string): Promise<ExhibitionDetailExtracted> {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2048,
+    messages: [{
+      role: 'user',
+      content: `Extract exhibition data from this Next.js page data JSON for ${url}.
+
+Use these exact JSON fields (paths within the JSON):
+- title → seo.opengraphTitle verbatim (e.g. "Facade: Tschabalala Self—Art Lovers" or "New Humans: Memories of the Future"). This is the COMPLETE official exhibition title — do not shorten or strip any part of it.
+- artists → infer from the title text (typically the name after "—" dash, or the whole title if no dash)
+- start_date → parse startDate ISO string to YYYY-MM-DD, or null
+- end_date → parse endDate ISO string to YYYY-MM-DD, or null if field is empty/missing
+- description → exhibitionIntro field text verbatim (or seo.metaDesc if exhibitionIntro absent)
+- image_url → heroAsset.desktop.sourceUrl (absolute https:// URL)
+- press_release_url → null
+
+Return ONLY a JSON object:
+{"title":"...","artists":["..."],"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null","date_notes":null,"description":"...","image_url":"https://...","press_release_url":null}
+
+JSON data:
+${nextDataJson}`,
+    }],
+  })
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  try {
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return EMPTY_DETAIL
+    const raw = JSON.parse(match[0]) as Partial<ExhibitionDetailExtracted>
+    return {
+      title: raw.title ?? null,
+      artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
+      start_date: raw.start_date ?? null,
+      end_date: raw.end_date ?? null,
+      date_notes: raw.date_notes ?? null,
+      description: raw.description ?? null,
+      image_url: raw.image_url ?? null,
+      press_release_url: raw.press_release_url ?? null,
+    }
+  } catch {
+    return EMPTY_DETAIL
+  }
+}
+
+async function callClaudeForDetail(content: string, url: string): Promise<ExhibitionDetailExtracted> {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: DETAIL_PROMPT(url, content) }],
+  })
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  try {
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return EMPTY_DETAIL
+    const raw = JSON.parse(match[0]) as Partial<ExhibitionDetailExtracted>
+    return {
+      title: raw.title ?? null,
+      artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
+      start_date: raw.start_date ?? null,
+      end_date: raw.end_date ?? null,
+      date_notes: raw.date_notes ?? null,
+      description: raw.description ?? null,
+      image_url: raw.image_url ?? null,
+      press_release_url: raw.press_release_url ?? null,
+    }
+  } catch {
+    console.error(`Failed to parse exhibition detail JSON for ${url}:`, text.slice(0, 200))
+    return EMPTY_DETAIL
+  }
+}
+
+export async function extractExhibitionDetail(
+  html: string,
+  exhibitionUrl: string
+): Promise<ExhibitionDetailExtracted> {
+  // Deep strip removes scripts, styles, JSON-LD blobs, and HTML comments
+  // before slicing — clears bloat that pushes real content past the window
+  const cleaned = deepStripHtml(html)
+  const primary = extractMainContent(cleaned).slice(0, 60000)
+
+  const result = await callClaudeForDetail(primary, exhibitionUrl)
+
+  // If title is null, retry targeting specific semantic containers —
+  // handles sites where the exhibition data is in a non-standard wrapper
+  if (!result.title?.trim()) {
+    const focused = extractDetailFocused(cleaned).slice(0, 60000)
+    if (focused.length > 1000 && focused !== primary) {
+      console.log(`[extractExhibitionDetail] title null on first pass — retrying with focused content (${exhibitionUrl})`)
+      const retry = await callClaudeForDetail(focused, exhibitionUrl)
+      if (retry.title?.trim()) return retry
+    }
+
+    // Last resort: try __NEXT_DATA__ hydration JSON.
+    // Covers (a) pure CSR shells with empty DOM after script strip, and
+    // (b) rendered Next.js pages whose template structure doesn't match our
+    // extractMainContent patterns (e.g. Frick's "on view" show template).
+    const nextData = extractNextJsData(html)
+    if (nextData) {
+      console.log(`[extractExhibitionDetail] both passes failed — trying __NEXT_DATA__ (${exhibitionUrl})`)
+      const nextResult = await callClaudeForNextData(nextData, exhibitionUrl)
+      try {
+        const diag = JSON.stringify({ tag: 'AGENT1', url: exhibitionUrl, event: 'NEXT_DATA_RESULT', title_found: nextResult.title?.trim() || null })
+        ;(await import('fs')).appendFileSync('/tmp/scrape-diag.jsonl', diag + '\n')
+      } catch {}
+      if (nextResult.title?.trim()) return nextResult
+    }
+  }
+
+  return result
 }
