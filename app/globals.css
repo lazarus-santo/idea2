@@ -357,13 +357,6 @@ a:hover { opacity: 0.75; }
   margin-bottom: 0.4rem;
 }
 
-.preread-summary {
-  font-size: 0.9rem;
-  color: #aaa;
-  line-height: 1.65;
-  margin-bottom: 0.4rem;
-}
-
 .preread-source {
   font-size: 0.8rem;
   color: var(--yellow);

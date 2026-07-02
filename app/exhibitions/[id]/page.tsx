@@ -27,7 +27,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
       preread_type,
       venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name)),
       exhibition_artists(artists!inner(name)),
-      prereads(id, article_title, publication, article_url, thumbnail_url, summary)
+      prereads(id, article_title, publication, article_url, thumbnail_url)
     `)
     .eq('id', id)
     .eq('status', 'published')
@@ -38,7 +38,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
   const raw = data as typeof data & {
     venues: { name: string; address: string | null; neighborhood: string | null; institution_id: string | null; latitude: number | null; longitude: number | null; institutions: { name: string } | null }
     exhibition_artists: { artists: { name: string } }[]
-    prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null; thumbnail_url: string | null; summary: string | null }[]
+    prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null; thumbnail_url: string | null }[]
     description: string | null
     press_release: string | null
     address_override: string | null
@@ -74,7 +74,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
   if (prereadType === 'full') {
     const { data: linkedReadingsRaw } = await getSupabaseAdmin()
       .from('readings_tags')
-      .select('readings!inner(id, headline, article_url, thumbnail_url, rss_summary, published_at, publications(name))')
+      .select('readings!inner(id, headline, article_url, thumbnail_url, published_at, publications(name))')
       .eq('exhibition_id', id)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -86,7 +86,6 @@ export default async function ExhibitionPage({ params }: PageProps) {
         publication: r.publications?.name ?? null,
         article_url: r.article_url,
         thumbnail_url: r.thumbnail_url ?? null,
-        summary: r.rss_summary ?? null,
         _published_at: r.published_at as string | null,
       }
     })
