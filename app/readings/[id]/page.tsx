@@ -17,7 +17,7 @@ export default async function ReadingPage({ params }: PageProps) {
 
   const { data: reading, error } = await getSupabaseAdmin()
     .from('readings')
-    .select('id, headline, article_url, author, published_at, rss_summary, publications(name)')
+    .select('id, headline, article_url, author, published_at, publications(name)')
     .eq('id', id)
     .single()
 
@@ -79,10 +79,6 @@ export default async function ReadingPage({ params }: PageProps) {
         </div>
 
         <h1 className="rp-headline">{reading.headline}</h1>
-
-        {reading.rss_summary && (
-          <p className="rp-summary">{reading.rss_summary}</p>
-        )}
 
         <a
           href={reading.article_url}

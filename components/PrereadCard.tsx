@@ -73,7 +73,6 @@ export default function PrereadCard({ preread, placeholderLabel }: PrereadCardPr
         <div className="preread-text">
           {preread.article_title && <h3 className="preread-title">{preread.article_title}</h3>}
           {preread.publication && <p className="preread-publication">{preread.publication}</p>}
-          <p className="preread-summary">{preread.summary}</p>
           {preread.article_url && (
             <a
               href={preread.article_url}

@@ -11,7 +11,7 @@ export async function GET() {
       *,
       venues!inner(name, exhibitions_url, address, neighborhood, institution_id, institutions!inner(id, name, type)),
       exhibition_artists(artists(name)),
-      prereads(*)
+      prereads(id, exhibition_id, article_title, publication, article_url, thumbnail_url, created_at)
     `)
     .eq('status', 'published')
     .or(`end_date.gte.${today},end_date.is.null`)

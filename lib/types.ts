@@ -79,7 +79,6 @@ export interface ExhibitionDetailData {
     publication: string | null
     article_url: string | null
     thumbnail_url: string | null
-    summary: string | null
   }[]
 }
 

@@ -27,7 +27,7 @@ export async function GET(request: Request) {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const normalized = (data ?? []).map(({ publications, ...r }: any) => ({
+  const normalized = (data ?? []).map(({ publications, rss_summary, ...r }: any) => ({
     ...r,
     headline: r.headline ? he.decode(r.headline) : r.headline,
     author: r.author ? he.decode(r.author) : r.author,
