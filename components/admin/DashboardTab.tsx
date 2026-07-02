@@ -78,6 +78,13 @@ const AGENT_META: Record<AgentName, { title: string; description: string; trigge
 
 const AGENT_ORDER: AgentName[] = ['agent1', 'agent2', 'agent3_daily', 'agent3_hourly']
 
+const AGENT_LOGIC: Record<AgentName, string> = {
+  agent1: `Once a day, checks which venues are due for a refresh (based on each venue's own check-back schedule) and re-scrapes their exhibition listing pages. It renders each page, pulls out show titles, dates, artists, and images using Claude, then verifies the extracted details actually appear on the page so hallucinated results get thrown out. Shows outside NYC, already closed, or belonging to the venue's own site (not the listing) are filtered out before anything is saved. New gallery shows automatically get 2+ editorial article prereads generated in the same pass; museum shows are skipped for automatic prereads. Venues that repeatedly fail to scrape — bot-blocked, broken pages, or zero exhibitions found after retrying — get flagged for manual entry instead of continuing to retry automatically.`,
+  agent2: `Looks at every published gallery exhibition (museums are not covered by this agent). For each one, it checks the exhibition's editorial prereads: if an article is hosted on the gallery's own website rather than independent press, it's removed, since that doesn't count as real editorial coverage. If fewer than 2 independent articles remain after that cleanup, it asks Claude to search for and generate fresh prereads to fill the gap.`,
+  agent3_daily: `Once a day, pulls the RSS feeds for all approved, non-hourly art publications, filters out anything that doesn't mention art/gallery/museum keywords, then asks Claude to judge which remaining articles are genuinely relevant to the NYC art world. Relevant articles get classified as news, opinion, or conversation, scored for art and NYC relevance, and saved to the Readings feed — duplicates are skipped automatically. Articles are also scanned for mentions of known artists or venues so they can be cross-linked to related exhibition pages. Readings older than 7 days are pruned unless they've been marked a Top Story.`,
+  agent3_hourly: `Runs the same pipeline as Agent 3 Daily, but every hour and scoped only to Tier 1 publications — the highest-priority art outlets. Breaking news from these publications that Claude flags as a strong top-story candidate is marked as a Top Story immediately, without waiting for the separate cross-source verification step that other articles go through.`,
+}
+
 const STATUS_COLORS: Record<string, string> = {
   success: '#4CAF50',
   partial: '#FF9800',
@@ -124,8 +131,8 @@ function StatCard({ label, count, tone }: { label: string; count: number; tone: 
 
   return (
     <div style={{
-      background: tones.bg,
-      border: `1px solid ${tones.fg}22`,
+      background: '#FFFCEC',
+      border: `1px solid ${tones.fg}55`,
       padding: '12px 16px',
       minWidth: 108,
       flex: '1 1 108px',
@@ -150,20 +157,20 @@ function PipelineFlowRow({ label, count, action, onAction, busy, first }: {
 }) {
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      display: 'grid', gridTemplateColumns: '1fr 70px 190px', alignItems: 'center', columnGap: 16,
       padding: '12px 16px',
       borderTop: first ? 'none' : '1px solid rgba(0,0,0,0.08)',
     }}>
       <span style={{ fontFamily: F, fontSize: 13, color: '#000' }}>{label}</span>
-      <span style={{ fontFamily: F, fontSize: 13, fontWeight: 700, color: '#000' }}>{count}</span>
+      <span style={{ fontFamily: F, fontSize: 13, fontWeight: 700, color: '#000', textAlign: 'right' }}>{count}</span>
       <button
         onClick={onAction}
         disabled={busy}
         style={{
           fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
           textTransform: 'uppercase', color: 'rgba(0,0,0,0.5)',
-          background: 'none', border: '1px solid rgba(0,0,0,0.2)',
-          padding: '5px 10px', cursor: 'pointer',
+          background: 'none', border: '1px solid rgba(0,0,0,0.2)', borderRadius: 999,
+          padding: '5px 10px', cursor: 'pointer', justifySelf: 'end',
         }}
       >
         {busy ? 'Running…' : action}
@@ -178,6 +185,7 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [triggering, setTriggering] = useState<Set<AgentName>>(new Set())
   const [expandedErrors, setExpandedErrors] = useState<Set<AgentName>>(new Set())
+  const [expandedLogic, setExpandedLogic] = useState<Set<AgentName>>(new Set())
   const triggeredAtRef = useRef<Record<string, number>>({})
 
   const fetchAll = useCallback(async () => {
@@ -245,6 +253,15 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
 
   const toggleErrors = useCallback((agent: AgentName) => {
     setExpandedErrors((prev) => {
+      const next = new Set(prev)
+      if (next.has(agent)) next.delete(agent)
+      else next.add(agent)
+      return next
+    })
+  }, [])
+
+  const toggleLogic = useCallback((agent: AgentName) => {
+    setExpandedLogic((prev) => {
       const next = new Set(prev)
       if (next.has(agent)) next.delete(agent)
       else next.add(agent)
@@ -340,7 +357,7 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
                   textTransform: 'uppercase', padding: '7px 14px',
                   background: isRunning ? 'rgba(0,0,0,0.15)' : '#000',
                   color: isRunning ? 'rgba(0,0,0,0.4)' : '#fff',
-                  border: 'none', cursor: isRunning ? 'default' : 'pointer',
+                  border: 'none', borderRadius: 999, cursor: isRunning ? 'default' : 'pointer',
                   alignSelf: 'flex-start',
                 }}
               >
@@ -381,7 +398,7 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
                         onClick={() => toggleErrors(agent)}
                         style={{
                           fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.5)',
-                          background: 'none', border: 'none', textDecoration: 'underline',
+                          background: 'none', border: 'none', borderRadius: 999, textDecoration: 'underline',
                           cursor: 'pointer', padding: 0, alignSelf: 'flex-start',
                         }}
                       >
@@ -389,6 +406,27 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
                       </button>
                     )}
                   </div>
+                )}
+              </div>
+
+              {/* How this agent works — collapsible plain-English explanation */}
+              <div style={{ borderTop: '1px solid rgba(0,0,0,0.08)', paddingTop: 10 }}>
+                <button
+                  onClick={() => toggleLogic(agent)}
+                  style={{
+                    fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.06em',
+                    textTransform: 'uppercase', color: 'rgba(0,0,0,0.5)',
+                    background: 'none', border: 'none', borderRadius: 999,
+                    cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 4,
+                  }}
+                >
+                  <span style={{ display: 'inline-block', transform: expandedLogic.has(agent) ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }}>›</span>
+                  How this works
+                </button>
+                {expandedLogic.has(agent) && (
+                  <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.6)', lineHeight: 1.5, marginTop: 8, marginBottom: 0 }}>
+                    {AGENT_LOGIC[agent]}
+                  </p>
                 )}
               </div>
             </div>

@@ -14,7 +14,7 @@ const F = 'var(--font-inter-tight), system-ui, sans-serif'
 const btn: React.CSSProperties = {
   fontFamily: F, fontSize: 11, fontWeight: 700,
   letterSpacing: '0.1em', textTransform: 'uppercase',
-  padding: '6px 14px', border: 'none', cursor: 'pointer',
+  padding: '6px 14px', border: 'none', borderRadius: 999, cursor: 'pointer',
 }
 
 function PubCard({ pub, onDone }: { pub: Pub; onDone: (id: string) => void }) {

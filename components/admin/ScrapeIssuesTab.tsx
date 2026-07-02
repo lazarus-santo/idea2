@@ -163,7 +163,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
                 style={{
                   fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
                   textTransform: 'uppercase', padding: '5px 12px',
-                  background: '#000', color: '#fff', border: 'none', cursor: 'pointer',
+                  background: '#000', color: '#fff', border: 'none', borderRadius: 999, cursor: 'pointer',
                 }}
               >
                 Retry Scrape
@@ -176,7 +176,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
                   fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
                   textTransform: 'uppercase', padding: '5px 12px',
                   background: 'transparent', color: '#b45309',
-                  border: '1px solid #b45309', cursor: 'pointer',
+                  border: '1px solid #b45309', borderRadius: 999, cursor: 'pointer',
                 }}
               >
                 Mark as Manual Entry
@@ -189,7 +189,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
                   fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
                   textTransform: 'uppercase', padding: '5px 12px',
                   background: 'transparent', color: 'rgba(0,0,0,0.4)',
-                  border: '1px solid rgba(0,0,0,0.2)', cursor: 'pointer',
+                  border: '1px solid rgba(0,0,0,0.2)', borderRadius: 999, cursor: 'pointer',
                 }}
               >
                 Clear Issue

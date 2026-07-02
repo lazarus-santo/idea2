@@ -64,7 +64,7 @@ function fieldInput(missing: boolean): React.CSSProperties {
 const btn: React.CSSProperties = {
   fontFamily: F, fontSize: 11, fontWeight: 700,
   letterSpacing: '0.1em', textTransform: 'uppercase',
-  padding: '6px 14px', border: 'none', cursor: 'pointer',
+  padding: '6px 14px', border: 'none', borderRadius: 999, cursor: 'pointer',
 }
 
 function PendingCard({
@@ -237,7 +237,7 @@ function PendingCard({
       <div style={{ marginBottom: 12 }}>
         <button
           onClick={() => setShowPR(v => !v)}
-          style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: missing.has('press_release') ? '#92400e' : 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
+          style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: missing.has('press_release') ? '#92400e' : 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
         >
           {showPR ? 'Hide' : prValue ? 'Edit' : 'Add'} {prLabel}
           {missing.has('press_release') && ' *'}

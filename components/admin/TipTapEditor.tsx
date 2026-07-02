@@ -59,7 +59,7 @@ const tbtnBase: React.CSSProperties = {
   fontFamily: F, fontSize: 12, fontWeight: 600,
   background: 'transparent', border: '1px solid transparent',
   padding: '3px 7px', cursor: 'pointer', lineHeight: 1.4,
-  color: 'rgba(0,0,0,0.65)', borderRadius: 2,
+  color: 'rgba(0,0,0,0.65)', borderRadius: 999,
   transition: 'background 100ms, color 100ms',
 }
 const tbtnActive: React.CSSProperties = {
@@ -302,7 +302,7 @@ export default function TipTapEditor({
               <button
                 type="button"
                 onClick={() => doSave(retryHtml.current)}
-                style={{ fontFamily: F, fontSize: 11, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: '#dc2626', textDecoration: 'underline' }}
+                style={{ fontFamily: F, fontSize: 11, background: 'transparent', border: 'none', borderRadius: 999, padding: 0, cursor: 'pointer', color: '#dc2626', textDecoration: 'underline' }}
               >
                 retry?
               </button>

@@ -38,7 +38,7 @@ const F = 'var(--font-inter-tight), system-ui, sans-serif'
 const btnBase: React.CSSProperties = {
   fontFamily: F, fontSize: 11, fontWeight: 700,
   letterSpacing: '0.1em', textTransform: 'uppercase',
-  padding: '5px 12px', border: 'none', cursor: 'pointer',
+  padding: '5px 12px', border: 'none', borderRadius: 999, cursor: 'pointer',
 }
 
 const inputS: React.CSSProperties = {

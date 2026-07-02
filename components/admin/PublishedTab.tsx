@@ -49,7 +49,7 @@ const inputS: React.CSSProperties = {
 const btnS: React.CSSProperties = {
   fontFamily: F, fontSize: 11, fontWeight: 700,
   letterSpacing: '0.1em', textTransform: 'uppercase',
-  padding: '6px 14px', border: 'none', cursor: 'pointer',
+  padding: '6px 14px', border: 'none', borderRadius: 999, cursor: 'pointer',
 }
 
 function fmtDate(d: string | null) {
@@ -254,7 +254,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
 
       {/* Press release / Exhibition description — rich text */}
       <div style={{ marginBottom: 12 }}>
-        <button onClick={() => setShowPR(v => !v)} style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
+        <button onClick={() => setShowPR(v => !v)} style={{ fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}>
           {showPR ? 'Hide' : prValue ? 'Edit' : 'Add'} {prLabel}
         </button>
         {showPR && (
@@ -322,7 +322,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
             </div>
             <button
               onClick={() => deletePreread(pr.id)}
-              style={{ fontFamily: F, fontSize: 11, background: 'transparent', border: 'none', cursor: 'pointer', color: '#dc2626', padding: '0 4px', flexShrink: 0 }}
+              style={{ fontFamily: F, fontSize: 11, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: '#dc2626', padding: '0 4px', flexShrink: 0 }}
             >
               Remove
             </button>
@@ -332,7 +332,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
         {!showAdd && (
           <button
             onClick={() => setShowAdd(true)}
-            style={{ marginTop: 10, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
+            style={{ marginTop: 10, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
           >
             + Add preread
           </button>
@@ -348,7 +348,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
             />
             <button
               onClick={() => setShowAdd(false)}
-              style={{ marginTop: 8, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.4)', padding: 0 }}
+              style={{ marginTop: 8, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.4)', padding: 0 }}
             >
               Cancel
             </button>

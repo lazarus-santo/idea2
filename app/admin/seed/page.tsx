@@ -41,6 +41,7 @@ export default async function SeedPage({ searchParams }: Props) {
             background: '#e2ce3a',
             color: '#000',
             border: 'none',
+            borderRadius: 999,
             padding: '8px 12px',
             fontSize: 12,
             fontWeight: 700,

@@ -124,7 +124,7 @@ const labelStyle: React.CSSProperties = {
 
 const btnSecondary: React.CSSProperties = {
   fontFamily: F, fontSize: 11, background: 'transparent',
-  border: '1px solid rgba(0,0,0,0.2)', padding: '4px 10px',
+  border: '1px solid rgba(0,0,0,0.2)', borderRadius: 999, padding: '4px 10px',
   cursor: 'pointer', color: 'rgba(0,0,0,0.6)',
 }
 
@@ -246,7 +246,7 @@ function VenueRow({
           </button>
         </td>
         <td style={cellStyle}>
-          <button onClick={onDelete} title="Remove" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
+          <button onClick={onDelete} title="Remove" style={{ background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
         </td>
       </tr>
       {venue._hoursOpen && (
@@ -355,7 +355,7 @@ function InstitutionGroup({
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const }}>
             <button
               onClick={() => onChange({ ...inst, venues: [...inst.venues, blankVenue()] })}
-              style={{ fontFamily: F, fontSize: 11, color: '#3432A8', background: 'transparent', border: '1px solid #3432A8', padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
+              style={{ fontFamily: F, fontSize: 11, color: '#3432A8', background: 'transparent', border: '1px solid #3432A8', borderRadius: 999, padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
             >
               + add venue
             </button>
@@ -368,7 +368,7 @@ function InstitutionGroup({
                   fontFamily: F, fontSize: 11, fontWeight: 700,
                   background: instInserting ? 'rgba(0,0,0,0.08)' : '#3432A8',
                   color: instInserting ? 'rgba(0,0,0,0.3)' : '#fff',
-                  border: 'none', padding: '3px 10px',
+                  border: 'none', borderRadius: 999, padding: '3px 10px',
                   cursor: instInserting ? 'wait' : 'pointer',
                   whiteSpace: 'nowrap' as const,
                 }}
@@ -384,7 +384,7 @@ function InstitutionGroup({
           </div>
         </td>
         <td style={cellStyle}>
-          <button onClick={onDelete} title="Remove institution" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
+          <button onClick={onDelete} title="Remove institution" style={{ background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
         </td>
       </tr>
       {inst.venues.map((v, i) => (
@@ -485,7 +485,7 @@ function ManualVenueForm({
       {canDelete && (
         <button
           onClick={onDelete}
-          style={{ position: 'absolute' as const, top: 10, right: 10, background: 'transparent', border: 'none', fontSize: 16, cursor: 'pointer', color: 'rgba(0,0,0,0.3)' }}
+          style={{ position: 'absolute' as const, top: 10, right: 10, background: 'transparent', border: 'none', borderRadius: 999, fontSize: 16, cursor: 'pointer', color: 'rgba(0,0,0,0.3)' }}
         >×</button>
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
@@ -629,7 +629,7 @@ function ManualEntryForm({ onInserted }: { onInserted: () => void }) {
           disabled={submitting}
           style={{
             fontFamily: F, fontSize: 12, fontWeight: 700, letterSpacing: '0.1em',
-            textTransform: 'uppercase' as const, padding: '10px 28px', border: 'none',
+            textTransform: 'uppercase' as const, padding: '10px 28px', border: 'none', borderRadius: 999,
             cursor: submitting ? 'wait' : 'pointer',
             background: submitting ? 'rgba(0,0,0,0.15)' : '#3432A8',
             color: submitting ? 'rgba(0,0,0,0.3)' : '#fff',
@@ -783,7 +783,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
           onClick={() => setMode(m)}
           style={{
             fontFamily: F, fontSize: 12, fontWeight: mode === m ? 700 : 400,
-            padding: '6px 18px', border: 'none', cursor: 'pointer',
+            padding: '6px 18px', border: 'none', borderRadius: 999, cursor: 'pointer',
             background: mode === m ? '#000' : 'transparent',
             color: mode === m ? '#fff' : 'rgba(0,0,0,0.5)',
             transition: 'all 150ms ease',
@@ -814,7 +814,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
             disabled={loading || !query.trim()}
             style={{
               fontFamily: F, fontSize: 12, fontWeight: 700, letterSpacing: '0.1em',
-              textTransform: 'uppercase' as const, padding: '10px 24px', border: 'none',
+              textTransform: 'uppercase' as const, padding: '10px 24px', border: 'none', borderRadius: 999,
               cursor: loading ? 'wait' : 'pointer', whiteSpace: 'nowrap' as const,
               background: loading || !query.trim() ? 'rgba(0,0,0,0.12)' : '#000',
               color: loading || !query.trim() ? 'rgba(0,0,0,0.3)' : '#fff',
@@ -828,7 +828,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
       {error && (
         <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', padding: '12px 16px', marginBottom: 20, fontFamily: F, fontSize: 13, color: '#dc2626' }}>
           {error}
-          <button onClick={handleSuggest} style={{ marginLeft: 12, fontFamily: F, fontSize: 12, fontWeight: 700, background: 'transparent', border: '1px solid #dc2626', color: '#dc2626', padding: '2px 10px', cursor: 'pointer' }}>Retry</button>
+          <button onClick={handleSuggest} style={{ marginLeft: 12, fontFamily: F, fontSize: 12, fontWeight: 700, background: 'transparent', border: '1px solid #dc2626', borderRadius: 999, color: '#dc2626', padding: '2px 10px', cursor: 'pointer' }}>Retry</button>
         </div>
       )}
 
@@ -885,7 +885,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
               disabled={inserting}
               style={{
                 fontFamily: F, fontSize: 12, fontWeight: 700, letterSpacing: '0.1em',
-                textTransform: 'uppercase' as const, padding: '10px 28px', border: 'none',
+                textTransform: 'uppercase' as const, padding: '10px 28px', border: 'none', borderRadius: 999,
                 cursor: inserting ? 'wait' : 'pointer',
                 background: inserting ? 'rgba(0,0,0,0.12)' : '#3432A8',
                 color: inserting ? 'rgba(0,0,0,0.3)' : '#fff',
