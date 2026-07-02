@@ -131,8 +131,8 @@ function StatCard({ label, count, tone }: { label: string; count: number; tone: 
 
   return (
     <div style={{
-      background: '#FFFCEC',
-      border: `1px solid ${tones.fg}55`,
+      background: tones.bg,
+      border: `1px solid ${tones.fg}22`,
       padding: '12px 16px',
       minWidth: 108,
       flex: '1 1 108px',
@@ -309,7 +309,7 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
 
           return (
             <div key={agent} style={{
-              background: '#fff',
+              background: '#FFFCEC',
               border: '1px solid rgba(0,0,0,0.12)',
               padding: '16px 18px',
               display: 'flex',
@@ -439,7 +439,7 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
         <p style={{ fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(0,0,0,0.5)', marginBottom: 8 }}>
           Exhibition Pipeline Flow
         </p>
-        <div style={{ border: '1px solid rgba(0,0,0,0.12)', background: '#fff' }}>
+        <div style={{ border: '1px solid rgba(0,0,0,0.12)', background: '#FFFCEC' }}>
           <PipelineFlowRow label="Scraped/Pending" count={exhibitions.pending} action="Go to Pending tab" onAction={() => onNavigate('pending')} first />
           <PipelineFlowRow label="Needs Preread" count={exhibitions.needs_preread} action="Run Agent 2 Now" onAction={() => runNow('agent2')} busy={triggering.has('agent2')} />
           <PipelineFlowRow label="Published" count={exhibitions.published} action="Go to Published tab" onAction={() => onNavigate('published')} />
