@@ -16,7 +16,7 @@ export default async function Admin({ searchParams }: Props) {
     return <LoginForm />
   }
 
-  return <AdminPage />
+  return <AdminPage adminPw={pw} />
 }
 
 function LoginForm({ error }: { error?: boolean }) {

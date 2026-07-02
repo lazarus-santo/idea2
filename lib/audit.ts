@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from './supabase'
 import { generatePrereads } from './claude'
+import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import type { ExhibitionRaw } from './types'
 
 function extractDomain(url: string | null): string | null {
@@ -21,9 +22,10 @@ export interface AuditReport {
 // Deletes gallery-domain prereads and regenerates for any gallery exhibition with < 2.
 // Scoped to published gallery exhibitions (preread_type = 'full') only.
 // Optionally scoped to specific exhibition IDs (e.g. those just scraped).
-export async function auditAndRepairPrereads(exhibitionIds?: string[]): Promise<{
+export async function auditAndRepairPrereads(exhibitionIds?: string[], errors: AgentRunError[] = []): Promise<{
   audited: number
   report: AuditReport[]
+  regenerationAttempts: number
 }> {
   const db = getSupabaseAdmin()
 
@@ -53,6 +55,7 @@ export async function auditAndRepairPrereads(exhibitionIds?: string[]): Promise<
   if (error) throw new Error(error.message)
 
   const report: AuditReport[] = []
+  let regenerationAttempts = 0
 
   for (const ex of exhibitions ?? []) {
     const raw = ex as typeof ex & {
@@ -78,25 +81,35 @@ export async function auditAndRepairPrereads(exhibitionIds?: string[]): Promise<
     let newCount = remaining
 
     if (remaining < 2) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const artists = (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[]
-
-      const { prereads: newPrereads } = await generatePrereads({
-        show_title: raw.show_title,
-        artists,
-        start_date: raw.start_date,
-        end_date: raw.end_date,
-        description: raw.description ?? null,
+      regenerationAttempts++
+      try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        press_release: (raw as any).press_release ?? null,
-        image_url: raw.image_url ?? null,
-        venue_name: raw.venues.name,
-      })
+        const artists = (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[]
 
-      if (newPrereads.length > 0) {
-        await db.from('prereads').insert(newPrereads.map((p) => ({ ...p, exhibition_id: raw.id })))
-        newCount = remaining + newPrereads.length
-        regenerated = true
+        const { prereads: newPrereads } = await generatePrereads({
+          show_title: raw.show_title,
+          artists,
+          start_date: raw.start_date,
+          end_date: raw.end_date,
+          description: raw.description ?? null,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          press_release: (raw as any).press_release ?? null,
+          image_url: raw.image_url ?? null,
+          venue_name: raw.venues.name,
+        })
+
+        if (newPrereads.length > 0) {
+          await db.from('prereads').insert(newPrereads.map((p) => ({ ...p, exhibition_id: raw.id })))
+          newCount = remaining + newPrereads.length
+          regenerated = true
+        }
+      } catch (err) {
+        console.error(`Preread regeneration failed for "${raw.show_title}":`, err)
+        errors.push({
+          item: raw.show_title,
+          step: 'preread',
+          message: err instanceof Error ? err.message : String(err),
+        })
       }
     }
 
@@ -110,12 +123,12 @@ export async function auditAndRepairPrereads(exhibitionIds?: string[]): Promise<
     }
   }
 
-  return { audited: exhibitions?.length ?? 0, report }
+  return { audited: exhibitions?.length ?? 0, report, regenerationAttempts }
 }
 
 // Finds all published gallery exhibitions with zero prereads and retries generation.
 // Called at the end of the daily cron to catch approve-time failures.
-export async function repairZeroPrereads(): Promise<{ attempted: number; report: AuditReport[] }> {
+export async function repairZeroPrereads(errors: AgentRunError[] = []): Promise<{ attempted: number; report: AuditReport[] }> {
   const db = getSupabaseAdmin()
 
   const [{ data: allExhibitions }, { data: withPrereads }] = await Promise.all([
@@ -161,13 +174,51 @@ export async function repairZeroPrereads(): Promise<{ attempted: number; report:
       venue_name: raw.venues.name,
     }
 
-    const { prereads } = await generatePrereads(exhibitionRaw)
+    try {
+      const { prereads } = await generatePrereads(exhibitionRaw)
 
-    if (prereads.length > 0) {
-      await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: raw.id })))
-      report.push({ exhibition: raw.show_title, deleted: [], regenerated: true, newCount: prereads.length })
+      if (prereads.length > 0) {
+        await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: raw.id })))
+        report.push({ exhibition: raw.show_title, deleted: [], regenerated: true, newCount: prereads.length })
+      }
+    } catch (err) {
+      console.error(`Zero-preread repair failed for "${raw.show_title}":`, err)
+      errors.push({
+        item: raw.show_title,
+        step: 'preread',
+        message: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
   return { attempted: zeroPreread.length, report }
+}
+
+// ─── Agent 2 run wrapper ────────────────────────────────────────────────────
+// "Items" here are gallery exhibitions where a regeneration attempt was made
+// (fewer than 2 non-venue-domain prereads remaining after cleanup). Exhibitions
+// that already had healthy prereads and needed no action are excluded from the
+// counts — they're audited but not "processed" in any meaningful sense.
+export async function runAgent2(): Promise<AgentRunResult> {
+  const runId = await startAgentRun('agent2')
+  const errors: AgentRunError[] = []
+
+  try {
+    const { audited, report, regenerationAttempts } = await auditAndRepairPrereads(undefined, errors)
+
+    const itemsFailed = errors.length
+    const itemsSucceeded = regenerationAttempts - itemsFailed
+    const result: AgentRunResult = {
+      itemsProcessed: regenerationAttempts,
+      itemsSucceeded,
+      itemsFailed,
+      errors,
+      summary: { audited, domain_cleanups: report.filter((r) => r.deleted.length > 0).length },
+    }
+    await finishAgentRun(runId, result)
+    return result
+  } catch (err) {
+    await failAgentRun(runId, err instanceof Error ? err.message : String(err))
+    throw err
+  }
 }

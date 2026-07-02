@@ -10,6 +10,8 @@ import {
   classifyExhibitionUrls,
 } from './claude'
 import { geocodeVenueIfNeeded } from './geocoding'
+import { auditAndRepairPrereads, repairZeroPrereads } from './audit'
+import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import type { VenueRecord, ExhibitionRaw } from './types'
 
 // Wix: strip /v1/fill/... transform suffix to get the master file.
@@ -453,7 +455,11 @@ async function upsertArtist(name: string): Promise<string | null> {
 
 const DETAIL_SESSION_CAP = 15
 
-export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false): Promise<number> {
+export async function scrapeInstitution(
+  venue: VenueRecord,
+  skipPrereads = false,
+  errors: AgentRunError[] = []
+): Promise<number> {
   const vn = venue.name
   console.log(`[${vn}] Starting scrape — ${venue.exhibitions_url}`)
   const db = getSupabaseAdmin()
@@ -506,6 +512,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
 
   if (!listingSuccess) {
     console.error(`[${vn}] Listing page fetch failed after retry — marking scrape_failed + manual_entry_required`)
+    errors.push({ item: vn, step: 'fetch', message: 'Listing page fetch failed after retry' })
     await db.from('venues').update({
       scrape_failed: true,
       manual_entry_required: true,
@@ -522,6 +529,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
       tag: 'AGENT1', venue: vn, event: 'BOT_WALL_DETECTED',
       html_size: listingHtml.length, signal: botWallSignal,
     }))
+    errors.push({ item: vn, step: 'fetch', message: `Bot wall detected (${botWallSignal})` })
     await db.from('venues').update({
       scrape_failed: true,
       manual_entry_required: true,
@@ -533,6 +541,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
   // Still too small after retry and no specific bot signal → flag anyway
   if (listingHtml.length < 10000) {
     console.warn(`[${vn}] Listing HTML too small after retry (${listingHtml.length}B) — likely bot protection`)
+    errors.push({ item: vn, step: 'fetch', message: `Listing HTML too small after retry (${listingHtml.length}B) — likely bot protection` })
     await db.from('venues').update({
       scrape_failed: true,
       manual_entry_required: true,
@@ -575,6 +584,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
   // After all attempts: if still 0 links, flag for manual entry
   if (allLinks.length === 0) {
     console.warn(`[${vn}] No links after href scan — flagging manual_entry_required`)
+    errors.push({ item: vn, step: 'fetch', message: 'No exhibition links found after href scan' })
     await db.from('venues').update({
       scrape_failed: true,
       manual_entry_required: true,
@@ -721,6 +731,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
 
     if (!detailSuccess) {
       console.error(`[${vn}] Detail fetch failed for "${link.title}"`)
+      errors.push({ item: link.title || link.url, step: 'fetch', message: 'Detail page fetch failed' })
       diag.discard_reasons.fetch_failed++
       continue
     }
@@ -752,6 +763,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
 
     if (!detail.title?.trim()) {
       console.warn(`[${vn}] No title extracted for "${link.title}" — skipping`)
+      errors.push({ item: link.title || link.url, step: 'extraction', message: 'No title extracted from detail page' })
       diag.discard_reasons.extraction_failed++
       try {
         appendFileSync('/tmp/scrape-diag.jsonl', JSON.stringify({
@@ -880,6 +892,7 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
           error_details: error?.details ?? null,
           title: cleanTitle,
         }))
+        errors.push({ item: cleanTitle, step: 'upsert', message: error?.message ?? 'Insert returned no data' })
         diag.discard_reasons.upsert_failed++
         continue
       }
@@ -922,18 +935,27 @@ export async function scrapeInstitution(venue: VenueRecord, skipPrereads = false
           .eq('exhibition_id', exhibitionId)
 
         if ((prereadCount ?? 0) === 0) {
-          const { prereads, hasShowCoverage } = await generatePrereads({
-            ...exhibitionRaw,
-            venue_name: venue.name,
-          })
-          if (prereads.length > 0) {
-            await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: exhibitionId })))
-          }
-          if (!hasShowCoverage && !missingFields.includes('show_coverage')) {
-            await db
-              .from('exhibitions')
-              .update({ missing_fields: [...missingFields, 'show_coverage'] })
-              .eq('id', exhibitionId)
+          try {
+            const { prereads, hasShowCoverage } = await generatePrereads({
+              ...exhibitionRaw,
+              venue_name: venue.name,
+            })
+            if (prereads.length > 0) {
+              await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: exhibitionId })))
+            }
+            if (!hasShowCoverage && !missingFields.includes('show_coverage')) {
+              await db
+                .from('exhibitions')
+                .update({ missing_fields: [...missingFields, 'show_coverage'] })
+                .eq('id', exhibitionId)
+            }
+          } catch (err) {
+            console.error(`[${vn}] Preread generation failed for "${cleanTitle}":`, err)
+            errors.push({
+              item: cleanTitle,
+              step: 'preread',
+              message: err instanceof Error ? err.message : String(err),
+            })
           }
         }
       }
@@ -1062,4 +1084,91 @@ export async function getScrapedFailedInstitutions(): Promise<VenueRecord[]> {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data ?? []).map((v: any) => normalizeVenueRow(v))
+}
+
+// ─── Agent 1 run wrapper ────────────────────────────────────────────────────
+// Records an agent_runs row for the whole scrape batch. "Items" here are
+// venues (one scrapeInstitution() call each) — per-exhibition detail lives
+// in the errors array and the summary block.
+export interface RunAgent1Options {
+  force?: boolean
+  skipPrereads?: boolean
+  venueFilter?: string[] | null
+}
+
+export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunResult> {
+  const runId = await startAgentRun('agent1')
+  const errors: AgentRunError[] = []
+  let itemsProcessed = 0
+  let itemsSucceeded = 0
+  let totalUpserted = 0
+
+  try {
+    let institutions = opts.force ? await getActiveInstitutions() : await getInstitutionsDueForRefresh()
+
+    if (opts.venueFilter) {
+      const filter = opts.venueFilter
+      institutions = institutions.filter((v) => filter.some((f) => v.name.toLowerCase().includes(f)))
+    }
+
+    const scrapedInstitutionIds: string[] = []
+
+    for (const institution of institutions) {
+      itemsProcessed++
+      try {
+        const count = await scrapeInstitution(institution, opts.skipPrereads, errors)
+        totalUpserted += count
+        itemsSucceeded++
+        scrapedInstitutionIds.push(institution.id)
+      } catch (err) {
+        console.error(`Error scraping ${institution.name}:`, err)
+        errors.push({
+          item: institution.name,
+          step: 'fetch',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    if (!opts.skipPrereads && scrapedInstitutionIds.length > 0) {
+      try {
+        const { data: freshExhibitions } = await getSupabaseAdmin()
+          .from('exhibitions')
+          .select('id')
+          .in('venue_id', scrapedInstitutionIds)
+          .eq('status', 'published')
+
+        const ids = (freshExhibitions ?? []).map((e) => e.id)
+        if (ids.length > 0) {
+          const { report } = await auditAndRepairPrereads(ids, errors)
+          if (report.length > 0) console.log('Post-scrape preread repair:', JSON.stringify(report))
+        }
+      } catch (err) {
+        console.error('Post-scrape audit failed:', err)
+        errors.push({ item: '(post-scrape audit)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
+      }
+
+      try {
+        const { attempted, report } = await repairZeroPrereads(errors)
+        if (attempted > 0) console.log(`Zero-preread retry: ${attempted} attempted, ${report.length} repaired`, JSON.stringify(report))
+      } catch (err) {
+        console.error('Zero-preread retry failed:', err)
+        errors.push({ item: '(zero-preread retry)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
+      }
+    }
+
+    const itemsFailed = itemsProcessed - itemsSucceeded
+    const result: AgentRunResult = {
+      itemsProcessed,
+      itemsSucceeded,
+      itemsFailed,
+      errors,
+      summary: { venues_scraped: itemsSucceeded, total_exhibitions_upserted: totalUpserted },
+    }
+    await finishAgentRun(runId, result)
+    return result
+  } catch (err) {
+    await failAgentRun(runId, err instanceof Error ? err.message : String(err))
+    throw err
+  }
 }

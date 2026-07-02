@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import he from 'he'
 import { getSupabaseAdmin } from './supabase'
+import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
@@ -208,7 +209,8 @@ export async function tagReading(
 // ─── Stage 2: Claude relevance batch check ────────────────────────────────────
 
 async function checkRelevance(
-  articles: Array<{ title: string; description: string | null }>
+  articles: Array<{ title: string; description: string | null }>,
+  errors: AgentRunError[] = []
 ): Promise<Set<number>> {
   if (articles.length === 0) return new Set()
 
@@ -216,28 +218,34 @@ async function checkRelevance(
     .map((a, i) => `[${i}] ${a.title}${a.description ? ` — ${stripHtml(a.description).slice(0, 200)}` : ''}`)
     .join('\n')
 
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 300,
-    messages: [
-      {
-        role: 'user',
-        content: `You are a curator for an NYC contemporary art discovery app. From the articles below, select the ones relevant to the NYC art world: gallery shows, museum programming, artist profiles, art criticism, art market news, or NYC exhibition reviews.
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      messages: [
+        {
+          role: 'user',
+          content: `You are a curator for an NYC contemporary art discovery app. From the articles below, select the ones relevant to the NYC art world: gallery shows, museum programming, artist profiles, art criticism, art market news, or NYC exhibition reviews.
 
 Return ONLY a JSON array of the relevant indices. Example: [0, 2, 5]. Return [] if none qualify.
 
 Articles:
 ${list}`,
-      },
-    ],
-  })
+        },
+      ],
+    })
 
-  try {
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = text.match(/\[[\d,\s]*\]/)
     if (!match) return new Set()
     return new Set(JSON.parse(match[0]) as number[])
-  } catch {
+  } catch (err) {
+    console.error('Relevance check failed:', err)
+    errors.push({
+      item: `(relevance batch of ${articles.length})`,
+      step: 'classification',
+      message: err instanceof Error ? err.message : String(err),
+    })
     return new Set()
   }
 }
@@ -252,7 +260,8 @@ interface ClassificationResult {
 }
 
 async function classifyArticles(
-  articles: Array<{ url: string; title: string; description: string | null }>
+  articles: Array<{ url: string; title: string; description: string | null }>,
+  errors: AgentRunError[] = []
 ): Promise<Map<string, ClassificationResult>> {
   const results = new Map<string, ClassificationResult>()
   if (articles.length === 0) return results
@@ -265,13 +274,14 @@ async function classifyArticles(
       )
       .join('\n')
 
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 800,
-      messages: [
-        {
-          role: 'user',
-          content: `Classify each article for an NYC contemporary art discovery app.
+    try {
+      const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 800,
+        messages: [
+          {
+            role: 'user',
+            content: `Classify each article for an NYC contemporary art discovery app.
 
 Categories:
 - "news": breaking events, obituaries, fair coverage, institutional announcements, market reports, reopenings
@@ -288,11 +298,10 @@ Return ONLY a JSON array, one object per article:
 
 Articles:
 ${list}`,
-        },
-      ],
-    })
+          },
+        ],
+      })
 
-    try {
       const text = response.content[0].type === 'text' ? response.content[0].text : ''
       const match = text.match(/\[\s*\{[\s\S]*\}\s*\]/)
       if (!match) continue
@@ -313,8 +322,14 @@ ${list}`,
           top_story_candidate: Boolean(item.top_story_candidate),
         })
       }
-    } catch {
+    } catch (err) {
       // classification failures are non-fatal; articles still get written without scores
+      console.error('Classification batch failed:', err)
+      errors.push({
+        item: `(classification batch of ${batch.length})`,
+        step: 'classification',
+        message: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -380,9 +395,14 @@ export interface CurationResult {
   classified: number
   pruned: number
   topStories: number
+  candidatesConsidered: number
+  errors: AgentRunError[]
 }
 
-export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Promise<CurationResult> {
+export async function curateReadings(
+  tierFilter: 't1' | 'non-t1' = 'non-t1',
+  errors: AgentRunError[] = []
+): Promise<CurationResult> {
   const db = getSupabaseAdmin()
 
   let query = db
@@ -402,7 +422,7 @@ export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Pr
 
   if (!publications || publications.length === 0) {
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
-    return { written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0 }
+    return { written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0, errors }
   }
 
   const { data: existingRows } = await db.from('readings').select('article_url')
@@ -418,6 +438,7 @@ export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Pr
       })
       if (!res.ok) {
         console.warn(`RSS fetch failed for ${pub.name}: HTTP ${res.status}`)
+        errors.push({ item: pub.name as string, step: 'fetch', message: `RSS fetch failed: HTTP ${res.status}` })
         continue
       }
       const xml = await res.text()
@@ -430,6 +451,11 @@ export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Pr
       }
     } catch (err) {
       console.error(`RSS error for ${pub.name}:`, err)
+      errors.push({
+        item: pub.name as string,
+        step: 'fetch',
+        message: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -438,19 +464,21 @@ export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Pr
   if (candidates.length === 0) {
     const pruned = await pruneOldReadings()
     const topStories = await detectTopStories()
-    return { written: 0, tagged: 0, classified: 0, pruned, topStories }
+    return { written: 0, tagged: 0, classified: 0, pruned, topStories, candidatesConsidered: 0, errors }
   }
 
   // Stage 2 — relevance check
   const relevantIndices = await checkRelevance(
-    candidates.map((c) => ({ title: c.item.title, description: c.item.description }))
+    candidates.map((c) => ({ title: c.item.title, description: c.item.description })),
+    errors
   )
   const approved = candidates.filter((_, i) => relevantIndices.has(i))
   console.log(`Agent 3 [${tierFilter}]: ${approved.length} article(s) passed relevance check`)
 
   // Stage 3 — classification
   const classifications = await classifyArticles(
-    approved.map((c) => ({ url: c.item.link, title: c.item.title, description: c.item.description }))
+    approved.map((c) => ({ url: c.item.link, title: c.item.title, description: c.item.description })),
+    errors
   )
   console.log(`Agent 3 [${tierFilter}]: ${classifications.size} article(s) classified`)
 
@@ -495,6 +523,7 @@ export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Pr
     if (error) {
       if (!error.message.includes('duplicate') && !error.message.includes('unique')) {
         console.error(`Failed to insert "${item.title}":`, error.message)
+        errors.push({ item: item.title, step: 'upsert', message: error.message })
       }
       continue
     }
@@ -514,7 +543,38 @@ export async function curateReadings(tierFilter: 't1' | 'non-t1' = 'non-t1'): Pr
   const pruned = await pruneOldReadings()
   const topStories = await detectTopStories()
   console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, tagged: ${tagged}, pruned: ${pruned}, topStories: ${topStories}`)
-  return { written, tagged, classified, pruned, topStories }
+  return { written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length, errors }
+}
+
+// ─── Agent 3 run wrapper ────────────────────────────────────────────────────
+// "Items" here are keyword-filtered RSS candidates considered this run.
+// itemsSucceeded is readings actually written; the gap between the two is
+// mostly articles the relevance check filtered out, not failures.
+export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunResult> {
+  const agent = tierFilter === 't1' ? 'agent3_hourly' : 'agent3_daily'
+  const runId = await startAgentRun(agent)
+  const errors: AgentRunError[] = []
+
+  try {
+    const curation = await curateReadings(tierFilter, errors)
+    const result: AgentRunResult = {
+      itemsProcessed: curation.candidatesConsidered,
+      itemsSucceeded: curation.written,
+      itemsFailed: curation.errors.length,
+      errors: curation.errors,
+      summary: {
+        tagged: curation.tagged,
+        classified: curation.classified,
+        pruned: curation.pruned,
+        topStories: curation.topStories,
+      },
+    }
+    await finishAgentRun(runId, result)
+    return result
+  } catch (err) {
+    await failAgentRun(runId, err instanceof Error ? err.message : String(err))
+    throw err
+  }
 }
 
 async function pruneOldReadings(): Promise<number> {

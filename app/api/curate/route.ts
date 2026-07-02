@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { curateReadings } from '@/lib/readings-curator'
+import { runAgent3 } from '@/lib/readings-curator'
 
 function isAuthorized(request: Request): boolean {
   // Vercel Cron: GET with Authorization: Bearer <CRON_SECRET>
@@ -17,7 +17,7 @@ function isAuthorized(request: Request): boolean {
 function runInBackground() {
   Promise.resolve().then(async () => {
     try {
-      const result = await curateReadings('non-t1')
+      const result = await runAgent3('non-t1')
       console.log('Daily curation complete:', result)
     } catch (err) {
       console.error('Daily curation error:', err)

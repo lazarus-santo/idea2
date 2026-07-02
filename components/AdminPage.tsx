@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import DashboardTab from '@/components/admin/DashboardTab'
 import PendingTab from '@/components/admin/PendingTab'
 import PublicationsTab from '@/components/admin/PublicationsTab'
 import EditorPicksTab from '@/components/admin/EditorPicksTab'
@@ -8,12 +9,12 @@ import PublishedTab from '@/components/admin/PublishedTab'
 import SeedTool from '@/components/admin/SeedTool'
 import ScrapeIssuesTab from '@/components/admin/ScrapeIssuesTab'
 
-type Tab = 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues'
+type Tab = 'dashboard' | 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues'
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
 
-export default function AdminPage() {
-  const [tab, setTab] = useState<Tab>('pending')
+export default function AdminPage({ adminPw }: { adminPw: string }) {
+  const [tab, setTab] = useState<Tab>('dashboard')
   const [pendingCount, setPendingCount] = useState(0)
   const [pubCount, setPubCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
@@ -35,6 +36,7 @@ export default function AdminPage() {
   }
 
   function label(t: Tab) {
+    if (t === 'dashboard') return 'Dashboard'
     if (t === 'pending') return `Pending${pendingCount > 0 ? ` (${pendingCount})` : ''}`
     if (t === 'publications') return `Publications${pubCount > 0 ? ` (${pubCount})` : ''}`
     if (t === 'picks') return `Editor's Picks`
@@ -65,13 +67,14 @@ export default function AdminPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 32, borderBottom: '1px solid rgba(0,0,0,0.12)', marginBottom: 36 }}>
-          {(['pending', 'publications', 'picks', 'published', 'issues', 'seed'] as Tab[]).map(t => (
+          {(['dashboard', 'pending', 'publications', 'picks', 'published', 'issues', 'seed'] as Tab[]).map(t => (
             <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
               {label(t)}
             </button>
           ))}
         </div>
 
+        {tab === 'dashboard' && <DashboardTab adminPw={adminPw} onNavigate={setTab} />}
         {tab === 'pending' && <PendingTab onCount={setPendingCount} />}
         {tab === 'publications' && <PublicationsTab onCount={setPubCount} />}
         {tab === 'picks' && <EditorPicksTab />}
