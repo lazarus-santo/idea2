@@ -24,14 +24,26 @@ function extractCdata(xml: string, tag: string): string | null {
   return (xml.match(cdataRe) ?? xml.match(plainRe))?.[1]?.trim() ?? null
 }
 
-function parseRssItems(xml: string): RssItem[] {
+// A few feeds (Mousse Magazine) publish relative <link> values instead of
+// absolute URLs — nonstandard but real. Resolve against the feed's own
+// domain so article_url never ends up pointing at whatever host renders it.
+function resolveUrl(url: string, baseUrl: string): string {
+  try {
+    return new URL(url, baseUrl).href
+  } catch {
+    return url
+  }
+}
+
+function parseRssItems(xml: string, baseUrl: string): RssItem[] {
   const items: RssItem[] = []
   for (const [, chunk] of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
     const title = extractCdata(chunk, 'title')
-    const link  =
+    const rawLink =
       extractCdata(chunk, 'link') ??
       chunk.match(/<guid[^>]*>(https?:\/\/[^<]+)<\/guid>/i)?.[1]?.trim() ??
       null
+    const link = rawLink ? resolveUrl(rawLink, baseUrl) : null
     if (!title || !link) continue
     // enclosure tag or media:content tag (e.g. Ocula)
     const enclosure =
@@ -54,14 +66,15 @@ function parseRssItems(xml: string): RssItem[] {
 
 // Atom feeds (<feed><entry>...) use different tag names than RSS 2.0
 // (<rss><channel><item>...) — Dazed's feed is Atom-only, no <item> at all.
-function parseAtomEntries(xml: string): RssItem[] {
+function parseAtomEntries(xml: string, baseUrl: string): RssItem[] {
   const items: RssItem[] = []
   for (const [, chunk] of xml.matchAll(/<entry[^>]*>([\s\S]*?)<\/entry>/g)) {
     const title = extractCdata(chunk, 'title')
-    const link =
+    const rawLink =
       chunk.match(/<link[^>]+rel=["']alternate["'][^>]+href=["']([^"']+)["']/i)?.[1] ??
       chunk.match(/<link[^>]+href=["']([^"']+)["']/i)?.[1] ??
       null
+    const link = rawLink ? resolveUrl(rawLink, baseUrl) : null
     if (!title || !link) continue
     const rawAuthor = extractCdata(chunk, 'name') // <author><name>...</name></author>
     const rawDesc = extractCdata(chunk, 'summary') ?? extractCdata(chunk, 'content')
@@ -77,9 +90,9 @@ function parseAtomEntries(xml: string): RssItem[] {
   return items
 }
 
-function parseRss(xml: string): RssItem[] {
-  const rssItems = parseRssItems(xml)
-  return rssItems.length > 0 ? rssItems : parseAtomEntries(xml)
+function parseRss(xml: string, baseUrl: string): RssItem[] {
+  const rssItems = parseRssItems(xml, baseUrl)
+  return rssItems.length > 0 ? rssItems : parseAtomEntries(xml, baseUrl)
 }
 
 // ─── Text utilities ───────────────────────────────────────────────────────────
@@ -606,7 +619,7 @@ export async function curateReadings(
         continue
       }
       const xml = await res.text()
-      const items = parseRss(xml)
+      const items = parseRss(xml, pub.rss_url as string)
 
       for (const item of items) {
         if (existingUrls.has(item.link)) continue
