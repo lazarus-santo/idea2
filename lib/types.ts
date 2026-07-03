@@ -212,8 +212,19 @@ export interface Reading {
   top_story_candidate: boolean
   published_at: string | null
   created_at: string
-  category: 'news' | 'opinion' | 'conversation' | null
+  category:
+    | 'breaking_news'
+    | 'institutional_news'
+    | 'art_market'
+    | 'interview'
+    | 'opinion'
+    | 'show_review'
+    | 'show_roundup'
+    | null
+  river_group: 'news' | 'art_market' | 'people' | 'opinion' | null
   art_relevance_score: number | null
   nyc_relevance_score: number | null
+  major_artist: boolean
+  significant_announcement: boolean
   tier: string | null
 }

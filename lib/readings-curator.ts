@@ -3,6 +3,7 @@ import Exa from 'exa-js'
 import he from 'he'
 import { getSupabaseAdmin } from './supabase'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
+import { mentionsMajorMuseum } from './agent3-constants'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
@@ -23,7 +24,7 @@ function extractCdata(xml: string, tag: string): string | null {
   return (xml.match(cdataRe) ?? xml.match(plainRe))?.[1]?.trim() ?? null
 }
 
-function parseRss(xml: string): RssItem[] {
+function parseRssItems(xml: string): RssItem[] {
   const items: RssItem[] = []
   for (const [, chunk] of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
     const title = extractCdata(chunk, 'title')
@@ -49,6 +50,36 @@ function parseRss(xml: string): RssItem[] {
     })
   }
   return items
+}
+
+// Atom feeds (<feed><entry>...) use different tag names than RSS 2.0
+// (<rss><channel><item>...) — Dazed's feed is Atom-only, no <item> at all.
+function parseAtomEntries(xml: string): RssItem[] {
+  const items: RssItem[] = []
+  for (const [, chunk] of xml.matchAll(/<entry[^>]*>([\s\S]*?)<\/entry>/g)) {
+    const title = extractCdata(chunk, 'title')
+    const link =
+      chunk.match(/<link[^>]+rel=["']alternate["'][^>]+href=["']([^"']+)["']/i)?.[1] ??
+      chunk.match(/<link[^>]+href=["']([^"']+)["']/i)?.[1] ??
+      null
+    if (!title || !link) continue
+    const rawAuthor = extractCdata(chunk, 'name') // <author><name>...</name></author>
+    const rawDesc = extractCdata(chunk, 'summary') ?? extractCdata(chunk, 'content')
+    items.push({
+      title:       he.decode(title),
+      link,
+      author:      rawAuthor ? he.decode(rawAuthor) : null,
+      pubDate:     extractCdata(chunk, 'published') ?? extractCdata(chunk, 'updated'),
+      description: rawDesc ? he.decode(rawDesc) : null,
+      enclosure:   null,
+    })
+  }
+  return items
+}
+
+function parseRss(xml: string): RssItem[] {
+  const rssItems = parseRssItems(xml)
+  return rssItems.length > 0 ? rssItems : parseAtomEntries(xml)
 }
 
 // ─── Text utilities ───────────────────────────────────────────────────────────
@@ -208,56 +239,154 @@ export async function tagReading(
 
 // ─── Stage 2: Claude relevance batch check ────────────────────────────────────
 
+// Batched like Stage 3 classification — a single call covering all candidates
+// silently lost articles on busy daily runs: capped at max_tokens:300, a
+// large candidate list produces an index array that gets cut off mid-array,
+// the closing-bracket regex then matches nothing, and the batch quietly
+// resolves to zero relevant articles with no error surfaced anywhere.
 async function checkRelevance(
   articles: Array<{ title: string; description: string | null }>,
   errors: AgentRunError[] = []
 ): Promise<Set<number>> {
-  if (articles.length === 0) return new Set()
+  const relevant = new Set<number>()
+  if (articles.length === 0) return relevant
 
-  const list = articles
-    .map((a, i) => `[${i}] ${a.title}${a.description ? ` — ${stripHtml(a.description).slice(0, 200)}` : ''}`)
-    .join('\n')
+  for (let i = 0; i < articles.length; i += 25) {
+    const batch = articles.slice(i, i + 25)
+    const list = batch
+      .map((a, j) => `[${j}] ${a.title}${a.description ? ` — ${stripHtml(a.description).slice(0, 200)}` : ''}`)
+      .join('\n')
 
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      messages: [
-        {
-          role: 'user',
-          content: `You are a curator for an NYC contemporary art discovery app. From the articles below, select the ones relevant to the NYC art world: gallery shows, museum programming, artist profiles, art criticism, art market news, or NYC exhibition reviews.
+    try {
+      const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 500,
+        messages: [
+          {
+            role: 'user',
+            content: `You are a curator for a contemporary art discovery app. From the articles below, select the ones relevant to the visual art world: gallery shows, museum programming, artist profiles or interviews, art criticism, art market news, art fairs, or exhibition reviews — anywhere, not just NYC. Art relevance is the only bar; do not exclude an article for lacking an NYC angle.
 
 Return ONLY a JSON array of the relevant indices. Example: [0, 2, 5]. Return [] if none qualify.
 
 Articles:
 ${list}`,
-        },
-      ],
-    })
+          },
+        ],
+      })
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : ''
-    const match = text.match(/\[[\d,\s]*\]/)
-    if (!match) return new Set()
-    return new Set(JSON.parse(match[0]) as number[])
-  } catch (err) {
-    console.error('Relevance check failed:', err)
-    errors.push({
-      item: `(relevance batch of ${articles.length})`,
-      step: 'classification',
-      message: err instanceof Error ? err.message : String(err),
-    })
-    return new Set()
+      const text = response.content[0].type === 'text' ? response.content[0].text : ''
+      const match = text.match(/\[[\d,\s]*\]/)
+      if (!match) {
+        console.error(`Relevance batch ${i}-${i + batch.length} returned unparseable/truncated response (stop_reason: ${response.stop_reason})`)
+        errors.push({
+          item: `(relevance batch of ${batch.length}, offset ${i})`,
+          step: 'classification',
+          message: `Response unparseable — stop_reason: ${response.stop_reason}`,
+        })
+        continue
+      }
+      for (const idx of JSON.parse(match[0]) as number[]) relevant.add(i + idx)
+    } catch (err) {
+      console.error('Relevance check failed:', err)
+      errors.push({
+        item: `(relevance batch of ${batch.length}, offset ${i})`,
+        step: 'classification',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
+
+  return relevant
 }
 
 // ─── Stage 3: per-article classification ─────────────────────────────────────
 
+export type ReadingCategory =
+  | 'breaking_news'
+  | 'institutional_news'
+  | 'art_market'
+  | 'interview'
+  | 'opinion'
+  | 'show_review'
+  | 'show_roundup'
+
+export type RiverGroup = 'news' | 'art_market' | 'people' | 'opinion'
+
+const CATEGORY_TO_RIVER_GROUP: Record<ReadingCategory, RiverGroup> = {
+  breaking_news: 'news',
+  institutional_news: 'news',
+  art_market: 'art_market',
+  interview: 'people',
+  opinion: 'opinion',
+  show_review: 'opinion',
+  show_roundup: 'opinion',
+}
+
+const VALID_CATEGORIES = new Set<ReadingCategory>([
+  'breaking_news', 'institutional_news', 'art_market', 'interview', 'opinion', 'show_review', 'show_roundup',
+])
+
 interface ClassificationResult {
-  category: 'news' | 'opinion' | 'conversation'
+  category: ReadingCategory
+  river_group: RiverGroup
   art_relevance_score: number
   nyc_relevance_score: number
+  major_artist: boolean
+  significant_announcement: boolean
   top_story_candidate: boolean
 }
+
+// Top Stories candidacy is derived deterministically from category +
+// major_artist + significant_announcement rather than trusted from the
+// model's own top_story_candidate output — the rules are mechanical enough
+// (Part 3 of the Agent 3 spec) that re-deriving them in code is more
+// reliable than hoping the model applies all seven consistently.
+function deriveTopStoryCandidate(
+  category: ReadingCategory,
+  majorArtist: boolean,
+  significantAnnouncement: boolean,
+  articleText: string
+): boolean {
+  switch (category) {
+    case 'breaking_news': return true
+    case 'art_market': return true
+    case 'institutional_news': return significantAnnouncement
+    case 'interview': return majorArtist
+    case 'show_review': return majorArtist || mentionsMajorMuseum(articleText)
+    case 'opinion': return false // Exa cross-source corroboration handles opinion, not this call
+    case 'show_roundup': return false
+  }
+}
+
+const CLASSIFICATION_SYSTEM_PROMPT = `You are classifying art world articles for an NYC-focused contemporary art platform. Classify each article and return ONLY a JSON array, no commentary.
+
+CATEGORY DEFINITIONS:
+- breaking_news: deaths of artists or art world figures, major fair openings/closings (Art Basel, Frieze, Venice Biennale etc.), auction records, geopolitical events directly impacting the art world, urgent industry-wide announcements
+- institutional_news: museum/gallery staff appointments or departures, solo exhibition announcements at named institutions, building openings/closings, funding announcements, institutional partnerships
+- art_market: auction results and previews, market analysis, collecting trends, price records, geopolitical impact on art market, gallery representation changes
+- interview: artist interviews, studio visits, profiles, conversations with artists or curators, Q&As
+- opinion: criticism, essays, commentary, op-eds, cultural analysis that argues a position
+- show_review: review of a specific single exhibition, in-depth critical assessment of one show
+- show_roundup: listicles, seasonal guides, 'X shows to see' articles, fair previews listing multiple shows
+
+MAJOR ARTIST DEFINITION:
+An artist is considered 'major' if they have had or currently have a solo exhibition at any of these institutions: MoMA, Whitney, Guggenheim, Met, Tate Modern, Tate Britain, Centre Pompidou, Stedelijk, Kunsthaus Zürich, Hamburger Bahnhof, Fondazione Prada, Palazzo Grassi, Serpentine, Whitechapel, Hayward Gallery, LACMA, SFMOMA, Art Institute of Chicago, Walker Art Center, ICA Boston, National Gallery of Australia, Mori Art Museum, Museum of Contemporary Art Tokyo, Fondación Jumex.
+
+SIGNIFICANT INSTITUTIONAL ANNOUNCEMENT:
+An institutional_news article is 'significant' if it covers: a staff appointment or departure (director, chief curator, curator), OR a solo exhibition or retrospective announcement at a named institution.
+
+For each article return:
+{
+  "index": number,
+  "category": <one of the 7 categories above>,
+  "art_relevance_score": 0.0-1.0,
+  "nyc_relevance_score": 0.0-1.0,
+  "major_artist": true | false,
+  "significant_announcement": true | false
+}
+
+major_artist is true only if the article's primary subject artist meets the major artist definition above. false for group shows, institutional pieces, market pieces.
+significant_announcement is true only for institutional_news that meets the significant announcement definition above.`
 
 async function classifyArticles(
   articles: Array<{ url: string; title: string; description: string | null }>,
@@ -277,27 +406,12 @@ async function classifyArticles(
     try {
       const response = await anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 800,
+        max_tokens: 1200,
+        system: CLASSIFICATION_SYSTEM_PROMPT,
         messages: [
           {
             role: 'user',
-            content: `Classify each article for an NYC contemporary art discovery app.
-
-Categories:
-- "news": breaking events, obituaries, fair coverage, institutional announcements, market reports, reopenings
-- "opinion": criticism, essays, reviews, commentary, op-eds
-- "conversation": interviews, profiles, studio visits, artist statements, dialogues
-
-Scores (0.0–1.0):
-- art_relevance_score: how directly this concerns visual art (1.0 = entirely about visual art, 0.5 = tangential)
-- nyc_relevance_score: how relevant to the NYC art scene (1.0 = NYC-specific, 0.5 = covers artist/institution with NYC presence, 0.0 = no NYC connection)
-- top_story_candidate: true only for significant breaking news, major institutional announcements, fair openings/closings, notable obituaries, or stories likely covered by multiple outlets
-
-Return ONLY a JSON array, one object per article:
-[{"index":0,"category":"news","art_relevance_score":0.9,"nyc_relevance_score":0.7,"top_story_candidate":false},...]
-
-Articles:
-${list}`,
+            content: `Articles:\n${list}`,
           },
         ],
       })
@@ -307,19 +421,29 @@ ${list}`,
       if (!match) continue
       const parsed = JSON.parse(match[0]) as Array<{
         index: number
-        category: 'news' | 'opinion' | 'conversation'
+        category: string
         art_relevance_score: number
         nyc_relevance_score: number
-        top_story_candidate: boolean
+        major_artist: boolean
+        significant_announcement: boolean
       }>
       for (const item of parsed) {
         const article = batch[item.index]
         if (!article) continue
+        const category = VALID_CATEGORIES.has(item.category as ReadingCategory)
+          ? (item.category as ReadingCategory)
+          : 'opinion'
+        const majorArtist = Boolean(item.major_artist)
+        const significantAnnouncement = Boolean(item.significant_announcement)
+        const articleText = `${article.title} ${article.description ?? ''}`
         results.set(article.url, {
-          category: item.category ?? 'news',
+          category,
+          river_group: CATEGORY_TO_RIVER_GROUP[category],
           art_relevance_score: Math.min(1, Math.max(0, item.art_relevance_score ?? 0.5)),
           nyc_relevance_score: Math.min(1, Math.max(0, item.nyc_relevance_score ?? 0.5)),
-          top_story_candidate: Boolean(item.top_story_candidate),
+          major_artist: majorArtist,
+          significant_announcement: significantAnnouncement,
+          top_story_candidate: deriveTopStoryCandidate(category, majorArtist, significantAnnouncement, articleText),
         })
       }
     } catch (err) {
@@ -396,7 +520,42 @@ export interface CurationResult {
   pruned: number
   topStories: number
   candidatesConsidered: number
+  byCategory: Record<ReadingCategory, number>
+  byRiverGroup: Record<RiverGroup, number>
+  topStoryCandidates: number
+  majorArtistArticles: number
+  significantAnnouncements: number
+  nycRoundupsExcluded: number
   errors: AgentRunError[]
+}
+
+function emptyCategoryBreakdown(): Record<ReadingCategory, number> {
+  return {
+    breaking_news: 0, institutional_news: 0, art_market: 0,
+    interview: 0, opinion: 0, show_review: 0, show_roundup: 0,
+  }
+}
+
+function emptyRiverGroupBreakdown(): Record<RiverGroup, number> {
+  return { news: 0, art_market: 0, people: 0, opinion: 0 }
+}
+
+const NYC_KEYWORDS = ['new york', 'nyc', 'manhattan', 'brooklyn']
+
+// The only hard geographic filter in the pipeline (Part 6): a show_roundup
+// with no NYC angle at all ("10 shows to see in London") has zero value for
+// this audience. Every other category is admitted purely on art relevance.
+function isNycIrrelevantRoundup(
+  category: ReadingCategory,
+  nycRelevanceScore: number,
+  articleText: string,
+  institutionNames: string[]
+): boolean {
+  if (category !== 'show_roundup' || nycRelevanceScore >= 0.3) return false
+  const lower = articleText.toLowerCase()
+  if (NYC_KEYWORDS.some((k) => lower.includes(k))) return false
+  if (institutionNames.some((n) => n.length >= 4 && lower.includes(n.toLowerCase()))) return false
+  return true
 }
 
 export async function curateReadings(
@@ -422,7 +581,12 @@ export async function curateReadings(
 
   if (!publications || publications.length === 0) {
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
-    return { written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0, errors }
+    return {
+      written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0,
+      byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
+      topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
+      errors,
+    }
   }
 
   const { data: existingRows } = await db.from('readings').select('article_url')
@@ -464,7 +628,12 @@ export async function curateReadings(
   if (candidates.length === 0) {
     const pruned = await pruneOldReadings()
     const topStories = await detectTopStories()
-    return { written: 0, tagged: 0, classified: 0, pruned, topStories, candidatesConsidered: 0, errors }
+    return {
+      written: 0, tagged: 0, classified: 0, pruned, topStories, candidatesConsidered: 0,
+      byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
+      topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
+      errors,
+    }
   }
 
   // Stage 2 — relevance check
@@ -482,40 +651,60 @@ export async function curateReadings(
   )
   console.log(`Agent 3 [${tierFilter}]: ${classifications.size} article(s) classified`)
 
+  const { data: institutionRows } = await db.from('institutions').select('name')
+  const institutionNames = (institutionRows ?? []).map((r) => r.name as string)
+
   let written = 0
   let tagged = 0
   let classified = 0
+  const byCategory = emptyCategoryBreakdown()
+  const byRiverGroup = emptyRiverGroupBreakdown()
+  let topStoryCandidates = 0
+  let majorArtistArticles = 0
+  let significantAnnouncements = 0
+  let nycRoundupsExcluded = 0
 
   for (const { pubId, pubTier, item } of approved) {
-    const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : null
+    const cls = classifications.get(item.link)
     const plainSummary = item.description ? stripHtml(item.description).slice(0, 500) : null
+    const articleText = `${item.title} ${plainSummary ?? ''}`
+
+    // Part 6: the one hard geographic filter in the system — a show_roundup
+    // with zero NYC angle never touches the readings table.
+    if (cls && isNycIrrelevantRoundup(cls.category, cls.nyc_relevance_score, articleText, institutionNames)) {
+      nycRoundupsExcluded++
+      continue
+    }
+
+    const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : null
     const ogImage = await fetchOgImage(item.link)
     const rawEnclosure = item.enclosure ? item.enclosure.replace(/[?&]w=\d+/, '') : null
     const thumbnailUrl = ogImage ?? rawEnclosure
 
-    const cls = classifications.get(item.link)
-    const isT1BreakingNews =
-      pubTier === 't1' &&
-      cls?.top_story_candidate === true &&
-      (cls.art_relevance_score ?? 0) >= 0.8
+    // Fast-path: any candidate meeting the deterministic Top Stories rules
+    // goes live immediately, without waiting on Exa cross-source corroboration.
+    const isTopStoryFastPath = cls?.top_story_candidate === true
 
     const { data: inserted, error } = await db
       .from('readings')
       .insert({
-        publication_id:      pubId,
-        author:              item.author,
-        headline:            item.title,
-        article_url:         item.link,
-        rss_summary:         plainSummary,
-        thumbnail_url:       thumbnailUrl,
-        published_at:        publishedAt,
-        category:            cls?.category ?? null,
-        art_relevance_score: cls?.art_relevance_score ?? null,
-        nyc_relevance_score: cls?.nyc_relevance_score ?? null,
-        top_story_candidate: cls?.top_story_candidate ?? false,
-        tier:                pubTier,
-        // T1 breaking news gets fast-pathed into top_story without waiting for Exa
-        ...(isT1BreakingNews ? { top_story: true } : {}),
+        publication_id:            pubId,
+        author:                    item.author,
+        headline:                  item.title,
+        article_url:               item.link,
+        rss_summary:               plainSummary,
+        thumbnail_url:             thumbnailUrl,
+        published_at:              publishedAt,
+        category:                  cls?.category ?? null,
+        river_group:               cls?.river_group ?? null,
+        art_relevance_score:       cls?.art_relevance_score ?? null,
+        nyc_relevance_score:       cls?.nyc_relevance_score ?? null,
+        major_artist:              cls?.major_artist ?? false,
+        significant_announcement:  cls?.significant_announcement ?? false,
+        top_story_candidate:       cls?.top_story_candidate ?? false,
+        tier:                      pubTier,
+        // Fast-pathed top stories skip the Exa corroboration wait entirely
+        ...(isTopStoryFastPath ? { top_story: true } : {}),
       })
       .select('id')
       .single()
@@ -529,11 +718,18 @@ export async function curateReadings(
     }
 
     written++
-    if (cls) classified++
+    if (cls) {
+      classified++
+      byCategory[cls.category]++
+      byRiverGroup[cls.river_group]++
+      if (cls.top_story_candidate) topStoryCandidates++
+      if (cls.major_artist) majorArtistArticles++
+      if (cls.significant_announcement) significantAnnouncements++
+    }
     existingUrls.add(item.link)
 
-    if (isT1BreakingNews) {
-      console.log(`Top Story (T1 fast-path): ${item.title}`)
+    if (isTopStoryFastPath) {
+      console.log(`Top Story (candidate fast-path): ${item.title}`)
     }
 
     const tagCount = await tagReading(inserted.id, item.title, plainSummary, item.link)
@@ -542,8 +738,12 @@ export async function curateReadings(
 
   const pruned = await pruneOldReadings()
   const topStories = await detectTopStories()
-  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, tagged: ${tagged}, pruned: ${pruned}, topStories: ${topStories}`)
-  return { written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length, errors }
+  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, tagged: ${tagged}, pruned: ${pruned}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
+  return {
+    written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length,
+    byCategory, byRiverGroup, topStoryCandidates, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
+    errors,
+  }
 }
 
 // ─── Agent 3 run wrapper ────────────────────────────────────────────────────
@@ -567,6 +767,12 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
         classified: curation.classified,
         pruned: curation.pruned,
         topStories: curation.topStories,
+        by_category: curation.byCategory,
+        by_river_group: curation.byRiverGroup,
+        top_story_candidates: curation.topStoryCandidates,
+        major_artist_articles: curation.majorArtistArticles,
+        significant_announcements: curation.significantAnnouncements,
+        nyc_roundups_excluded: curation.nycRoundupsExcluded,
       },
     }
     await finishAgentRun(runId, result)

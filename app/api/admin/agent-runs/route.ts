@@ -13,7 +13,7 @@ export async function GET() {
     AGENTS.map((agent) =>
       db
         .from('agent_runs')
-        .select('id, started_at, completed_at, status, items_processed, items_succeeded, items_failed, errors, duration_ms')
+        .select('id, started_at, completed_at, status, items_processed, items_succeeded, items_failed, errors, duration_ms, summary')
         .eq('agent', agent)
         .order('started_at', { ascending: false })
         .limit(5)

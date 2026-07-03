@@ -1661,13 +1661,27 @@ a:hover { opacity: 0.75; }
 
 .rd-card-headline:hover { opacity: 0.55; }
 
+/* Paper layouts (A/B/C) give the headline a fixed-height box — clamp to 2
+   lines with an ellipsis so a long real headline truncates cleanly instead
+   of overflowing past the box and getting clipped mid-glyph. */
+.rd-card-headline--clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .rd-card-source {
+  display: block;
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 13px;
   font-weight: 400;
   line-height: 17px;
   color: #000;
   margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Top Stories: section spacing ─────────────────────────── */

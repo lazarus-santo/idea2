@@ -2,8 +2,14 @@ import { NextResponse } from 'next/server'
 import he from 'he'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
+const RIVER_GROUPS = ['news', 'art_market', 'people', 'opinion']
+const CATEGORIES = [
+  'breaking_news', 'institutional_news', 'art_market', 'interview', 'opinion', 'show_review', 'show_roundup',
+]
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
+  const group = searchParams.get('group')
   const category = searchParams.get('category')
 
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
@@ -15,7 +21,10 @@ export async function GET(request: Request) {
     .order('published_at', { ascending: false })
     .limit(200)
 
-  if (category && ['news', 'opinion', 'conversation'].includes(category)) {
+  if (group && RIVER_GROUPS.includes(group)) {
+    query = query.eq('river_group', group)
+  } else if (category && CATEGORIES.includes(category)) {
+    // Backward-compatible: filters by category directly rather than river_group.
     query = query.eq('category', category)
   }
 

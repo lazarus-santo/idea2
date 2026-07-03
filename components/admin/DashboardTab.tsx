@@ -35,6 +35,14 @@ interface RunError {
   message: string
 }
 
+interface Agent3Summary {
+  by_category?: Record<string, number>
+  top_story_candidates?: number
+  major_artist_articles?: number
+  significant_announcements?: number
+  nyc_roundups_excluded?: number
+}
+
 interface RunRow {
   id: string
   started_at: string
@@ -45,6 +53,51 @@ interface RunRow {
   items_failed: number
   errors: RunError[]
   duration_ms: number | null
+  summary?: Agent3Summary | null
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  breaking_news: 'Breaking',
+  institutional_news: 'Institutional',
+  art_market: 'Market',
+  interview: 'Interview',
+  opinion: 'Opinion',
+  show_review: 'Review',
+  show_roundup: 'Roundup',
+}
+
+function Agent3Breakdown({ summary }: { summary: Agent3Summary }) {
+  const byCategory = Object.entries(summary.by_category ?? {}).filter(([, n]) => n > 0)
+  const hasBreakdown = byCategory.length > 0
+  const hasFlags =
+    (summary.top_story_candidates ?? 0) > 0 ||
+    (summary.major_artist_articles ?? 0) > 0 ||
+    (summary.significant_announcements ?? 0) > 0 ||
+    (summary.nyc_roundups_excluded ?? 0) > 0
+
+  if (!hasBreakdown && !hasFlags) return null
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {hasBreakdown && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {byCategory.map(([cat, n]) => (
+            <span key={cat} style={{
+              fontFamily: F, fontSize: 10, fontWeight: 600, color: 'rgba(0,0,0,0.55)',
+              background: 'rgba(0,0,0,0.06)', borderRadius: 999, padding: '2px 8px',
+            }}>
+              {CATEGORY_LABELS[cat] ?? cat} {n}
+            </span>
+          ))}
+        </div>
+      )}
+      {hasFlags && (
+        <p style={{ fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.45)', margin: 0 }}>
+          {summary.top_story_candidates ?? 0} candidates · {summary.major_artist_articles ?? 0} major artist · {summary.significant_announcements ?? 0} significant · {summary.nyc_roundups_excluded ?? 0} roundups excluded
+        </p>
+      )}
+    </div>
+  )
 }
 
 type AgentRunsMap = Record<AgentName, RunRow[]>
@@ -81,8 +134,8 @@ const AGENT_ORDER: AgentName[] = ['agent1', 'agent2', 'agent3_daily', 'agent3_ho
 const AGENT_LOGIC: Record<AgentName, string> = {
   agent1: `Once a day, checks which venues are due for a refresh (based on each venue's own check-back schedule) and re-scrapes their exhibition listing pages. It renders each page, pulls out show titles, dates, artists, and images using Claude, then verifies the extracted details actually appear on the page so hallucinated results get thrown out. Shows outside NYC, already closed, or belonging to the venue's own site (not the listing) are filtered out before anything is saved. New gallery shows automatically get 2+ editorial article prereads generated in the same pass; museum shows are skipped for automatic prereads. Venues that repeatedly fail to scrape — bot-blocked, broken pages, or zero exhibitions found after retrying — get flagged for manual entry instead of continuing to retry automatically.`,
   agent2: `Looks at every published gallery exhibition (museums are not covered by this agent). For each one, it checks the exhibition's editorial prereads: if an article is hosted on the gallery's own website rather than independent press, it's removed, since that doesn't count as real editorial coverage. If fewer than 2 independent articles remain after that cleanup, it asks Claude to search for and generate fresh prereads to fill the gap.`,
-  agent3_daily: `Once a day, pulls the RSS feeds for all approved, non-hourly art publications, filters out anything that doesn't mention art/gallery/museum keywords, then asks Claude to judge which remaining articles are genuinely relevant to the NYC art world. Relevant articles get classified as news, opinion, or conversation, scored for art and NYC relevance, and saved to the Readings feed — duplicates are skipped automatically. Articles are also scanned for mentions of known artists or venues so they can be cross-linked to related exhibition pages. Readings older than 7 days are pruned unless they've been marked a Top Story.`,
-  agent3_hourly: `Runs the same pipeline as Agent 3 Daily, but every hour and scoped only to Tier 1 publications — the highest-priority art outlets. Breaking news from these publications that Claude flags as a strong top-story candidate is marked as a Top Story immediately, without waiting for the separate cross-source verification step that other articles go through.`,
+  agent3_daily: `Once a day, pulls the RSS feeds for all approved, non-hourly art publications, filters out anything that doesn't mention art/gallery/museum keywords, then asks Claude to judge which remaining articles are genuinely relevant to the NYC art world. Relevant articles get classified into one of seven categories (breaking news, institutional news, art market, interview, opinion, show review, or show roundup), scored for art and NYC relevance, flagged for major-artist/significant-announcement status, and saved to the Readings feed — duplicates are skipped automatically. Show roundups with no NYC angle at all are excluded outright. Articles are also scanned for mentions of known artists or venues so they can be cross-linked to related exhibition pages. Readings older than 7 days are pruned unless they've been marked a Top Story.`,
+  agent3_hourly: `Runs the same pipeline as Agent 3 Daily, but every hour and scoped only to Tier 1 publications — the highest-priority art outlets. Any article that meets the Top Stories eligibility rules for its category (e.g. breaking news, a significant institutional announcement, a major-artist interview) is marked as a Top Story immediately, without waiting for the separate cross-source verification step that other articles go through.`,
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -348,6 +401,10 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
                 <span>Succeeded: {a.items_succeeded}</span>
                 <span>Failed: {a.items_failed}</span>
               </div>
+
+              {(agent === 'agent3_daily' || agent === 'agent3_hourly') && history[0]?.summary && (
+                <Agent3Breakdown summary={history[0].summary} />
+              )}
 
               <button
                 onClick={() => runNow(agent)}
