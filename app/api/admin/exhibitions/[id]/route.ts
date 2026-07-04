@@ -4,6 +4,7 @@ import { geocodeAddress } from '@/lib/geocode'
 
 const PATCHABLE = [
   'status',
+  'show_title',
   'image_url',
   'start_date',
   'end_date',
