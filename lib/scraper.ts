@@ -455,6 +455,39 @@ async function upsertArtist(name: string): Promise<string | null> {
 
 const DETAIL_SESSION_CAP = 15
 
+// Persists what console logs previously lost on serverless exit: which method
+// (http/browserbase) fetched a given detail page, its html_length, and how far
+// it got through the pipeline. Lets admin trace a pending exhibition's missing
+// fields back to how it was scraped, not just that it's missing.
+async function logDetailFetch(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  entry: {
+    venueId: string
+    institutionId?: string
+    url: string
+    title?: string | null
+    method: string
+    htmlLength: number
+    outcome: string
+    exhibitionId?: string
+  }
+): Promise<void> {
+  try {
+    await db.from('agent1_fetch_logs').insert({
+      venue_id: entry.venueId,
+      institution_id: entry.institutionId ?? null,
+      exhibition_id: entry.exhibitionId ?? null,
+      url: entry.url,
+      title: entry.title ?? null,
+      method: entry.method,
+      html_length: entry.htmlLength,
+      outcome: entry.outcome,
+    })
+  } catch (err) {
+    console.error('Failed to write agent1_fetch_logs row:', err)
+  }
+}
+
 export async function scrapeInstitution(
   venue: VenueRecord,
   skipPrereads = false,
@@ -733,6 +766,10 @@ export async function scrapeInstitution(
       console.error(`[${vn}] Detail fetch failed for "${link.title}"`)
       errors.push({ item: link.title || link.url, step: 'fetch', message: 'Detail page fetch failed' })
       diag.discard_reasons.fetch_failed++
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: link.title,
+        method: detailMethod, htmlLength: detailHtml.length, outcome: 'fetch_failed',
+      })
       continue
     }
 
@@ -747,6 +784,10 @@ export async function scrapeInstitution(
         reason: 'HTML-level section page detected',
       }))
       diag.discard_reasons.guard_failed++
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: link.title,
+        method: detailMethod, htmlLength: detailHtml.length, outcome: 'section_page_html',
+      })
       continue
     }
 
@@ -773,6 +814,10 @@ export async function scrapeInstitution(
           detail_snippet: detailHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300),
         }) + '\n')
       } catch {}
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: link.title,
+        method: detailMethod, htmlLength: detailHtml.length, outcome: 'extraction_failed',
+      })
       continue
     }
 
@@ -796,6 +841,10 @@ export async function scrapeInstitution(
     if (!titleConfirmed) {
       console.warn(`[${vn}] hallucination_detected: "${cleanTitle}" — discarding`)
       diag.discard_reasons.hallucination_rejected++
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
+        method: detailMethod, htmlLength: detailHtml.length, outcome: 'hallucination_rejected',
+      })
       continue
     }
 
@@ -823,6 +872,10 @@ export async function scrapeInstitution(
     if (dateClass === 'past') {
       console.log(`[${vn}] Skipping past show: "${cleanTitle}" (end: ${detail.end_date})`)
       diag.discard_reasons.temporal_discarded++
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
+        method: detailMethod, htmlLength: detailHtml.length, outcome: 'temporal_discarded_past',
+      })
       continue
     }
 
@@ -894,6 +947,10 @@ export async function scrapeInstitution(
         }))
         errors.push({ item: cleanTitle, step: 'upsert', message: error?.message ?? 'Insert returned no data' })
         diag.discard_reasons.upsert_failed++
+        await logDetailFetch(db, {
+          venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
+          method: detailMethod, htmlLength: detailHtml.length, outcome: 'upsert_failed',
+        })
         continue
       }
       exhibitionId = inserted.id
@@ -972,6 +1029,13 @@ export async function scrapeInstitution(
       status,
       missing_fields: missingFields,
     }))
+
+    await logDetailFetch(db, {
+      venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
+      method: detailMethod, htmlLength: detailHtml.length,
+      outcome: `${upsertResult}:${status}${missingFields.length ? `:missing[${missingFields.join(',')}]` : ''}`,
+      exhibitionId,
+    })
 
     upsertedCount++
   }
