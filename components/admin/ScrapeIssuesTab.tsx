@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type CSSProperties } from 'react'
 
 type IssueVenue = {
   id: string
@@ -10,6 +10,8 @@ type IssueVenue = {
   manual_entry_required: boolean
   scrape_failure_reason: string | null
 }
+
+type Institution = { id: string; name: string }
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
 
@@ -33,6 +35,12 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
   const [loading, setLoading] = useState(true)
   const [messages, setMessages] = useState<Record<string, string>>({})
 
+  const [institutions, setInstitutions] = useState<Institution[]>([])
+  const [reportInstitutionId, setReportInstitutionId] = useState('')
+  const [reportShowName, setReportShowName] = useState('')
+  const [reportNotes, setReportNotes] = useState('')
+  const [reportStatus, setReportStatus] = useState<string | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     const res = await fetch('/api/admin/venues/issues')
@@ -44,6 +52,37 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
   }, [onCount])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    fetch('/api/admin/institutions')
+      .then((res) => res.json())
+      .then((data) => setInstitutions(Array.isArray(data) ? data : []))
+  }, [])
+
+  async function submitMissingShowReport() {
+    if (!reportInstitutionId || !reportShowName.trim()) {
+      setReportStatus('Institution and exhibition name are required')
+      return
+    }
+    setReportStatus('Saving...')
+    const res = await fetch('/api/admin/missing-show-reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        institution_id: reportInstitutionId,
+        exhibition_name: reportShowName,
+        notes: reportNotes,
+      }),
+    })
+    if (res.ok) {
+      setReportStatus('Report saved')
+      setReportInstitutionId('')
+      setReportShowName('')
+      setReportNotes('')
+    } else {
+      setReportStatus('Failed to save report')
+    }
+  }
 
   function setMsg(id: string, msg: string) {
     setMessages((prev) => ({ ...prev, [id]: msg }))
@@ -87,20 +126,93 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
     }
   }
 
+  const inputStyle: CSSProperties = {
+    fontFamily: F, fontSize: 13, padding: '8px 10px',
+    border: '1px solid rgba(0,0,0,0.2)', borderRadius: 4, background: '#fff',
+  }
+
+  const reportForm = (
+    <div style={{
+      background: '#fff',
+      border: '1px solid rgba(0,0,0,0.12)',
+      padding: '14px 18px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 10,
+    }}>
+      <span style={{ fontFamily: F, fontSize: 14, fontWeight: 700, color: '#000' }}>
+        Report Missing Show
+      </span>
+      <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.5)', margin: 0 }}>
+        Saw a show on an institution&apos;s site or Instagram that never showed up in a scrape? Log it here.
+      </p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <select
+          value={reportInstitutionId}
+          onChange={(e) => setReportInstitutionId(e.target.value)}
+          style={{ ...inputStyle, minWidth: 220 }}
+        >
+          <option value="">Select institution...</option>
+          {institutions.map((inst) => (
+            <option key={inst.id} value={inst.id}>{inst.name}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          placeholder="Exhibition name"
+          value={reportShowName}
+          onChange={(e) => setReportShowName(e.target.value)}
+          style={{ ...inputStyle, flex: 1, minWidth: 200 }}
+        />
+      </div>
+      <textarea
+        placeholder='Notes (e.g. "Saw this on their Instagram, not showing up in scrape")'
+        value={reportNotes}
+        onChange={(e) => setReportNotes(e.target.value)}
+        rows={2}
+        style={{ ...inputStyle, resize: 'vertical' }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button
+          onClick={submitMissingShowReport}
+          style={{
+            fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
+            textTransform: 'uppercase', padding: '5px 12px',
+            background: '#000', color: '#fff', border: 'none', borderRadius: 999, cursor: 'pointer',
+          }}
+        >
+          Submit Report
+        </button>
+        {reportStatus && (
+          <span style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.5)' }}>{reportStatus}</span>
+        )}
+      </div>
+    </div>
+  )
+
   if (loading) {
-    return <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>Loading...</p>
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {reportForm}
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>Loading...</p>
+      </div>
+    )
   }
 
   if (venues.length === 0) {
     return (
-      <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>
-        No scrape issues — all venues are running cleanly.
-      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {reportForm}
+        <p style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)' }}>
+          No scrape issues — all venues are running cleanly.
+        </p>
+      </div>
     )
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {reportForm}
       <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.5)', margin: 0 }}>
         {venues.length} venue{venues.length !== 1 ? 's' : ''} with scrape issues
       </p>

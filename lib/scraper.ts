@@ -97,19 +97,41 @@ function isSectionPageHtml(html: string, venueName?: string): boolean {
 }
 
 // Req #1: Fast string check for title presence — avoids Claude call when possible.
-function titleAppearsInHtml(title: string, html: string): boolean {
-  const decoded = html
+// Claude is inconsistent about preserving typographic punctuation verbatim —
+// sometimes it keeps a source's curly quotes/em-dashes exactly as they appear,
+// sometimes it normalizes them to plain ASCII on its own initiative (and vice
+// versa — a page can use a plain hyphen where Claude's output uses an en-dash).
+// Canonicalizing both the page text and the extracted sample to the same
+// plain-ASCII form before comparing means punctuation style never causes a
+// false mismatch — we only care whether the real words came from the page, not
+// typographic fidelity.
+function canonicalizeForMatch(s: string): string {
+  return s
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
-    .replace(/&ndash;/g, '–').replace(/&mdash;/g, '—')
-    .replace(/&rsquo;/g, '’').replace(/&lsquo;/g, '‘')
-    .replace(/&rdquo;/g, '”').replace(/&ldquo;/g, '“')
-    .replace(/&hellip;/g, '…')
+    .replace(/&quot;|&rdquo;|&ldquo;/g, '"').replace(/&#39;|&apos;|&rsquo;|&lsquo;/g, "'")
+    .replace(/&ndash;|&mdash;/g, '-')
+    .replace(/&hellip;/g, '...')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+}
+
+// Tag-stripping can insert whitespace at inline-element boundaries that the
+// source didn't visually have — e.g. a date range split across <span> tags
+// ("<span>2021</span>–<span>2025</span>") becomes "2021– 2025" once tags are
+// replaced with spaces, while Claude reads it visually as "2021–2025" with no
+// space. Stripping whitespace entirely (not just collapsing runs of it) avoids
+// false negatives from this — we only care whether the real words came from the
+// page, not exact spacing fidelity.
+function titleAppearsInHtml(title: string, html: string): boolean {
+  const decoded = canonicalizeForMatch(html)
     .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/\s+/g, '')
     .toLowerCase()
 
-  const norm = title.toLowerCase().replace(/\s+/g, ' ').trim()
+  const norm = canonicalizeForMatch(title).replace(/\s+/g, '').toLowerCase()
   if (decoded.includes(norm)) return true
   // Partial match for long titles
   if (norm.length > 25 && decoded.includes(norm.slice(0, 25))) return true
@@ -118,8 +140,11 @@ function titleAppearsInHtml(title: string, html: string): boolean {
 
 // Req #1: Fast string check for description presence.
 function descriptionAppearsInHtml(description: string, html: string): boolean {
-  const decoded = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').toLowerCase()
-  const sample = description.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80)
+  const decoded = canonicalizeForMatch(html)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+  const sample = canonicalizeForMatch(description).replace(/\s+/g, '').toLowerCase().slice(0, 80)
   return sample.length > 0 && decoded.includes(sample)
 }
 
@@ -383,48 +408,144 @@ async function fetchDetailPage(url: string): Promise<{ html: string; success: bo
     console.warn(`Plain HTTP failed for ${url}:`, (err as Error).message)
   }
 
-  // Fallback: Browserbase (JS-rendered sites)
+  // Fallback: Browserbase (JS-rendered sites). Some sites redirect our session
+  // away from the requested page after a few seconds (e.g. Cloudflare diverting
+  // flagged automated traffic to an unrelated "safe" page) — a fresh session gets
+  // an independent chance each time, so retry a couple times before giving up.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const result = await attemptBrowserbaseDetailFetch(url)
+    if (result.success) return result
+    if (attempt < 3) console.warn(`Browserbase detail fetch attempt ${attempt} failed for ${url} — retrying`)
+  }
+  return { html: '', success: false, method: 'none' }
+}
+
+// Threshold well above any observed Cloudflare interstitial (seen up to ~6.7KB)
+// and well below any real detail page (seen 100KB+ across every venue this
+// session) — used both for the network-capture rescue and for deciding whether
+// page.content() has actually settled on real content yet.
+const MIN_REAL_DETAIL_HTML_LENGTH = 50000
+
+async function attemptBrowserbaseDetailFetch(url: string): Promise<{ html: string; success: boolean; method: 'http' | 'browserbase_fallback' | 'none' }> {
   let browser: Awaited<ReturnType<typeof createBrowserSession>>['browser'] | null = null
   try {
     const session = await createBrowserSession()
     browser = session.browser
     const page = session.page
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-
-    // Wait for network to go idle (no requests for 500ms) OR 8s max.
-    // Gives React/Next.js/Wix sites time to populate the DOM after initial load.
+    // Some sites (bot-protected or otherwise) redirect away from the requested
+    // page after a few seconds of dwell time — e.g. an idle/inactivity redirect
+    // that our headless browser triggers just by sitting on the page while it
+    // waits for network idle. page.content() reflects wherever the DOM ends up,
+    // so it can get silently swapped out from under us. The raw network response
+    // for our own request doesn't have that problem — it's the real bytes the
+    // server sent for the URL we asked for, independent of what the DOM does
+    // afterward. Keep the latest one seen (a Cloudflare-style challenge can
+    // serve an interstitial first, then a real response for the same URL once
+    // it clears) as a rescue source for when the DOM has moved on.
+    const requestedPath = new URL(url).pathname.replace(/\/$/, '')
+    let networkCapturedHtml: string | null = null
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (page as any).waitForNetworkIdle({ idleTime: 500, timeout: 8000 }).catch(() => {})
-
-    // Expand hidden content panels (press releases, descriptions, etc.)
-    await page.evaluate(() => {
-      const re = /read more|full description|press release|view more|show more|expand/i
-      document.querySelectorAll('button, a, [role="button"], details summary').forEach((el) => {
-        if (re.test(el.textContent?.trim() ?? '')) (el as HTMLElement).click()
-      })
+    ;(page as any).on('response', (response: any) => {
+      void (async () => {
+        try {
+          const req = response.request()
+          const respPath = new URL(response.url()).pathname.replace(/\/$/, '')
+          if (req.resourceType() !== 'document' || respPath !== requestedPath) return
+          const body = await response.text()
+          // Threshold well above any observed Cloudflare interstitial (seen up to
+          // ~6.7KB) and well below any real detail page (seen 100KB+ across every
+          // venue this session) — a low threshold risks capturing a bigger decoy/
+          // interim challenge page as if it were real content.
+          if (body.length > MIN_REAL_DETAIL_HTML_LENGTH) networkCapturedHtml = body
+        } catch {
+          // redirect/preflight responses have no readable body — nothing to capture
+        }
+      })()
     })
 
-    let html = await page.content()
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
 
-    // Sparsity check: measure visible text AFTER stripping scripts/styles so that
-    // JS-bundle content doesn't mask an empty DOM (Next.js SSR pattern where
-    // content lives in <script> until React hydrates into actual DOM elements).
-    const strippedForCheck = html
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-    const visibleTextLen = strippedForCheck.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().length
-    if (visibleTextLen < 500) {
-      console.log(JSON.stringify({
-        tag: 'AGENT1', url, event: 'SPARSE_CONTENT',
-        html_length: html.length,
-        visible_text_after_strip: visibleTextLen,
-      }))
-      // React hydration is CPU-bound — wait for h1 to appear (up to 8s), then re-capture.
+    const samePage = () => {
+      try { return new URL(page.url()).pathname.replace(/\/$/, '') === requestedPath } catch { return false }
+    }
+
+    let html = await page.content().catch(() => '')
+    const readyOnPage = () => samePage() && html.length > MIN_REAL_DETAIL_HTML_LENGTH
+
+    // page.goto() only waits for domcontentloaded, which can fire on an interim
+    // challenge page — and a Cloudflare-style challenge can revisit the correct
+    // URL path multiple times (interstitial, then redirect, then real content)
+    // before finally settling. Matching the path alone isn't enough: the DOM can
+    // briefly be "on the right page" while still showing a small interim state.
+    // Keep re-checking actual content size, not just the URL, before deciding
+    // we're done — and give the network listener real time to receive the
+    // genuine response as a fallback source.
+    if (!readyOnPage()) {
+      const deadline = Date.now() + 10000
+      while (Date.now() < deadline && !networkCapturedHtml && !readyOnPage()) {
+        await new Promise((r) => setTimeout(r, 500))
+        if (samePage()) html = await page.content().catch(() => html)
+      }
+    }
+
+    if (!readyOnPage()) {
+      if (networkCapturedHtml) {
+        console.warn(`Detail page redirected away from ${url} to ${page.url()} — using network-captured response instead`)
+        return { html: networkCapturedHtml, success: true, method: 'browserbase_fallback' }
+      }
+      console.warn(`Detail page redirected away from ${url} to ${page.url()} — discarding`)
+      return { html: '', success: false, method: 'none' }
+    }
+
+    // Best-effort enrichment: wait for network idle and click any expand/read-more
+    // buttons, then re-capture — but only trust the re-capture if we're still on
+    // the page we asked for. If the site has redirected us elsewhere by now, keep
+    // the earlier capture rather than silently ingesting the wrong page's content.
+    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (page as any).waitForSelector('h1, [class*="title"], [class*="heading"]', { timeout: 8000 }).catch(() => {})
-      await new Promise((r) => setTimeout(r, 500))
-      html = await page.content()
+      await (page as any).waitForNetworkIdle({ idleTime: 500, timeout: 8000 }).catch(() => {})
+
+      if (samePage()) {
+        await page.evaluate(() => {
+          const re = /read more|full description|press release|view more|show more|expand/i
+          document.querySelectorAll('button, a, [role="button"], details summary').forEach((el) => {
+            if (re.test(el.textContent?.trim() ?? '')) (el as HTMLElement).click()
+          })
+        })
+      }
+
+      if (samePage()) {
+        const enriched = await page.content()
+
+        // Sparsity check: measure visible text AFTER stripping scripts/styles so that
+        // JS-bundle content doesn't mask an empty DOM (Next.js SSR pattern where
+        // content lives in <script> until React hydrates into actual DOM elements).
+        const strippedForCheck = enriched
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+        const visibleTextLen = strippedForCheck.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().length
+        if (visibleTextLen < 500) {
+          console.log(JSON.stringify({
+            tag: 'AGENT1', url, event: 'SPARSE_CONTENT',
+            html_length: enriched.length,
+            visible_text_after_strip: visibleTextLen,
+          }))
+          // React hydration is CPU-bound — wait for h1 to appear (up to 8s), then re-capture.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (page as any).waitForSelector('h1, [class*="title"], [class*="heading"]', { timeout: 8000 }).catch(() => {})
+          await new Promise((r) => setTimeout(r, 500))
+          if (samePage()) html = await page.content()
+        } else {
+          html = enriched
+        }
+      }
+    } catch (err) {
+      console.warn(`Detail page enrichment skipped for ${url} (non-fatal):`, (err as Error).message)
+    }
+
+    if (!samePage()) {
+      console.warn(`Detail page redirected away from ${url} to ${page.url()} — discarding enrichment, keeping initial capture`)
     }
 
     return { html, success: true, method: 'browserbase_fallback' }
@@ -660,12 +781,45 @@ export async function scrapeInstitution(
     return 0
   }
 
+  // Content-type filter: only exhibitions of physical artwork proceed to Step 2.
+  // 'event' and 'online_only' links never become pending exhibition records —
+  // they're logged to agent1_discarded_items for visibility only. 'unclear'
+  // links get the benefit of the doubt and proceed like normal exhibitions.
+  const exhibitionLinks = currentLinks.filter(
+    (l) => l.content_type === 'exhibition' || l.content_type === 'unclear'
+  )
+  const discardedByContentType = currentLinks.filter(
+    (l) => l.content_type === 'event' || l.content_type === 'online_only'
+  )
+
+  if (discardedByContentType.length > 0) {
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, event: 'CONTENT_TYPE_DISCARDED',
+      count: discardedByContentType.length,
+      items: discardedByContentType.map((l) => ({ title: l.title, url: l.url, content_type: l.content_type })),
+    }))
+    await db.from('agent1_discarded_items').insert(
+      discardedByContentType.map((l) => ({
+        institution_id: venue.institution_id ?? null,
+        title: l.title,
+        url: l.url,
+        content_type: l.content_type,
+      }))
+    )
+  }
+
+  if (exhibitionLinks.length === 0) {
+    console.log(`[${vn}] All current/upcoming links were events or online-only — updating check_back_date`)
+    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false }).eq('id', venue.id)
+    return 0
+  }
+
   // Req #2: Location filter — remove shows at fairs, partner venues, other cities
-  const nycLinks = await filterLinksByLocation(currentLinks, vn)
-  console.log(`[${vn}] After location filter: ${nycLinks.length}/${currentLinks.length} links`)
+  const nycLinks = await filterLinksByLocation(exhibitionLinks, vn)
+  console.log(`[${vn}] After location filter: ${nycLinks.length}/${exhibitionLinks.length} links`)
 
   // Log each link dropped by the location filter
-  for (const link of currentLinks) {
+  for (const link of exhibitionLinks) {
     if (!nycLinks.some((n) => n.url === link.url)) {
       console.log(JSON.stringify({
         tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
@@ -849,6 +1003,22 @@ export async function scrapeInstitution(
     }
 
     diag.shows_passed_hallucination++
+
+    // Content-type was 'unclear' at Step 1 (benefit of the doubt) — if Step 2 also
+    // finds no artist names and no dates, this reads like a generic event page
+    // rather than an exhibition. Flag it instead of silently creating a pending
+    // exhibition record with essentially no real content.
+    if (link.content_type === 'unclear' && detail.artists.length === 0 && !detail.start_date && !detail.end_date) {
+      console.warn(`[${vn}] Unclear link "${cleanTitle}" has no artists or dates — flagging instead of creating pending record`)
+      await db.from('agent1_discarded_items').insert({
+        institution_id: venue.institution_id ?? null,
+        title: cleanTitle,
+        url: link.url,
+        content_type: 'unclear_no_signal',
+      })
+      diag.discard_reasons.guard_failed++
+      continue
+    }
 
     // Req #1: Description must appear in page HTML; null it out if it doesn't
     let verifiedDescription = detail.description

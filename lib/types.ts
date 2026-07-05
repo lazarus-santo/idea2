@@ -147,6 +147,7 @@ export interface ExhibitionLink {
   url: string
   classification: 'current' | 'past' | 'permanent' | 'upcoming'
   classification_reason: string
+  content_type: 'exhibition' | 'event' | 'online_only' | 'unclear'
 }
 
 export interface ExhibitionDetailExtracted {

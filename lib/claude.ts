@@ -9,6 +9,56 @@ const anthropic = new Anthropic({
 
 const BETA_HEADERS = { 'anthropic-beta': 'prompt-caching-2024-07-31' }
 
+// ─── Robust JSON extraction ────────────────────────────────────────────────────
+// Claude occasionally second-guesses itself mid-response (e.g. "Wait, that's
+// wrong — here's the corrected version") and includes more than one JSON blob
+// in one answer. A naive first-bracket-to-last-bracket regex stitches both
+// attempts into one invalid blob and silently returns nothing. This scans for
+// every top-level bracket-balanced candidate (respecting string literals so
+// brackets inside quoted text don't confuse the depth count) and keeps the
+// last one that parses on its own — the corrected, final answer wins.
+function scanBalancedJson<T>(text: string, open: string, close: string): T | null {
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escapeNext = false
+  let lastValid: T | null = null
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escapeNext) escapeNext = false
+      else if (ch === '\\') escapeNext = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') { inString = true; continue }
+    if (ch === open) {
+      if (depth === 0) start = i
+      depth++
+    } else if (ch === close) {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0 && start !== -1) {
+        try {
+          lastValid = JSON.parse(text.slice(start, i + 1)) as T
+        } catch {
+          // not valid JSON on its own — keep scanning for a later candidate
+        }
+        start = -1
+      }
+    }
+  }
+  return lastValid
+}
+
+function extractJsonArray<T = unknown>(text: string): T[] | null {
+  return scanBalancedJson<T[]>(text, '[', ']')
+}
+
+function extractJsonObject<T = unknown>(text: string): T | null {
+  return scanBalancedJson<T>(text, '{', '}')
+}
+
 // ─── Exa tier routing ─────────────────────────────────────────────────────────
 
 const TIER_1_DOMAINS = [
@@ -135,7 +185,8 @@ CRITICAL RULES:
 
 Always return a JSON array. Return [] if nothing is currently on view.
 Dates in YYYY-MM-DD format or null.
-Artists as an array of strings.`,
+Artists as an array of strings.
+The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied verbatim) must be escaped as \\" so it does not terminate the JSON string early.`,
   cache_control: { type: 'ephemeral' },
 }
 
@@ -201,14 +252,12 @@ ${html
   const lastText = textBlocks[textBlocks.length - 1]
   if (!lastText || lastText.type !== 'text') return []
 
-  try {
-    const jsonMatch = lastText.text.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return []
-    return JSON.parse(jsonMatch[0]) as ExhibitionRaw[]
-  } catch {
+  const parsed = extractJsonArray<ExhibitionRaw>(lastText.text)
+  if (!parsed) {
     console.error(`Failed to parse exhibitions JSON for ${venueName}:`, lastText.text.slice(0, 200))
     return []
   }
+  return parsed
 }
 
 type PrereadRow = Omit<Preread, 'id' | 'exhibition_id' | 'created_at'>
@@ -451,12 +500,11 @@ ${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title })))}`,
 
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   try {
-    const match = text.match(/\[[\s\S]*\]/)
-    if (!match) return links
-
-    const classified = JSON.parse(match[0]) as Array<{
+    const classified = extractJsonArray<{
       url: string; location: string; location_note?: string
-    }>
+    }>(text)
+    if (!classified) return links
+
     const byUrl = new Map(classified.map((c) => [c.url, c]))
 
     return links.filter((link) => {
@@ -511,6 +559,11 @@ function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
+    // <meta name="description">/og:description are frequently pre-truncated by the
+    // site itself (e.g. ending in "…") for social-sharing snippets — leaving them
+    // in tempts extraction into grabbing the short truncated version instead of
+    // the full text that's actually in the page body.
+    .replace(/<meta\b[^>]*>/gi, '')
 }
 
 // Extracts Next.js __NEXT_DATA__ from raw HTML and returns a CLEAN summary of key fields.
@@ -560,6 +613,11 @@ function deepStripHtml(html: string): string {
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    // <meta name="description">/og:description are frequently pre-truncated by the
+    // site itself (e.g. ending in "…") for social-sharing snippets — leaving them
+    // in tempts extraction into grabbing the short truncated version instead of
+    // the full text that's actually in the page body.
+    .replace(/<meta\b[^>]*>/gi, '')
 }
 
 // For detail page retry: focus on semantic content containers
@@ -617,8 +675,9 @@ Today: ${today}
 For each exhibition link found, return:
 - title: the exhibition or show title
 - url: full absolute URL to the exhibition detail page (resolve relative URLs against base ${venueUrl})
-- classification: exactly one of 'current' | 'past' | 'permanent' | 'upcoming'
-- classification_reason: brief note (e.g. "labeled On View", "end date passed", "section heading: Past")
+- classification_reason: work through the evidence first (section heading, labels, explicit dates compared to today) — brief note (e.g. "labeled On View", "end date passed", "section heading: Past")
+- classification: exactly one of 'current' | 'past' | 'permanent' | 'upcoming', consistent with the reasoning above
+- content_type: exactly one of 'exhibition' | 'event' | 'online_only' | 'unclear'
 
 Classification rules:
 - "On View", "Current", "Now On View" → 'current'
@@ -630,8 +689,16 @@ Classification rules:
 - URL patterns: /current/ or /on-view/ → 'current'; /past/ or /archive/ → 'past'
 - When ambiguous: default to 'current'
 
+Content type rules:
+- 'exhibition': a physical exhibition of artwork on view at the institution's OWN physical gallery/museum space
+- 'event': artist talks, panel discussions, members' events, tours, workshops, screenings, performances, off-site public art commissions, community initiatives, or anything the site itself labels as a "Project", "Program", "Initiative", or similar (as opposed to "Exhibition") — even if it has a real artist name, real dates, and a real image. Institutions often list these alongside real exhibitions under section headings like "Beyond Our Walls", "Museum Projects", "Public Programs", or "Community" — these are NOT exhibitions regardless of how exhibition-like their listing card looks.
+- 'online_only': viewing rooms, digital exhibitions, or online-only content with no physical component
+- 'unclear': cannot determine content type from the listing page alone
+- When ambiguous between 'exhibition' and something else: use 'unclear', not 'exhibition'
+- Trust the site's own labeling/section headings over the presence of exhibition-like details (artist name, dates, image) — a card labeled "Project" with a real artist and real dates is still not an exhibition
+
 Return ONLY a JSON array (no markdown, no commentary):
-[{"title":"...","url":"https://...","classification":"current","classification_reason":"..."}]
+[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition"}]
 
 Return [] if no exhibition links are found.
 
@@ -643,12 +710,12 @@ ${stripped}`,
 
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   try {
-    const match = text.match(/\[[\s\S]*\]/)
-    if (!match) return []
-    const raw = JSON.parse(match[0]) as Array<{
+    const raw = extractJsonArray<{
       title?: string; url?: string
       classification?: string; classification_reason?: string
-    }>
+      content_type?: string
+    }>(text)
+    if (!raw) return []
     return raw
       .filter((item) => item.title && item.url)
       .map((item) => ({
@@ -658,6 +725,9 @@ ${stripped}`,
           ? item.classification
           : 'current') as ExhibitionLink['classification'],
         classification_reason: item.classification_reason ?? '',
+        content_type: (['exhibition','event','online_only','unclear'].includes(item.content_type ?? '')
+          ? item.content_type
+          : 'unclear') as ExhibitionLink['content_type'],
       }))
   } catch {
     console.error(`Failed to parse exhibition links JSON for ${venueName}:`, text.slice(0, 200))
@@ -690,7 +760,7 @@ Infer from URL path and slug only (no page content available).
 Default to "current" when uncertain — downstream temporal validation will discard past shows.
 
 Return ONLY a JSON array:
-[{"url":"https://...","title":"human-readable name from URL slug","classification":"current"|"upcoming"|"past"|"permanent","classification_reason":"..."}]
+[{"url":"https://...","title":"human-readable name from URL slug","classification_reason":"...","classification":"current"|"upcoming"|"past"|"permanent"}]
 
 URLs:
 ${urls.join('\n')}`,
@@ -699,11 +769,10 @@ ${urls.join('\n')}`,
 
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   try {
-    const match = text.match(/\[[\s\S]*\]/)
-    if (!match) return []
-    const raw = JSON.parse(match[0]) as Array<{
+    const raw = extractJsonArray<{
       url?: string; title?: string; classification?: string; classification_reason?: string
-    }>
+    }>(text)
+    if (!raw) return []
     return raw
       .filter((item) => item.url && item.title)
       .map((item) => ({
@@ -713,6 +782,9 @@ ${urls.join('\n')}`,
           ? item.classification
           : 'current') as ExhibitionLink['classification'],
         classification_reason: item.classification_reason ?? 'href scan fallback',
+        // No page content available in this URL-only fallback — can't judge content type, so
+        // give benefit of the doubt rather than risk silently discarding a real exhibition.
+        content_type: 'unclear' as ExhibitionLink['content_type'],
       }))
   } catch {
     return []
@@ -733,6 +805,7 @@ CRITICAL RULES:
 - description must be verbatim extracted text — never AI-generated or summarized
 - If a field is not on the page, return null
 - Dates in YYYY-MM-DD format only
+- The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
 
 Return ONLY a JSON object (no markdown, no commentary):
 {
@@ -769,6 +842,8 @@ Use these exact JSON fields (paths within the JSON):
 - image_url → heroAsset.desktop.sourceUrl (absolute https:// URL)
 - press_release_url → null
 
+The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied verbatim) must be escaped as \\" so it does not terminate the JSON string early.
+
 Return ONLY a JSON object:
 {"title":"...","artists":["..."],"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null","date_notes":null,"description":"...","image_url":"https://...","press_release_url":null}
 
@@ -777,22 +852,17 @@ ${nextDataJson}`,
     }],
   })
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-  try {
-    const match = text.match(/\{[\s\S]*\}/)
-    if (!match) return EMPTY_DETAIL
-    const raw = JSON.parse(match[0]) as Partial<ExhibitionDetailExtracted>
-    return {
-      title: raw.title ?? null,
-      artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
-      start_date: raw.start_date ?? null,
-      end_date: raw.end_date ?? null,
-      date_notes: raw.date_notes ?? null,
-      description: raw.description ?? null,
-      image_url: raw.image_url ?? null,
-      press_release_url: raw.press_release_url ?? null,
-    }
-  } catch {
-    return EMPTY_DETAIL
+  const raw = extractJsonObject<Partial<ExhibitionDetailExtracted>>(text)
+  if (!raw) return EMPTY_DETAIL
+  return {
+    title: raw.title ?? null,
+    artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
+    start_date: raw.start_date ?? null,
+    end_date: raw.end_date ?? null,
+    date_notes: raw.date_notes ?? null,
+    description: raw.description ?? null,
+    image_url: raw.image_url ?? null,
+    press_release_url: raw.press_release_url ?? null,
   }
 }
 
@@ -803,24 +873,37 @@ async function callClaudeForDetail(content: string, url: string): Promise<Exhibi
     messages: [{ role: 'user', content: DETAIL_PROMPT(url, content) }],
   })
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-  try {
-    const match = text.match(/\{[\s\S]*\}/)
-    if (!match) return EMPTY_DETAIL
-    const raw = JSON.parse(match[0]) as Partial<ExhibitionDetailExtracted>
-    return {
-      title: raw.title ?? null,
-      artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
-      start_date: raw.start_date ?? null,
-      end_date: raw.end_date ?? null,
-      date_notes: raw.date_notes ?? null,
-      description: raw.description ?? null,
-      image_url: raw.image_url ?? null,
-      press_release_url: raw.press_release_url ?? null,
-    }
-  } catch {
+  const raw = extractJsonObject<Partial<ExhibitionDetailExtracted>>(text)
+  if (!raw) {
     console.error(`Failed to parse exhibition detail JSON for ${url}:`, text.slice(0, 200))
     return EMPTY_DETAIL
   }
+  return {
+    title: raw.title ?? null,
+    artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
+    start_date: raw.start_date ?? null,
+    end_date: raw.end_date ?? null,
+    date_notes: raw.date_notes ?? null,
+    description: raw.description ?? null,
+    image_url: raw.image_url ?? null,
+    press_release_url: raw.press_release_url ?? null,
+  }
+}
+
+// Sanity ceiling for the expanded-window retry below — comfortably above every
+// real page's main-content size observed in practice (up to ~400KB raw, less
+// after stripping), while still bounding worst-case cost on a pathological page.
+const MAX_DETAIL_CONTENT_LENGTH = 400000
+
+// A description this short is either a genuinely terse blurb or (far more often
+// in practice) a fragment that got cut off mid-paragraph by the character window
+// — a portion of the press release captured, not all of it. There's no reliable
+// way to tell those apart from the text alone, so this threshold is a judgment
+// call, not a hard signal; tune if it over- or under-triggers in practice.
+const MIN_COMPLETE_DESCRIPTION_LENGTH = 200
+
+function descriptionLooksIncomplete(detail: ExhibitionDetailExtracted): boolean {
+  return (detail.description?.trim().length ?? 0) < MIN_COMPLETE_DESCRIPTION_LENGTH
 }
 
 export async function extractExhibitionDetail(
@@ -830,9 +913,10 @@ export async function extractExhibitionDetail(
   // Deep strip removes scripts, styles, JSON-LD blobs, and HTML comments
   // before slicing — clears bloat that pushes real content past the window
   const cleaned = deepStripHtml(html)
-  const primary = extractMainContent(cleaned).slice(0, 60000)
+  const mainContent = extractMainContent(cleaned)
+  const primary = mainContent.slice(0, 60000)
 
-  const result = await callClaudeForDetail(primary, exhibitionUrl)
+  let result = await callClaudeForDetail(primary, exhibitionUrl)
 
   // If title is null, retry targeting specific semantic containers —
   // handles sites where the exhibition data is in a non-standard wrapper
@@ -841,22 +925,39 @@ export async function extractExhibitionDetail(
     if (focused.length > 1000 && focused !== primary) {
       console.log(`[extractExhibitionDetail] title null on first pass — retrying with focused content (${exhibitionUrl})`)
       const retry = await callClaudeForDetail(focused, exhibitionUrl)
-      if (retry.title?.trim()) return retry
+      if (retry.title?.trim()) result = retry
     }
 
     // Last resort: try __NEXT_DATA__ hydration JSON.
     // Covers (a) pure CSR shells with empty DOM after script strip, and
     // (b) rendered Next.js pages whose template structure doesn't match our
     // extractMainContent patterns (e.g. Frick's "on view" show template).
-    const nextData = extractNextJsData(html)
-    if (nextData) {
-      console.log(`[extractExhibitionDetail] both passes failed — trying __NEXT_DATA__ (${exhibitionUrl})`)
-      const nextResult = await callClaudeForNextData(nextData, exhibitionUrl)
-      try {
-        const diag = JSON.stringify({ tag: 'AGENT1', url: exhibitionUrl, event: 'NEXT_DATA_RESULT', title_found: nextResult.title?.trim() || null })
-        ;(await import('fs')).appendFileSync('/tmp/scrape-diag.jsonl', diag + '\n')
-      } catch {}
-      if (nextResult.title?.trim()) return nextResult
+    if (!result.title?.trim()) {
+      const nextData = extractNextJsData(html)
+      if (nextData) {
+        console.log(`[extractExhibitionDetail] both passes failed — trying __NEXT_DATA__ (${exhibitionUrl})`)
+        const nextResult = await callClaudeForNextData(nextData, exhibitionUrl)
+        try {
+          const diag = JSON.stringify({ tag: 'AGENT1', url: exhibitionUrl, event: 'NEXT_DATA_RESULT', title_found: nextResult.title?.trim() || null })
+          ;(await import('fs')).appendFileSync('/tmp/scrape-diag.jsonl', diag + '\n')
+        } catch {}
+        if (nextResult.title?.trim()) result = nextResult
+      }
+    }
+  }
+
+  // Title came through fine, but the description looks empty or cut off — and
+  // there's more real content beyond the 60K window we already sent. The
+  // character limit is the likely cause here, not the model choosing to omit
+  // it, so retry once with the full page content instead of a fixed window.
+  if (result.title?.trim() && descriptionLooksIncomplete(result) && mainContent.length > primary.length) {
+    const expanded = mainContent.slice(0, MAX_DETAIL_CONTENT_LENGTH)
+    console.log(`[extractExhibitionDetail] description incomplete on first pass (${result.description?.length ?? 0} chars) — retrying with expanded window (${expanded.length} chars) for ${exhibitionUrl}`)
+    const expandedResult = await callClaudeForDetail(expanded, exhibitionUrl)
+    const expandedLen = expandedResult.description?.trim().length ?? 0
+    const currentLen = result.description?.trim().length ?? 0
+    if (expandedResult.title?.trim() && expandedLen > currentLen) {
+      result = expandedResult
     }
   }
 
