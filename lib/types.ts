@@ -159,6 +159,7 @@ export interface ExhibitionDetailExtracted {
   description: string | null
   image_url: string | null
   press_release_url: string | null
+  show_type: 'exhibition' | 'installation'
 }
 
 export type VenueHours = {

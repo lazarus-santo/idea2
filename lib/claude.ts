@@ -484,13 +484,13 @@ export async function filterLinksByLocation(
     messages: [
       {
         role: 'user',
-        content: `For each exhibition from ${institutionName}'s website, determine whether it takes place at their primary New York City location or at another location (another city, country, art fair, partner venue, biennale, etc.).
+        content: `For each exhibition from ${institutionName}'s website, determine whether it takes place at their primary New York City location or somewhere clearly outside NYC.
 
 Return ONLY a JSON array (no markdown):
 [{"url":"...","location":"nyc","location_note":"..."}]
 
-Use "other" when the show is clearly outside NYC (e.g. Venice Biennale, Art Basel, London, Paris, LA).
-Use "nyc" when it is at their main NYC gallery/museum or the location is unspecified (default to nyc when uncertain).
+Use "other" ONLY when the title or URL names a specific place outside NYC (e.g. Venice Biennale, Art Basel Miami, London, Paris, LA).
+Use "nyc" for everything else, including community/partner/education programs, teen or outreach initiatives, and any name that merely sounds like it could involve another site without naming one — these are frequently presented at the institution's own NYC building. Default to "nyc" whenever there's no explicit non-NYC place name.
 
 Exhibitions:
 ${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title })))}`,
@@ -791,17 +791,20 @@ ${stripped}`,
 // Classify a list of candidate URLs by exhibition status — used as a fallback
 // when extractExhibitionLinks finds 0 links (e.g. content past the slice window).
 // Claude infers classification from URL path and naming conventions only.
-export async function classifyExhibitionUrls(
+// Batch size kept small enough that a chunk's JSON response (url/title/reason/classification
+// per item) can't get cut off by max_tokens — a 60-80 URL single call was truncating silently.
+const CLASSIFY_CHUNK_SIZE = 20
+
+async function classifyExhibitionUrlChunk(
   urls: string[],
   venueName: string,
   venueUrl: string
 ): Promise<ExhibitionLink[]> {
-  if (urls.length === 0) return []
   const today = new Date().toISOString().split('T')[0]
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{
       role: 'user',
       content: `Classify these ${venueName} exhibition URLs as current, upcoming, past, or permanent.
@@ -825,7 +828,10 @@ ${urls.join('\n')}`,
     const raw = extractJsonArray<{
       url?: string; title?: string; classification?: string; classification_reason?: string
     }>(text)
-    if (!raw) return []
+    if (!raw) {
+      console.warn(`[classifyExhibitionUrls] Failed to parse JSON for ${venueName} (${urls.length} URLs, stop_reason: ${response.stop_reason}). Response preview: ${text.slice(0, 300)}`)
+      return []
+    }
     return raw
       .filter((item) => item.url && item.title)
       .map((item) => ({
@@ -839,9 +845,28 @@ ${urls.join('\n')}`,
         // give benefit of the doubt rather than risk silently discarding a real exhibition.
         content_type: 'unclear' as ExhibitionLink['content_type'],
       }))
-  } catch {
+  } catch (err) {
+    console.warn(`[classifyExhibitionUrls] Exception parsing response for ${venueName} (${urls.length} URLs, stop_reason: ${response.stop_reason}):`, err instanceof Error ? err.message : err)
     return []
   }
+}
+
+export async function classifyExhibitionUrls(
+  urls: string[],
+  venueName: string,
+  venueUrl: string
+): Promise<ExhibitionLink[]> {
+  if (urls.length === 0) return []
+
+  const chunks: string[][] = []
+  for (let i = 0; i < urls.length; i += CLASSIFY_CHUNK_SIZE) {
+    chunks.push(urls.slice(i, i + CLASSIFY_CHUNK_SIZE))
+  }
+
+  const results = await Promise.all(
+    chunks.map((chunk) => classifyExhibitionUrlChunk(chunk, venueName, venueUrl))
+  )
+  return results.flat()
 }
 
 // ─── Step 2: detail page extraction ──────────────────────────────────────────
@@ -849,6 +874,11 @@ ${urls.join('\n')}`,
 const EMPTY_DETAIL: ExhibitionDetailExtracted = {
   title: null, artists: [], start_date: null, end_date: null,
   date_notes: null, description: null, image_url: null, press_release_url: null,
+  show_type: 'exhibition',
+}
+
+function normalizeShowType(value: unknown): ExhibitionDetailExtracted['show_type'] {
+  return value === 'installation' ? 'installation' : 'exhibition'
 }
 
 const DETAIL_PROMPT = (url: string, content: string) => `Extract exhibition data from this page (${url}).
@@ -862,6 +892,7 @@ CRITICAL RULES:
 - Dates in YYYY-MM-DD format only
 - When a date on the page has no explicit year (e.g. "Through Jul 25", "Opens March 3"), this is a listing of what the institution currently considers on view — infer the year that is consistent with that: for an end date, pick the soonest occurrence of that month/day that is on or after today; for a start date, pick the occurrence that keeps the exhibition's run plausible relative to today. Do not default to the current calendar year or the page's copyright year without this reasoning — a bare "Jul 25" read on a page today should not be assumed to have already passed just because that date earlier this year is in the past.
 - The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
+- show_type: "installation" when the page describes a site-specific, long-term, permanent, or on-view-indefinitely work/display (e.g. "long-term view", "permanent installation", "on view indefinitely", a commissioned site-specific work) — "exhibition" for a normal temporary show with a defined or expected run. Default to "exhibition" when unclear.
 
 Return ONLY a JSON object (no markdown, no commentary):
 {
@@ -872,7 +903,8 @@ Return ONLY a JSON object (no markdown, no commentary):
   "date_notes": "verbatim date text that could not be parsed as YYYY-MM-DD (e.g. 'On view through summer 2025') — null if dates were fully parsed or no date info exists",
   "description": "full verbatim exhibition description or press release text — take the longest body of text about the show, do not truncate, do not summarize — null if nothing found on page",
   "image_url": "absolute URL of primary exhibition image — prefer hero/banner or og:image meta, not thumbnails/icons/logos — null if none",
-  "press_release_url": "URL to a separate press release PDF or page if explicitly linked — null otherwise"
+  "press_release_url": "URL to a separate press release PDF or page if explicitly linked — null otherwise",
+  "show_type": "exhibition" | "installation"
 }
 
 HTML:
@@ -897,11 +929,12 @@ Use these exact JSON fields (paths within the JSON):
 - description → exhibitionIntro field text verbatim (or seo.metaDesc if exhibitionIntro absent)
 - image_url → heroAsset.desktop.sourceUrl (absolute https:// URL)
 - press_release_url → null
+- show_type → "installation" if the title/description indicates a long-term, permanent, or site-specific installation rather than a temporary show; "exhibition" otherwise (default)
 
 The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied verbatim) must be escaped as \\" so it does not terminate the JSON string early.
 
 Return ONLY a JSON object:
-{"title":"...","artists":["..."],"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null","date_notes":null,"description":"...","image_url":"https://...","press_release_url":null}
+{"title":"...","artists":["..."],"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null","date_notes":null,"description":"...","image_url":"https://...","press_release_url":null,"show_type":"exhibition"}
 
 JSON data:
 ${nextDataJson}`,
@@ -919,6 +952,7 @@ ${nextDataJson}`,
     description: raw.description ?? null,
     image_url: raw.image_url ?? null,
     press_release_url: raw.press_release_url ?? null,
+    show_type: normalizeShowType(raw.show_type),
   }
 }
 
@@ -943,6 +977,7 @@ async function callClaudeForDetail(content: string, url: string): Promise<Exhibi
     description: raw.description ?? null,
     image_url: raw.image_url ?? null,
     press_release_url: raw.press_release_url ?? null,
+    show_type: normalizeShowType(raw.show_type),
   }
 }
 

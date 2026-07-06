@@ -799,7 +799,7 @@ export async function scrapeInstitution(
 
   if (currentLinks.length === 0) {
     console.log(`[${vn}] No current shows — updating check_back_date`)
-    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false }).eq('id', venue.id)
+    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'SCRAPE_COMPLETE',
       shows_found_on_listing: diag.shows_found_on_listing,
@@ -841,7 +841,7 @@ export async function scrapeInstitution(
 
   if (exhibitionLinks.length === 0) {
     console.log(`[${vn}] All current/upcoming links were events or online-only — updating check_back_date`)
-    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false }).eq('id', venue.id)
+    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
     return 0
   }
 
@@ -897,7 +897,7 @@ export async function scrapeInstitution(
 
   if (guardedLinks.length === 0) {
     console.warn(`[${vn}] No current links remain after location + self-referential filtering`)
-    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false }).eq('id', venue.id)
+    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
     const totalDiscarded = diag.shows_found_on_listing
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'SCRAPE_COMPLETE',
@@ -1087,10 +1087,16 @@ export async function scrapeInstitution(
 
     const prCleaned = cleanPressRelease(verifiedDescription)
 
+    // Installations commonly run indefinitely ("on long-term view", "ongoing") —
+    // that's their normal state, not missing data, so end_date isn't required for
+    // them the way it is for a dated exhibition. start_date is still required for both.
+    const isInstallation = detail.show_type === 'installation'
+    const isOngoing = isInstallation && !!detail.start_date && !detail.end_date
+
     const missingFields: string[] = []
     if (dateClass === 'upcoming') missingFields.push('upcoming')
     if (!detail.start_date) missingFields.push('start_date')
-    if (!detail.end_date) missingFields.push('end_date')
+    if (!detail.end_date && !isOngoing) missingFields.push('end_date')
     if (!prCleaned) missingFields.push('press_release')
     if (!validatedImage) missingFields.push('image_url')
 
@@ -1108,23 +1114,43 @@ export async function scrapeInstitution(
     // previously caused the same real-world show to be inserted twice.
     const normalizedUrl = normalizeDetailUrl(link.url)
 
-    const { data: existing } = await db
+    const { data: existingByUrl } = await db
       .from('exhibitions')
       .select('id, status')
       .eq('venue_id', venue.id)
       .eq('detail_url', normalizedUrl)
       .maybeSingle()
 
+    // Legacy rows (pre-migration_v22) have detail_url: null, so the lookup above
+    // never matches them — fall back to a case-insensitive title match so those
+    // don't get duplicated. This can't rely on the (venue_id, show_title) DB
+    // constraint alone: that constraint is case-sensitive text equality, but
+    // show_title is a fresh Claude extraction every scrape and its casing can
+    // drift run to run, so a differing-case title never trips the constraint
+    // and silently inserts a real duplicate instead of erroring.
+    const { data: existingByTitle } = existingByUrl
+      ? { data: null }
+      : await db
+          .from('exhibitions')
+          .select('id, status')
+          .eq('venue_id', venue.id)
+          .ilike('show_title', cleanTitle)
+          .maybeSingle()
+
+    const existing = existingByUrl ?? existingByTitle
+
     const payload = {
       venue_id: venue.id,
       detail_url: normalizedUrl,
       show_title: cleanTitle,
+      show_type: detail.show_type,
       start_date: detail.start_date,
       end_date: detail.end_date,
       date_notes: detail.date_notes,
       press_release: prCleaned,
       image_url: upgradeImageUrl(validatedImage),
       status,
+      is_ongoing: isOngoing,
       missing_fields: missingFields,
       preread_type: isMuseum ? 'coverage_only' : 'full',
     }
@@ -1132,9 +1158,14 @@ export async function scrapeInstitution(
     let exhibitionId: string
 
     if (existing) {
-      // Never overwrite admin-approved content — leave published exhibitions intact.
+      // Never overwrite admin-approved content — leave published exhibitions intact,
+      // except end_date: galleries commonly extend a show's run, and a re-scrape
+      // should be able to pick that up. start_date never changes once published,
+      // and only a real extracted date (never a blank) may replace end_date.
       if ((existing as { id: string; status: string }).status !== 'published') {
         await db.from('exhibitions').update(payload).eq('id', existing.id)
+      } else if (detail.end_date) {
+        await db.from('exhibitions').update({ end_date: detail.end_date }).eq('id', existing.id)
       }
       exhibitionId = existing.id
     } else {
@@ -1169,6 +1200,8 @@ export async function scrapeInstitution(
         if (raced) {
           if ((raced as { id: string; status: string }).status !== 'published') {
             await db.from('exhibitions').update(payload).eq('id', raced.id)
+          } else if (detail.end_date) {
+            await db.from('exhibitions').update({ end_date: detail.end_date }).eq('id', raced.id)
           }
           exhibitionId = raced.id
         } else {
@@ -1287,7 +1320,7 @@ export async function scrapeInstitution(
 
   await db
     .from('venues')
-    .update({ check_back_date: sevenDaysFromNow(), scrape_failed: false })
+    .update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null })
     .eq('id', venue.id)
 
   const totalDiscarded = (diag.shows_found_on_listing - diag.shows_after_classification)
@@ -1343,6 +1376,19 @@ function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
     manual_entry_required: (v.manual_entry_required as boolean | null) ?? false,
     scrape_failure_reason: (v.scrape_failure_reason as string | null) ?? null,
   }
+}
+
+// Looks up a single venue regardless of manual_entry_required — used by the
+// admin per-venue retry, which must be able to target flagged venues too.
+export async function getVenueById(id: string): Promise<VenueRecord | null> {
+  const { data } = await getSupabaseAdmin()
+    .from('venues')
+    .select(VENUE_SELECT)
+    .eq('id', id)
+    .eq('active', true)
+    .maybeSingle()
+
+  return data ? normalizeVenueRow(data as Record<string, unknown>) : null
 }
 
 // Venues flagged manual_entry_required are excluded from automated scrape runs

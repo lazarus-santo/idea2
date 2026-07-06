@@ -269,18 +269,16 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
           )}
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!venue.manual_entry_required && (
-              <button
-                onClick={() => retryScrape(venue)}
-                style={{
-                  fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
-                  textTransform: 'uppercase', padding: '5px 12px',
-                  background: '#000', color: '#fff', border: 'none', borderRadius: 999, cursor: 'pointer',
-                }}
-              >
-                Retry Scrape
-              </button>
-            )}
+            <button
+              onClick={() => retryScrape(venue)}
+              style={{
+                fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
+                textTransform: 'uppercase', padding: '5px 12px',
+                background: '#000', color: '#fff', border: 'none', borderRadius: 999, cursor: 'pointer',
+              }}
+            >
+              Retry Scrape
+            </button>
             {!venue.manual_entry_required && (
               <button
                 onClick={() => markManual(venue)}

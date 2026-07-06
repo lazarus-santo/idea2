@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { scrapeInstitution, getActiveInstitutions } from '@/lib/scraper'
+import { scrapeInstitution, getVenueById } from '@/lib/scraper'
 
-// POST /api/admin/venues/[id]/retry-scrape — manually retry a failed institution
+// POST /api/admin/venues/[id]/retry-scrape — manually retry a failed or
+// manual-entry-flagged institution. Looked up directly by id (not filtered
+// through getActiveInstitutions) so manual_entry_required venues are reachable —
+// scrapeInstitution() itself decides whether to re-flag or clear it.
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
-  const all = await getActiveInstitutions()
-  const venue = all.find((v) => v.id === id)
+  const venue = await getVenueById(id)
 
   if (!venue) {
     return NextResponse.json({ error: 'Venue not found or inactive' }, { status: 404 })
