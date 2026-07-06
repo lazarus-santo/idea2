@@ -938,7 +938,10 @@ export async function scrapeInstitution(
 
     console.log(`[${vn}] Detail: "${link.title}" — ${link.url}`)
 
-    const { html: detailHtml, success: detailSuccess, method: detailMethod } = await fetchDetailPage(link.url)
+    const detailFetchResult = await fetchDetailPage(link.url)
+    let detailHtml = detailFetchResult.html
+    let detailMethod = detailFetchResult.method
+    const detailSuccess = detailFetchResult.success
 
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, url: link.url, event: 'DETAIL_FETCH',
@@ -976,7 +979,27 @@ export async function scrapeInstitution(
       continue
     }
 
-    const detail = await extractExhibitionDetail(detailHtml, link.url)
+    let detail = await extractExhibitionDetail(detailHtml, link.url)
+
+    // Some sites (JS-only SPAs like guggenheim.org) return a plain-HTTP response
+    // large enough to pass fetchDetailPage's length check, but it's just a
+    // noscript shell + JS bundle with none of the real page content — dates and
+    // description come back empty not because the show lacks them, but because
+    // they only exist in the client-rendered DOM. That signature (a plain-HTTP
+    // fetch with nothing dated or descriptive extracted) is worth one Browserbase
+    // retry before accepting it as a genuinely dateless show.
+    if (detailMethod === 'http' && !detail.start_date && !detail.end_date && !detail.description) {
+      console.warn(`[${vn}] Plain HTTP detail page had no dates/description — retrying via Browserbase: ${link.url}`)
+      const retryFetch = await attemptBrowserbaseDetailFetch(link.url)
+      if (retryFetch.success && retryFetch.html.length > detailHtml.length) {
+        const retryDetail = await extractExhibitionDetail(retryFetch.html, link.url)
+        if (retryDetail.start_date || retryDetail.end_date || retryDetail.description) {
+          detail = retryDetail
+          detailHtml = retryFetch.html
+          detailMethod = retryFetch.method
+        }
+      }
+    }
 
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, url: link.url, event: 'EXTRACTION',
