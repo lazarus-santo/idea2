@@ -14,6 +14,21 @@ import { auditAndRepairPrereads, repairZeroPrereads } from './audit'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import type { VenueRecord, ExhibitionRaw } from './types'
 
+// Stable identity key for an exhibition within a venue — used for upsert matching
+// instead of show_title, which is re-extracted by Claude on every scrape and can
+// drift slightly (subtitle, punctuation, whitespace) between runs of the same show.
+function normalizeDetailUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    u.protocol = u.protocol.toLowerCase()
+    u.hostname = u.hostname.toLowerCase()
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, '')
+    return u.toString()
+  } catch {
+    return url.trim()
+  }
+}
+
 // Wix: strip /v1/fill/... transform suffix to get the master file.
 // CloudFront auto_image: bump resize width to 2000 for highest available res.
 function upgradeImageUrl(url: string | null): string | null {
@@ -747,6 +762,22 @@ export async function scrapeInstitution(
     return 0
   }
 
+  // Dedup by URL — Claude's Step-1 classification can return the same detail
+  // page twice (e.g. featured in a carousel and again in the main grid). Left
+  // unfiltered, both copies flow through to Step 2 and can produce two
+  // exhibition rows for the same real-world show.
+  const seenLinkUrls = new Set<string>()
+  const dedupedLinks = allLinks.filter((l) => {
+    const key = normalizeDetailUrl(l.url)
+    if (seenLinkUrls.has(key)) return false
+    seenLinkUrls.add(key)
+    return true
+  })
+  if (dedupedLinks.length < allLinks.length) {
+    console.log(`[${vn}] Deduped ${allLinks.length - dedupedLinks.length} repeated URL(s) from listing extraction`)
+  }
+  allLinks = dedupedLinks
+
   const currentLinks = allLinks.filter(
     (l) => l.classification === 'current' || l.classification === 'upcoming'
   )
@@ -1072,15 +1103,21 @@ export async function scrapeInstitution(
     console.log(`[${vn}] "${cleanTitle}" — ${status}, missing: [${missingFields.join(', ')}]`)
 
     // ─── Step 3: upsert to Supabase ─────────────────────────────────────────
+    // Matched on (venue_id, detail_url) rather than show_title — title is a fresh
+    // Claude extraction every scrape and drifts slightly between runs, which
+    // previously caused the same real-world show to be inserted twice.
+    const normalizedUrl = normalizeDetailUrl(link.url)
+
     const { data: existing } = await db
       .from('exhibitions')
       .select('id, status')
       .eq('venue_id', venue.id)
-      .ilike('show_title', cleanTitle)
+      .eq('detail_url', normalizedUrl)
       .maybeSingle()
 
     const payload = {
       venue_id: venue.id,
+      detail_url: normalizedUrl,
       show_title: cleanTitle,
       start_date: detail.start_date,
       end_date: detail.end_date,
@@ -1107,7 +1144,44 @@ export async function scrapeInstitution(
         .select('id')
         .single()
 
-      if (error || !inserted) {
+      if (error?.code === '23505') {
+        // Unique violation — two possible sources: (a) another concurrent run
+        // (e.g. cron + manual "scrape now") inserted this exhibition first under
+        // the same detail_url, or (b) a pre-existing (venue_id, show_title)
+        // constraint on this table (added directly in Supabase, predates
+        // detail_url matching) conflicting with a legacy row that has no
+        // detail_url yet. Check both before giving up.
+        const { data: racedByUrl } = await db
+          .from('exhibitions')
+          .select('id, status')
+          .eq('venue_id', venue.id)
+          .eq('detail_url', normalizedUrl)
+          .maybeSingle()
+        const { data: racedByTitle } = racedByUrl
+          ? { data: null }
+          : await db
+              .from('exhibitions')
+              .select('id, status')
+              .eq('venue_id', venue.id)
+              .ilike('show_title', cleanTitle)
+              .maybeSingle()
+        const raced = racedByUrl ?? racedByTitle
+        if (raced) {
+          if ((raced as { id: string; status: string }).status !== 'published') {
+            await db.from('exhibitions').update(payload).eq('id', raced.id)
+          }
+          exhibitionId = raced.id
+        } else {
+          console.log(JSON.stringify({
+            tag: 'AGENT1', venue: vn, url: link.url, event: 'UPSERT_FAILED',
+            error_code: error.code, error_message: error.message, error_details: error.details ?? null,
+            title: cleanTitle,
+          }))
+          errors.push({ item: cleanTitle, step: 'upsert', message: `Unresolved unique violation: ${error.message}` })
+          diag.discard_reasons.upsert_failed++
+          continue
+        }
+      } else if (error || !inserted) {
         console.log(JSON.stringify({
           tag: 'AGENT1', venue: vn, url: link.url, event: 'UPSERT_FAILED',
           error_code:    error?.code    ?? null,
@@ -1122,8 +1196,9 @@ export async function scrapeInstitution(
           method: detailMethod, htmlLength: detailHtml.length, outcome: 'upsert_failed',
         })
         continue
+      } else {
+        exhibitionId = inserted.id
       }
-      exhibitionId = inserted.id
     }
 
     // Sync artists

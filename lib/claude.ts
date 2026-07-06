@@ -654,13 +654,66 @@ function extractMainContent(html: string): string {
   return stripped
 }
 
+// Listing pages are dominated by nav/footer/repeated-card boilerplate that has
+// nothing to do with classification — on a large museum page, real exhibition
+// links can be a rounding error of the total markup. Rather than paying to send
+// (and truncating) the whole page, pull out just each same-domain <a href> plus
+// a window of surrounding text (title/date/label context usually lives right
+// next to the link in the DOM). Cost then scales with the number of links on
+// the page, not the page's total size.
+function extractAnchorContext(html: string, baseUrl: string, contextChars = 600): string {
+  const baseHost = (() => {
+    try { return new URL(baseUrl).hostname.replace(/^www\./, '') } catch { return null }
+  })()
+
+  const headingRe = /<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]>/gi
+  const headings: string[] = []
+  let hm: RegExpExecArray | null
+  while ((hm = headingRe.exec(html)) !== null) {
+    const text = hm[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    if (text) headings.push(text)
+  }
+  const headingBlock = headings.length
+    ? `Section headings on this page, in document order: ${headings.join(' | ')}\n\n`
+    : ''
+
+  const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi
+  const ranges: [number, number][] = []
+  let am: RegExpExecArray | null
+  while ((am = anchorRe.exec(html)) !== null) {
+    const href = am[1]
+    if (/^(mailto:|tel:|javascript:|#)/i.test(href)) continue
+    if (/^https?:\/\//i.test(href) && baseHost) {
+      try {
+        if (new URL(href).hostname.replace(/^www\./, '') !== baseHost) continue
+      } catch { continue }
+    }
+    ranges.push([
+      Math.max(0, am.index - contextChars),
+      Math.min(html.length, am.index + am[0].length + contextChars),
+    ])
+  }
+
+  if (ranges.length === 0) return headingBlock + html.slice(0, 60000)
+
+  ranges.sort((a, b) => a[0] - b[0])
+  const merged: [number, number][] = [ranges[0]]
+  for (const [start, end] of ranges.slice(1)) {
+    const last = merged[merged.length - 1]
+    if (start <= last[1]) last[1] = Math.max(last[1], end)
+    else merged.push([start, end])
+  }
+
+  return headingBlock + merged.map(([start, end]) => html.slice(start, end)).join('\n<!-- ... -->\n')
+}
+
 export async function extractExhibitionLinks(
   html: string,
   venueName: string,
   venueUrl: string
 ): Promise<ExhibitionLink[]> {
   const today = new Date().toISOString().split('T')[0]
-  const stripped = extractMainContent(html).slice(0, 60000)
+  const stripped = extractAnchorContext(extractMainContent(html), venueUrl).slice(0, 100000)
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -800,11 +853,14 @@ const EMPTY_DETAIL: ExhibitionDetailExtracted = {
 
 const DETAIL_PROMPT = (url: string, content: string) => `Extract exhibition data from this page (${url}).
 
+Today: ${new Date().toISOString().split('T')[0]}
+
 CRITICAL RULES:
 - Do NOT generate, infer, or hallucinate content not present on the page
 - description must be verbatim extracted text — never AI-generated or summarized
 - If a field is not on the page, return null
 - Dates in YYYY-MM-DD format only
+- When a date on the page has no explicit year (e.g. "Through Jul 25", "Opens March 3"), this is a listing of what the institution currently considers on view — infer the year that is consistent with that: for an end date, pick the soonest occurrence of that month/day that is on or after today; for a start date, pick the occurrence that keeps the exhibition's run plausible relative to today. Do not default to the current calendar year or the page's copyright year without this reasoning — a bare "Jul 25" read on a page today should not be assumed to have already passed just because that date earlier this year is in the past.
 - The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
 
 Return ONLY a JSON object (no markdown, no commentary):
