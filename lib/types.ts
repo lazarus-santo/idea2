@@ -87,6 +87,10 @@ export interface NearbyExhibition {
   show_title: string
   institution_name: string
   institution_id: string | null
+  venue_id: string
+  image_url: string | null
+  end_date: string | null
+  artists: string[]
   lat: number
   lng: number
 }
@@ -160,6 +164,7 @@ export interface ExhibitionDetailExtracted {
   image_url: string | null
   press_release_url: string | null
   show_type: 'exhibition' | 'installation'
+  artist_bio: string | null
 }
 
 export type VenueHours = {

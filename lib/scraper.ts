@@ -1272,6 +1272,17 @@ export async function scrapeInstitution(
       if ((count ?? 0) === 0) {
         await db.from('exhibition_artists').insert({ exhibition_id: exhibitionId, artist_id: artistId })
       }
+
+      // Only write bio for solo shows — with multiple artists on the page we can't
+      // reliably tell which extracted bio text belongs to which artist without risking
+      // a misattribution (the same failure mode Agent 2's disambiguation ran into).
+      // Never overwrites an existing bio.
+      if (detail.artist_bio && detail.artists.length === 1) {
+        const { data: artistRow } = await db.from('artists').select('bio').eq('id', artistId).maybeSingle()
+        if (!artistRow?.bio?.trim()) {
+          await db.from('artists').update({ bio: detail.artist_bio }).eq('id', artistId)
+        }
+      }
     }
 
     // Generate prereads / coverage only if not already present

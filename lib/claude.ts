@@ -69,6 +69,15 @@ const TIER_2_DOMAINS = [
   'nytimes.com', 'newyorker.com', 'theguardian.com', 'ft.com',
   'wsj.com', 'vulture.com', 'nymag.com',
 ]
+// nytimes.com, theguardian.com, and wsj.com are blocked from Exa's `includeDomains`
+// on this plan — a domain-filtered search naming any of them throws a 403 for the
+// whole request, not just an empty result for that domain (verified directly).
+// TIER_2_DOMAINS itself stays as the classification list for getResultTier (fine to
+// classify a result as Tier 2 if it shows up via an unfiltered search) — this subset
+// is for any search that actually passes `includeDomains` to Exa.
+const EXA_QUERYABLE_TIER_2_DOMAINS = TIER_2_DOMAINS.filter(
+  (d) => !['nytimes.com', 'theguardian.com', 'wsj.com'].includes(d)
+)
 const DOMAIN_TO_PUBLICATION: Record<string, string> = {
   'artforum.com': 'Artforum',
   'frieze.com': 'Frieze',
@@ -144,6 +153,95 @@ function isStandaloneArticle(title: string | null, artistQuery: string): boolean
   if (GROUP_CONTEXT_RE.test(t)) return false
   // At least one part of the artist name should appear in the title
   return artistQuery.toLowerCase().split(/[\s,]+/).filter((p) => p.length > 2).some((p) => t.includes(p))
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function containsWholeWord(text: string, word: string): boolean {
+  return new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i').test(text)
+}
+
+function significantNameParts(name: string): string[] {
+  return name.split(/[\s,]+/).filter((p) => p.length > 2)
+}
+
+// Hard relevance filter — an article must actually be about THIS artist, not just
+// share a name fragment with them. Requires every significant part of their name
+// (whole-word match, not substring) to appear somewhere in the title or highlights.
+// A single shared part isn't enough: a "Naomi Klein" op-ed won't also contain "Yves",
+// so an "Yves Klein" search correctly rejects it even though both share "Klein".
+// Deliberately name-only — no genre/keyword check — so crossover artists (e.g. a
+// visual artist also covered as a musician) aren't penalized for not reading as "art press."
+//
+// This is intentionally weak for a single-word (mononym) name — every article that
+// mentions "Klein" passes, including ones about a different Klein entirely. That's a
+// known gap; see isSignificantlyAmbiguous / verifyMononymCandidates below, which handle
+// disambiguation for that case with an actual comprehension check instead of more
+// keyword-matching (an earlier attempt at a keyword-based fix here kept surfacing new
+// failure modes — e.g. misattributing a detail from someone else mentioned in the same
+// press release — because keyword matching can't tell "about" from "mentions").
+function isAboutArtist(result: PoolResult, artistName: string): boolean {
+  const parts = significantNameParts(artistName)
+  if (parts.length === 0) return true
+  const text = [result.title ?? '', ...(result.highlights ?? [])].join(' ')
+  return parts.every((p) => containsWholeWord(text, p))
+}
+
+// A single significant name-part means isAboutArtist can't meaningfully disambiguate —
+// it degrades to "does this mention the one word," which is true of almost every
+// candidate, right person or wrong. This is the signal for when to pay for the more
+// expensive LLM verification pass below instead of trusting the cheap filter alone.
+function isNameAmbiguous(artistName: string): boolean {
+  return significantNameParts(artistName).length <= 1
+}
+
+// Direct comprehension check against the exhibition's own press release, used only for
+// name-ambiguous (mononym) artists where keyword matching can't tell two same-named
+// people apart. Reasons from the actual source text every time, rather than a
+// pre-extracted phrase that can go stale or misattribute a detail about someone else
+// mentioned in the same source to the artist. `sourceText` should be the artist's own
+// bio when available (unambiguously about them, no misattribution risk) — falling back
+// to the exhibition's press release only when no bio exists, since a press release can
+// describe other people too (collaborators, curators, characters). Returns the subset
+// of URLs confirmed to be about the same person; on any failure (no source text, parse
+// failure, API error) returns all candidate URLs unfiltered rather than over-rejecting.
+async function verifyMononymCandidates(
+  artistName: string,
+  sourceText: string | null,
+  candidates: (PoolResult & { title: string })[]
+): Promise<Set<string>> {
+  const allUrls = new Set(candidates.map((c) => c.url))
+  if (candidates.length === 0 || !sourceText?.trim()) return allUrls
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [{
+      role: 'user',
+      content: `The following text describes an artist named "${artistName}":
+
+${sourceText.slice(0, 3000)}
+
+Below are web search results that may or may not be about this SAME person — some may be about a completely different, unrelated person who happens to share the name "${artistName}" (this is a common name), and some may be about a different person mentioned in the text above (e.g. a collaborator, curator, or character), not the artist "${artistName}" themself.
+
+For each result, decide whether it is genuinely about the artist "${artistName}" as described above.
+
+Results:
+${JSON.stringify(candidates.map((c) => ({ url: c.url, title: c.title, highlight: c.highlights?.[0] ?? '' })))}
+
+Return ONLY a JSON array, one entry per result:
+[{"url": "...", "same_person": true}]`,
+    }],
+  }).catch(() => null)
+
+  if (!response) return allUrls
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  const parsed = extractJsonArray<{ url: string; same_person: boolean }>(text)
+  if (!parsed) return allUrls
+
+  return new Set(parsed.filter((p) => p.same_person).map((p) => p.url))
 }
 
 function isBlockedUrl(url: string, galleryDomains: Set<string>): boolean {
@@ -296,114 +394,341 @@ function toPrereadRow(r: PoolResult & { title: string }): PrereadRow {
   }
 }
 
+type GalleryShowType = 'solo' | 'small_group' | 'large_group'
+
+function classifyGalleryShow(artistCount: number): GalleryShowType {
+  if (artistCount <= 1) return 'solo'
+  if (artistCount <= 5) return 'small_group'
+  return 'large_group'
+}
+
+// Runs the shared "show review" search used by both group tiers: a single,
+// once-per-show query (not per-artist), domain-filtered to major press first,
+// falling back to an unfiltered retry when the filtered pool is too thin.
+async function searchShowReview(
+  exa: Exa,
+  showTitle: string,
+  venueName: string,
+  isValid: (r: PoolResult) => r is PoolResult & { title: string },
+  wantCount: number,
+  minDomainFilteredResults: number
+): Promise<(PoolResult & { title: string })[]> {
+  const query = `${showTitle} ${venueName} review exhibition 2025 OR 2026`
+
+  const filtered = await exa.search(query, {
+    type: 'auto',
+    numResults: 5,
+    includeDomains: EXA_QUERYABLE_TIER_2_DOMAINS,
+    contents: { highlights: true },
+  }).catch(() => ({ results: [] as unknown[] }))
+
+  let candidates = sortByTierAndRecency((filtered.results as unknown as PoolResult[]).filter(isValid))
+
+  if (candidates.length < minDomainFilteredResults) {
+    console.log(`Exa show-review [${showTitle}]: only ${candidates.length} domain-filtered result(s) (need ${minDomainFilteredResults}) — retrying without domain filter`)
+    const unfiltered = await exa.search(query, {
+      type: 'auto',
+      numResults: 5,
+      contents: { highlights: true },
+    }).catch(() => ({ results: [] as unknown[] }))
+
+    const seen = new Set(candidates.map((r) => r.url))
+    const extra = (unfiltered.results as unknown as PoolResult[]).filter(isValid).filter((r) => !seen.has(r.url))
+    candidates = sortByTierAndRecency([...candidates, ...extra])
+  } else {
+    console.log(`Exa show-review [${showTitle}]: ${candidates.length} domain-filtered result(s) — no retry needed`)
+  }
+
+  return candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const }))
+}
+
+// Single artist profile/interview search, no domain filter — shared by both group tiers.
+// `disambiguator`, when present, is a short phrase (from the artist's bio, or the
+// exhibition's press release as fallback) appended to the query to widen recall toward
+// the right person — helpful even if imprecise, since the mononym verification pass
+// below (not this query) is what actually guarantees precision. `sourceText` is the
+// artist's own bio when one exists, else the shared press release — passed through to
+// that verification pass as the grounding text to reason against.
+async function searchArtistProfile(
+  exa: Exa,
+  artistName: string,
+  isValid: (r: PoolResult) => r is PoolResult & { title: string },
+  disambiguator?: string,
+  sourceText?: string | null
+): Promise<(PoolResult & { title: string }) | null> {
+  const query = disambiguator
+    ? `${artistName} ${disambiguator} artist interview profile`
+    : `${artistName} artist interview profile`
+
+  const results = await exa.search(query, {
+    type: 'auto',
+    numResults: 5,
+    contents: { highlights: true },
+  }).catch(() => ({ results: [] as unknown[] }))
+
+  let candidates = (results.results as unknown as PoolResult[]).filter(isValid).filter((r) => isAboutArtist(r, artistName))
+
+  if (isNameAmbiguous(artistName) && candidates.length > 0) {
+    const confirmed = await verifyMononymCandidates(artistName, sourceText ?? null, candidates)
+    candidates = candidates.filter((r) => confirmed.has(r.url))
+  }
+
+  const sorted = sortByTierAndRecency(candidates)
+  return sorted[0] ? { ...sorted[0], contentPriority: 1 as const } : null
+}
+
+// Looks up any existing bios for these artists — populated by Agent 1 from a page's
+// own "About the Artist" section (solo shows only; see scraper.ts). A bio is
+// single-subject text, so it's a safer disambiguation source than a press release,
+// which can describe other people too (collaborators, curators, characters).
+async function fetchArtistBios(artistNames: string[]): Promise<Map<string, string>> {
+  if (artistNames.length === 0) return new Map()
+  const { data } = await getSupabaseAdmin().from('artists').select('name, bio').in('name', artistNames)
+  const bios = new Map<string, string>()
+  for (const row of data ?? []) {
+    const bio = (row.bio as string | null)?.trim()
+    if (bio) bios.set(row.name as string, bio)
+  }
+  return bios
+}
+
+// Extracts a short disambiguating phrase for one artist from their own bio — single-
+// subject text, so no misattribution risk, cheap Haiku call is reliable here.
+async function extractDisambiguatorFromBio(artistName: string, bio: string): Promise<string> {
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 128,
+    messages: [{
+      role: 'user',
+      content: `From this artist bio, extract a short disambiguating phrase (2-5 words) that would help distinguish "${artistName}" from an unrelated person who happens to share their name in a web search.
+
+Do NOT include generic words like "artist," "visual artist," "gallery," or "exhibition." Only include what's actually distinctive: another profession or medium (e.g. "musician," "photographer," "filmmaker," "sculptor"), nationality, or a city they're based in. Use only what's stated or implied in the text — do not invent details.
+
+Bio:
+${bio.slice(0, 2000)}
+
+Return ONLY the phrase itself, nothing else. If nothing distinctive is stated, return an empty string.`,
+    }],
+  }).catch(() => null)
+  if (!response) return ''
+  return response.content.find((b) => b.type === 'text')?.text?.trim() ?? ''
+}
+
+// Extracts a short disambiguating phrase per artist — from their own bio when one
+// exists (safer, single-subject), falling back to the exhibition's shared press
+// release for artists with no bio on file. Used to steer searches away from unrelated
+// people who happen to share the artist's name. Falls back to no context for any
+// artist with nothing usable found; callers must treat a missing entry as "search
+// unmodified," never as an error.
+async function extractArtistSearchContext(
+  pressRelease: string | null,
+  artistNames: string[],
+  bios: Map<string, string>
+): Promise<Map<string, string>> {
+  const empty = new Map<string, string>()
+  if (artistNames.length === 0) return empty
+
+  const context = new Map<string, string>()
+
+  const bioResults = await Promise.all(
+    [...bios.entries()].map(async ([name, bio]) => [name, await extractDisambiguatorFromBio(name, bio)] as const)
+  )
+  for (const [name, phrase] of bioResults) {
+    if (phrase) context.set(name, phrase)
+  }
+
+  const remaining = artistNames.filter((name) => !bios.has(name))
+  if (remaining.length === 0 || !pressRelease?.trim()) return context
+
+  // Sonnet, not Haiku — this needs to correctly track who a description's subject is
+  // when a press release mentions multiple people (verified directly: Haiku misattributed
+  // "the Canadian artist, LA Timpa" — someone else in the same sentence — to the artist
+  // "Klein" even with explicit instructions not to; Sonnet got it right). One call per
+  // exhibition, so the cost difference from Haiku is negligible.
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 512,
+    messages: [{
+      role: 'user',
+      content: `From this exhibition press release, extract a short disambiguating phrase (2-5 words) for each artist listed below. It should be specific enough to help distinguish them in a web search from an unrelated person who happens to share their name.
+
+Press releases often mention OTHER people too — collaborators, curators, actors, or characters in a work. Only extract details stated about the named artist THEMSELF, never a detail that actually describes someone else mentioned in the text. Read carefully to confirm who a given description's subject really is before attributing it — do not assume the nearest adjective or nationality in the text belongs to the artist just because it appears near their name.
+
+Do NOT include generic words like "artist," "visual artist," "gallery," or "exhibition" — everyone in this context is already an artist, so those words don't distinguish anyone. Only include what's actually distinctive: another profession or medium (e.g. "musician," "photographer," "filmmaker," "sculptor"), nationality, a city they're based in, or a similarly specific identifying detail. Use only what's stated or clearly implied in the text — do not invent details, and do not guess if uncertain. If nothing distinctive and clearly-attributed is stated for an artist, use an empty string for them.
+
+Artists: ${JSON.stringify(remaining)}
+
+Press release:
+${pressRelease.slice(0, 4000)}
+
+Return ONLY a JSON object mapping each artist name to their disambiguating phrase:
+{"${remaining[0]}": "..."}`,
+    }],
+  }).catch(() => null)
+
+  if (!response) return context
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+  const parsed = extractJsonObject<Record<string, string>>(text)
+  if (!parsed) return context
+
+  for (const name of remaining) {
+    const phrase = parsed[name]?.trim()
+    if (phrase) context.set(name, phrase)
+  }
+  return context
+}
+
+// Orders artists for Large Group per-artist search priority: artists without an
+// existing bio on file first (higher information value to fill in), then alphabetical.
+async function orderArtistsBySearchPriority(artistNames: string[]): Promise<string[]> {
+  const { data } = await getSupabaseAdmin().from('artists').select('name, bio').in('name', artistNames)
+  const hasBio = new Map((data ?? []).map((a) => [a.name as string, !!(a.bio as string | null)?.trim()]))
+  return [...artistNames].sort((a, b) => {
+    const aHasBio = hasBio.get(a) ?? false
+    const bHasBio = hasBio.get(b) ?? false
+    if (aHasBio !== bHasBio) return aHasBio ? 1 : -1
+    return a.localeCompare(b)
+  })
+}
+
+// ─── Small Group (2-5 artists) ─────────────────────────────────────────────
+// 1 show-review result (once per show) + 1 per-artist result each, capped at 5
+// stored total. If assembly exceeds the cap, the show-review result is kept and
+// per-artist results are trimmed worst-tier-first.
+async function generateSmallGroupPrereads(
+  exa: Exa,
+  exhibition: ExhibitionRaw & { venue_name: string },
+  isValid: (r: PoolResult) => r is PoolResult & { title: string },
+  context: Map<string, string>,
+  bios: Map<string, string>
+): Promise<GeneratePrereadsResult> {
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1)
+
+  const perArtistResults = await Promise.all(
+    exhibition.artists.map((artist) =>
+      searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release)
+    )
+  )
+
+  const seenUrls = new Set(showReview.map((r) => r.url))
+  const perArtist: (PoolResult & { title: string })[] = []
+  for (const result of perArtistResults) {
+    if (!result || seenUrls.has(result.url)) continue
+    seenUrls.add(result.url)
+    perArtist.push(result)
+  }
+
+  let combined = [...showReview, ...perArtist]
+  if (combined.length > 5) {
+    const allowedPerArtist = Math.max(0, 5 - showReview.length)
+    combined = [...showReview, ...sortByTierAndRecency(perArtist).slice(0, allowedPerArtist)]
+  }
+
+  console.log(`Exa selected [Small Group / ${exhibition.show_title}]:`, combined.map((r) => ({ title: r.title, url: r.url })))
+  return { prereads: combined.map(toPrereadRow), hasShowCoverage: showReview.length > 0 }
+}
+
+// ─── Large Group (6+ artists) ───────────────────────────────────────────────
+// Show-review search first (2-3 results), then per-artist searches fill any
+// remaining slots up to a hard cap of 5 — stopping as soon as the cap is hit
+// so searches never run for every artist in a large show.
+async function generateLargeGroupPrereads(
+  exa: Exa,
+  exhibition: ExhibitionRaw & { venue_name: string },
+  isValid: (r: PoolResult) => r is PoolResult & { title: string },
+  context: Map<string, string>,
+  bios: Map<string, string>
+): Promise<GeneratePrereadsResult> {
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2)
+
+  const seenUrls = new Set(showReview.map((r) => r.url))
+  const rows: (PoolResult & { title: string })[] = [...showReview]
+
+  if (rows.length < 5) {
+    const orderedArtists = await orderArtistsBySearchPriority(exhibition.artists)
+    for (const artist of orderedArtists) {
+      if (rows.length >= 5) {
+        console.log(`Exa per-artist [Large Group]: cap reached, skipping remaining artists (${orderedArtists.slice(orderedArtists.indexOf(artist)).join(', ')})`)
+        break
+      }
+      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release)
+      console.log(`Exa per-artist [Large Group / ${artist}]:`, result ? { title: result.title, url: result.url } : 'no valid result')
+      if (result && !seenUrls.has(result.url)) {
+        seenUrls.add(result.url)
+        rows.push(result)
+      }
+    }
+  }
+
+  console.log(`Exa selected [Large Group / ${exhibition.show_title}]:`, rows.map((r) => ({ title: r.title, url: r.url })))
+  return { prereads: rows.slice(0, 5).map(toPrereadRow), hasShowCoverage: showReview.length > 0 }
+}
+
 export async function generatePrereads(
   exhibition: ExhibitionRaw & { venue_name: string }
 ): Promise<GeneratePrereadsResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
   const showTitle = exhibition.show_title
-  const isGroupShow = exhibition.artists.length > 3
+  const showType = classifyGalleryShow(exhibition.artists.length)
 
   // Build blocklist once — shared across all search paths
   const galleryDomains = await buildGalleryBlocklist()
   const isValid = (r: PoolResult): r is PoolResult & { title: string } =>
     !!r.title?.trim() && !isBlockedUrl(r.url, galleryDomains)
 
-  // ─── Group show path ──────────────────────────────────────────────────────
-  // S2 for the overall show review + one parallel search per artist (≤5).
-  // Result: [show review] + [best article per artist], no 3-preread cap.
-  if (isGroupShow) {
-    const artistsToSearch = exhibition.artists.slice(0, 5)
+  // Bios (populated by Agent 1 from a page's own "About the Artist" section, solo
+  // shows only) are a safer disambiguation source than the press release — single-
+  // subject, no risk of misattributing a detail about someone else mentioned in the
+  // same text. Fetched once and reused for both query-context extraction below and the
+  // mononym verification pass further down.
+  const bios = await fetchArtistBios(exhibition.artists)
 
-    // Per-artist searches only — no dedicated show-review search.
-    // Show reviews surface naturally if they rank in per-artist results.
-    // Each call is isolated so one failure doesn't abort the rest.
-    const artistSearches = await Promise.all(
-      artistsToSearch.map((artist) =>
-        exa.search(`${artist} visual artist`, {
-          type: 'auto',
-          numResults: 5,
-          startPublishedDate: '2024-01-01',
-          contents: { highlights: true },
-        }).catch(() => ({ results: [] as PoolResult[] }))
-      )
-    )
+  // One cheap call per exhibition, extracting a short disambiguating phrase per artist
+  // (e.g. "musician and filmmaker") from their own bio when available, else the show's
+  // shared press release — steers searches away from unrelated same-named people.
+  // No-ops if nothing usable is found; every query below degrades gracefully.
+  const searchContext = await extractArtistSearchContext(exhibition.press_release, exhibition.artists, bios)
 
-    // Per-artist: pick the single best valid result for each artist.
-    // Dedup by URL and domain — no two artists share a source.
-    const seenUrls = new Set<string>()
-    const seenDomains = new Set<string>()
-    const perArtistRows: PrereadRow[] = []
-    for (let i = 0; i < artistsToSearch.length; i++) {
-      const artist = artistsToSearch[i]
-      const results = artistSearches[i].results as unknown as PoolResult[]
-      const candidates = sortByTierAndRecency(
-        results.filter(isValid).filter((r) => !seenUrls.has(r.url) && !seenDomains.has(registrableDomain(r.url)))
-      )
-      if (candidates.length > 0) {
-        const best = { ...candidates[0], contentPriority: 1 as const }
-        seenUrls.add(best.url)
-        seenDomains.add(registrableDomain(best.url))
-        perArtistRows.push(toPrereadRow(best))
-        console.log(`Exa per-artist [${artist}]:`, { title: best.title, url: best.url })
-      } else {
-        console.log(`Exa per-artist [${artist}]: no valid results`)
-      }
-    }
-
-    const prereads: PrereadRow[] = [...perArtistRows]
-
-    // S4 fallback: only fires when per-artist searches produced very little
-    if (prereads.length < 2) {
-      const search4 = await exa.search(`"${showTitle}" ${exhibition.venue_name} art exhibition`, {
-        type: 'auto',
-        numResults: 5,
-        startPublishedDate: '2023-01-01',
-        contents: { highlights: true },
-      })
-      console.log(`Exa S4 [group fallback]:`, search4.results.map((r) => ({ title: r.title, url: r.url })))
-      const extra = sortByTierAndRecency(
-        (search4.results as unknown as PoolResult[])
-          .filter(isValid)
-          .filter((r) => !seenUrls.has(r.url) && !seenDomains.has(registrableDomain(r.url)))
-          .map((r) => ({ ...r, contentPriority: 2 as const }))
-      )
-      prereads.push(...extra.slice(0, 2 - prereads.length).map(toPrereadRow))
-    }
-
-    console.log(`Exa selected [${showTitle}]:`, prereads.map((p) => ({ title: p.article_title, pub: p.publication })))
-    return { prereads, hasShowCoverage: false }
+  if (showType === 'small_group') {
+    return generateSmallGroupPrereads(exa, exhibition, isValid, searchContext, bios)
   }
 
-  // ─── Solo / duo / trio path (≤3 artists) ─────────────────────────────────
+  if (showType === 'large_group') {
+    return generateLargeGroupPrereads(exa, exhibition, isValid, searchContext, bios)
+  }
+
+  // ─── Solo path (1 artist) ─────────────────────────────────────────────────
   const artistQuery = exhibition.artists.join(', ')
+  const disambiguator = searchContext.get(artistQuery)
+  const artistQueryWithContext = disambiguator ? `${artistQuery} ${disambiguator}` : artistQuery
 
   // S1: broad recent coverage — not limited to interviews so reviews, essays, and features all qualify
-  const search1 = await exa.search(`${artistQuery} artist`, {
+  const search1 = await exa.search(`${artistQueryWithContext} artist`, {
     type: 'auto',
     numResults: 5,
     startPublishedDate: '2024-01-01',
     contents: { highlights: true },
   })
-  console.log(`Exa S1 [${artistQuery}]:`, search1.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+  console.log(`Exa S1 [${artistQueryWithContext}]:`, search1.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
 
-  const search2 = await exa.search(`${artistQuery} artwork practice critical essay`, {
+  const search2 = await exa.search(`${artistQueryWithContext} artwork practice critical essay`, {
     type: 'auto',
     numResults: 5,
     startPublishedDate: '2022-01-01',
     contents: { highlights: true },
   })
-  console.log(`Exa S2 [body of work / ${artistQuery}]:`, search2.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+  console.log(`Exa S2 [body of work / ${artistQueryWithContext}]:`, search2.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
 
   // S3: explicitly target Tier 1 art press + major general press — ensures The Art Newspaper,
   // Artforum, Frieze, Hyperallergic etc. are always in the candidate pool
-  const search3 = await exa.search(`${artistQuery} artist`, {
+  const search3 = await exa.search(`${artistQueryWithContext} artist`, {
     type: 'auto',
     numResults: 5,
     startPublishedDate: '2024-01-01',
     includeDomains: [...TIER_1_DOMAINS, 'newyorker.com', 'ft.com', 'vulture.com', 'nymag.com'],
     contents: { highlights: true },
   })
-  console.log(`Exa S3 [art + major press / ${artistQuery}]:`, search3.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+  console.log(`Exa S3 [art + major press / ${artistQueryWithContext}]:`, search3.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
 
   const seenUrls = new Set<string>()
   const pool: PoolResult[] = []
@@ -420,10 +745,29 @@ export async function generatePrereads(
   addToPool(search1.results, 1)
   addToPool(search3.results, 2)
 
-  let valid = pool.filter(isValid)
+  // S1/S2/S3's fixed wording ("artwork," "critical essay," an art-press-only domain
+  // list) systematically under-recalls a crossover artist whose real coverage lives in
+  // general culture/lifestyle press (music, fashion, etc.) — verified directly: Dazed
+  // and Vogue pieces about a musician-artist never appeared in any of S1-S3's candidates,
+  // even though a neutrally-worded query surfaces them immediately. Only runs when a real
+  // disambiguator was found, so standard single-domain visual artists are unaffected.
+  if (disambiguator) {
+    const search5 = await exa.search(`${artistQuery} ${disambiguator} interview profile`, {
+      type: 'auto',
+      numResults: 5,
+      contents: { highlights: true },
+    })
+    console.log(`Exa S5 [broader recall / ${artistQuery} ${disambiguator}]:`, search5.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+    addToPool(search5.results, 1)
+  }
+
+  const isValidAndRelevant = (r: PoolResult): r is PoolResult & { title: string } =>
+    isValid(r) && isAboutArtist(r, artistQuery)
+
+  let valid = pool.filter(isValidAndRelevant)
 
   if (valid.length < 2) {
-    const search4 = await exa.search(`${artistQuery} art review profile`, {
+    const search4 = await exa.search(`${artistQueryWithContext} art review profile`, {
       type: 'auto',
       numResults: 5,
       startPublishedDate: '2023-01-01',
@@ -431,9 +775,20 @@ export async function generatePrereads(
     })
     console.log(`Exa S4 [fallback]:`, search4.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
     addToPool(search4.results, 2)
-    valid = pool.filter(isValid)
+    valid = pool.filter(isValidAndRelevant)
   } else {
     console.log(`Exa S4 skipped (${valid.length} valid results after filtering)`)
+  }
+
+  // Mononym names (e.g. "Klein") can't be disambiguated by name-parts alone — every
+  // candidate above passed isAboutArtist trivially. Run one comprehension check against
+  // the artist's own bio (preferred) or the exhibition's press release to weed out
+  // same-named unrelated people.
+  if (isNameAmbiguous(artistQuery) && valid.length > 0) {
+    const beforeCount = valid.length
+    const confirmed = await verifyMononymCandidates(artistQuery, bios.get(artistQuery) ?? exhibition.press_release, valid)
+    valid = valid.filter((r) => confirmed.has(r.url))
+    console.log(`Mononym verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
   }
 
   // Sort: tier → content type → standalone-artist signal → recency
@@ -874,7 +1229,7 @@ export async function classifyExhibitionUrls(
 const EMPTY_DETAIL: ExhibitionDetailExtracted = {
   title: null, artists: [], start_date: null, end_date: null,
   date_notes: null, description: null, image_url: null, press_release_url: null,
-  show_type: 'exhibition',
+  show_type: 'exhibition', artist_bio: null,
 }
 
 function normalizeShowType(value: unknown): ExhibitionDetailExtracted['show_type'] {
@@ -893,6 +1248,7 @@ CRITICAL RULES:
 - When a date on the page has no explicit year (e.g. "Through Jul 25", "Opens March 3"), this is a listing of what the institution currently considers on view — infer the year that is consistent with that: for an end date, pick the soonest occurrence of that month/day that is on or after today; for a start date, pick the occurrence that keeps the exhibition's run plausible relative to today. Do not default to the current calendar year or the page's copyright year without this reasoning — a bare "Jul 25" read on a page today should not be assumed to have already passed just because that date earlier this year is in the past.
 - The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
 - show_type: "installation" when the page describes a site-specific, long-term, permanent, or on-view-indefinitely work/display (e.g. "long-term view", "permanent installation", "on view indefinitely", a commissioned site-specific work) — "exhibition" for a normal temporary show with a defined or expected run. Default to "exhibition" when unclear.
+- artist_bio: many exhibition pages have a separate biographical section about the artist(s), often under its own heading like "About the Artist," "More About [Name]," or "Biography" — distinct from the exhibition/show description above it. Extract this verbatim if present, separately from "description." If the page has bios for multiple artists, concatenate them, each preceded by the artist's name. Null if no such section exists on the page.
 
 Return ONLY a JSON object (no markdown, no commentary):
 {
@@ -904,7 +1260,8 @@ Return ONLY a JSON object (no markdown, no commentary):
   "description": "full verbatim exhibition description or press release text — take the longest body of text about the show, do not truncate, do not summarize — null if nothing found on page",
   "image_url": "absolute URL of primary exhibition image — prefer hero/banner or og:image meta, not thumbnails/icons/logos — null if none",
   "press_release_url": "URL to a separate press release PDF or page if explicitly linked — null otherwise",
-  "show_type": "exhibition" | "installation"
+  "show_type": "exhibition" | "installation",
+  "artist_bio": "verbatim biographical text about the artist(s), separate from the exhibition description — null if no such section exists"
 }
 
 HTML:
@@ -953,6 +1310,7 @@ ${nextDataJson}`,
     image_url: raw.image_url ?? null,
     press_release_url: raw.press_release_url ?? null,
     show_type: normalizeShowType(raw.show_type),
+    artist_bio: raw.artist_bio ?? null,
   }
 }
 
@@ -978,6 +1336,7 @@ async function callClaudeForDetail(content: string, url: string): Promise<Exhibi
     image_url: raw.image_url ?? null,
     press_release_url: raw.press_release_url ?? null,
     show_type: normalizeShowType(raw.show_type),
+    artist_bio: raw.artist_bio ?? null,
   }
 }
 
