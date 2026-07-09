@@ -46,7 +46,7 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
     const el = titleRef.current
     if (!el) return
     el.style.fontSize = ''
-    let size = 107
+    let size = 64
     while (size > 20) {
       const lh = parseFloat(window.getComputedStyle(el).lineHeight)
       if (el.scrollHeight <= lh * 2 + 1) break
@@ -136,11 +136,6 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
           )}
 
           {hasCollapsibles && <div className="ep-sections-gap" />}
-
-          <div className="ep-sections-gap" />
-          <Link href={`/map?add=${exhibition.id}`} className="ep-meta ep-meta-link">
-            Create an itinerary &rsaquo;
-          </Link>
 
           {exhibition.prereads.length > 0 && (
             <div className="ep-section">
