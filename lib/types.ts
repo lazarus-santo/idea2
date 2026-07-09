@@ -9,20 +9,26 @@ export interface Preread {
   created_at: string
 }
 
+export type CoverageType = 'show_coverage' | 'artist_profile' | 'artist_interview' | 'past_show' | 'general'
+
 export interface CoverageItem {
   url: string
-  title: string | null
+  title: string
   author: string | null
-  publication_name: string | null
+  publication: string | null
   published_date: string | null
+  coverage_type: CoverageType
+  artist_name: string | null
+  thumbnail_url: string | null
 }
 
 export interface CoverageDisplayItem {
   url: string
   title: string | null
   author: string | null
-  publication_name: string | null
+  publication: string | null
   published_date: string | null
+  thumbnail_url: string | null
   reading_id?: string
 }
 
@@ -80,6 +86,7 @@ export interface ExhibitionDetailData {
     article_url: string | null
     thumbnail_url: string | null
   }[]
+  coverage: CoverageDisplayItem[]
 }
 
 export interface NearbyExhibition {

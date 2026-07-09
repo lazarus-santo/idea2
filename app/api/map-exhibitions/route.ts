@@ -13,6 +13,7 @@ export async function GET() {
       show_title,
       start_date,
       end_date,
+      is_ongoing,
       image_url,
       address_override,
       override_latitude,
@@ -38,7 +39,7 @@ export async function GET() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const candidates = ((data ?? []) as any[])
     .filter((ex) => !ex.start_date || ex.start_date <= today)
-    .filter((ex) => ex.end_date || (ex.start_date && ex.start_date >= cutoff))
+    .filter((ex) => ex.is_ongoing || ex.end_date || (ex.start_date && ex.start_date >= cutoff))
     // Keep if venue has coords OR has an address_override to geocode
     .filter((ex) => (ex.venues?.latitude && ex.venues?.longitude) || ex.address_override)
 

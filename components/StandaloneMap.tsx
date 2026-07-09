@@ -7,6 +7,8 @@ import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import type { MapExhibition, VenueHours, ItineraryStop, DirectionLeg } from '@/lib/types'
 import ExhibitionFilters from './ExhibitionFilters'
+import { createPrimaryMarkerEl } from '@/lib/mapMarkers'
+import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
 
 // ── Holiday detection ──────────────────────────────────────────────────────────
 
@@ -78,11 +80,6 @@ function isVenueOpen(hours: VenueHours | null, dateStr: string, timeStr: string)
   const range = hours[dayKeys[date.getDay()] as keyof VenueHours]
   if (!range) return false
   return timeStr >= range[0] && timeStr < range[1]
-}
-
-function formatEndDate(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 function formatMinutes(mins: number): string {
@@ -477,75 +474,75 @@ export default function StandaloneMap() {
     })
 
     byVenue.forEach(shows => {
-      shows.forEach((ex, idx) => {
-        const jitterAngle = shows.length > 1 ? (2 * Math.PI * idx) / shows.length : 0
-        const jitterR = shows.length > 1 ? 0.0003 : 0
-        const lat = ex.venue_lat! + jitterR * Math.cos(jitterAngle)
-        const lng = ex.venue_lng! + jitterR * Math.sin(jitterAngle)
+      const primary = shows[0]
+      const lat = primary.venue_lat!
+      const lng = primary.venue_lng!
+      const open = isVenueOpen(primary.venue_hours, selectedDate, windowStart)
 
-        const open = isVenueOpen(ex.venue_hours, selectedDate, windowStart)
+      const el = createPrimaryMarkerEl(!open)
+      const marker = new mapboxgl.Marker(el).setLngLat([lng, lat])
 
-        const el = document.createElement('div')
-        if (open) {
-          el.style.cssText =
-            'width:18px;height:18px;border-radius:50%;background:#3432A8;border:2px solid #FFFCEC;cursor:pointer;flex-shrink:0;'
-        } else {
-          el.style.cssText =
-            'width:12px;height:12px;border-radius:50%;background:#888;opacity:0.5;cursor:pointer;flex-shrink:0;'
+      if (isMobile) {
+        el.addEventListener('click', () => openMobileDrawerRef.current(shows))
+        marker.addTo(map)
+      } else {
+        const items: PopupCardItem[] = shows.map(ex => ({
+          title: ex.show_title,
+          subtitle: ex.artists.length ? formatArtists(ex.artists) : undefined,
+          meta: ex.venue_name,
+          dateLabel: ex.end_date ? `Until ${formatEndDate(ex.end_date)}` : undefined,
+          imageUrl: ex.image_url,
+          href: `/exhibitions/${ex.id}`,
+          addAction: {
+            onClick: () => { addToItineraryRef.current(ex); popup.remove() },
+          },
+        }))
+
+        const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 10, maxWidth: '375px' })
+        popup.setDOMContent(buildPopupCard(items))
+
+        let pinOver = false
+        let popupOver = false
+        let closeTimer: ReturnType<typeof setTimeout> | null = null
+
+        function scheduleClose() {
+          closeTimer = setTimeout(() => {
+            if (!pinOver && !popupOver) popup.remove()
+          }, 200)
         }
 
-        const marker = new mapboxgl.Marker(el).setLngLat([lng, lat])
-
-        if (isMobile) {
-          el.addEventListener('click', () => openMobileDrawerRef.current([ex]))
-          marker.addTo(map)
-        } else {
-          const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 14, maxWidth: '375px' })
-          popup.setDOMContent(buildPopupEl(ex, () => { addToItineraryRef.current(ex); popup.remove() }))
-
-          let pinOver = false
-          let popupOver = false
-          let closeTimer: ReturnType<typeof setTimeout> | null = null
-
-          function scheduleClose() {
-            closeTimer = setTimeout(() => {
-              if (!pinOver && !popupOver) popup.remove()
-            }, 200)
-          }
-
-          function cancelClose() {
-            if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
-          }
-
-          el.addEventListener('mouseenter', () => { pinOver = true; cancelClose() })
-          el.addEventListener('mouseleave', () => { pinOver = false; scheduleClose() })
-
-          el.addEventListener('click', () => {
-            if (activePopupRef.current && activePopupRef.current !== popup) {
-              activePopupRef.current.remove()
-            }
-            if (!popup.isOpen()) {
-              popup.setLngLat([lng, lat]).addTo(map)
-              activePopupRef.current = popup
-            }
-          })
-
-          popup.on('open', () => {
-            const popupEl = popup.getElement()
-            if (!popupEl) return
-            popupEl.addEventListener('mouseenter', () => { popupOver = true; cancelClose() })
-            popupEl.addEventListener('mouseleave', () => { popupOver = false; scheduleClose() })
-          })
-
-          popup.on('close', () => {
-            if (activePopupRef.current === popup) activePopupRef.current = null
-          })
-
-          marker.addTo(map)
+        function cancelClose() {
+          if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
         }
 
-        markersRef.current.push({ marker, id: ex.id })
-      })
+        el.addEventListener('mouseenter', () => { pinOver = true; cancelClose() })
+        el.addEventListener('mouseleave', () => { pinOver = false; scheduleClose() })
+
+        el.addEventListener('click', () => {
+          if (activePopupRef.current && activePopupRef.current !== popup) {
+            activePopupRef.current.remove()
+          }
+          if (!popup.isOpen()) {
+            popup.setLngLat([lng, lat]).addTo(map)
+            activePopupRef.current = popup
+          }
+        })
+
+        popup.on('open', () => {
+          const popupEl = popup.getElement()
+          if (!popupEl) return
+          popupEl.addEventListener('mouseenter', () => { popupOver = true; cancelClose() })
+          popupEl.addEventListener('mouseleave', () => { popupOver = false; scheduleClose() })
+        })
+
+        popup.on('close', () => {
+          if (activePopupRef.current === popup) activePopupRef.current = null
+        })
+
+        marker.addTo(map)
+      }
+
+      markersRef.current.push({ marker, id: primary.id })
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exhibitions, venueFilter, subFilter, selectedDate, windowStart, isMobile])
@@ -946,128 +943,3 @@ export default function StandaloneMap() {
   )
 }
 
-// ── Popup DOM builder ─────────────────────────────────────────────────────────
-
-function formatArtists(artists: string[]): string {
-  if (artists.length <= 3) return artists.join(', ')
-  return `${artists.slice(0, 3).join(', ')} +${artists.length - 3}`
-}
-
-function buildPopupEl(ex: MapExhibition, onAdd: () => void): HTMLElement {
-  const wrap = document.createElement('div')
-  wrap.className = 'mp-popup'
-
-  if (ex.image_url) {
-    const img = document.createElement('img')
-    img.src = ex.image_url
-    img.alt = ex.show_title
-    img.className = 'mp-popup-thumb'
-    wrap.appendChild(img)
-  }
-
-  const body = document.createElement('div')
-  body.className = 'mp-popup-body'
-
-  const title = document.createElement('p')
-  title.className = 'mp-popup-title'
-  title.textContent = ex.show_title
-  body.appendChild(title)
-
-  if (ex.artists.length) {
-    const artists = document.createElement('p')
-    artists.className = 'mp-popup-artist'
-    artists.textContent = formatArtists(ex.artists)
-    body.appendChild(artists)
-  }
-
-  const gallery = document.createElement('p')
-  gallery.className = 'mp-popup-gallery'
-  gallery.textContent = ex.venue_name
-  body.appendChild(gallery)
-
-  if (ex.end_date) {
-    const date = document.createElement('p')
-    date.className = 'mp-popup-date'
-    date.textContent = `Until ${formatEndDate(ex.end_date)}`
-    body.appendChild(date)
-  }
-
-  const actions = document.createElement('div')
-  actions.className = 'mp-popup-actions'
-
-  const viewLink = document.createElement('a')
-  viewLink.href = `/exhibitions/${ex.id}`
-  viewLink.className = 'mp-popup-view'
-  viewLink.textContent = 'View Show'
-  actions.appendChild(viewLink)
-
-  const addBtn = document.createElement('button')
-  addBtn.className = 'mp-popup-add'
-  addBtn.textContent = '+ Add to itinerary'
-  addBtn.addEventListener('click', onAdd)
-  actions.appendChild(addBtn)
-
-  body.appendChild(actions)
-  wrap.appendChild(body)
-  return wrap
-}
-
-function buildMultiPopupEl(shows: MapExhibition[], onAdd: (ex: MapExhibition) => void): HTMLElement {
-  const wrap = document.createElement('div')
-  wrap.className = 'mp-popup mp-popup--multi'
-
-  const header = document.createElement('p')
-  header.className = 'mp-popup-gallery mp-popup-venue-header'
-  header.textContent = shows[0].institution_name
-  wrap.appendChild(header)
-
-  shows.forEach((ex, i) => {
-    if (i > 0) {
-      const divider = document.createElement('hr')
-      divider.className = 'mp-popup-divider'
-      wrap.appendChild(divider)
-    }
-
-    const row = document.createElement('div')
-    row.className = 'mp-popup-body'
-
-    const title = document.createElement('p')
-    title.className = 'mp-popup-title'
-    title.textContent = ex.show_title
-    row.appendChild(title)
-
-    if (ex.artists.length) {
-      const artists = document.createElement('p')
-      artists.className = 'mp-popup-artist'
-      artists.textContent = formatArtists(ex.artists)
-      row.appendChild(artists)
-    }
-
-    if (ex.end_date) {
-      const date = document.createElement('p')
-      date.className = 'mp-popup-date'
-      date.textContent = `Until ${formatEndDate(ex.end_date)}`
-      row.appendChild(date)
-    }
-
-    const actions = document.createElement('div')
-    actions.className = 'mp-popup-actions'
-
-    const viewLink = document.createElement('a')
-    viewLink.href = `/exhibitions/${ex.id}`
-    viewLink.className = 'mp-popup-view'
-    viewLink.textContent = 'View Show'
-    actions.appendChild(viewLink)
-
-    const addBtn = document.createElement('button')
-    addBtn.className = 'mp-popup-add'
-    addBtn.textContent = '+ Add to itinerary'
-    addBtn.addEventListener('click', () => onAdd(ex))
-    actions.appendChild(addBtn)
-
-    row.appendChild(actions)
-    wrap.appendChild(row)
-  })
-
-  return wrap
-}

@@ -33,12 +33,15 @@ export async function GET(request: Request) {
     .select(`
       id,
       show_title,
+      end_date,
+      image_url,
       address_override,
       override_latitude,
       override_longitude,
-      venues!inner(name, latitude, longitude,
+      venues!inner(id, name, latitude, longitude,
         institutions(id, name)
-      )
+      ),
+      exhibition_artists(artists(name))
     `)
     .eq('status', 'published')
     .lte('start_date', today)
@@ -67,6 +70,12 @@ export async function GET(request: Request) {
         show_title: ex.show_title,
         institution_name: ex.venues?.institutions?.name ?? ex.venues?.name ?? '',
         institution_id: ex.venues?.institutions?.id ?? null,
+        venue_id: ex.venues?.id,
+        image_url: ex.image_url,
+        end_date: ex.end_date,
+        artists: (ex.exhibition_artists ?? [])
+          .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
+          .filter(Boolean) as string[],
         lat: resolvedLat,
         lng: resolvedLng,
       } satisfies NearbyExhibition

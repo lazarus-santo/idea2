@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import type { VenueInstitutionPin } from '@/lib/types'
+import { createPrimaryMarkerEl, createSecondaryMarkerEl } from '@/lib/mapMarkers'
+import { buildPopupCard } from '@/lib/mapPopup'
 
 function haversineDistanceMiles(
   lat1: number,
@@ -50,10 +52,8 @@ export default function VenueMap({
       zoom: 15,
     })
 
-    // Primary marker — dark blue filled circle
-    const primaryEl = document.createElement('div')
-    primaryEl.style.cssText =
-      'width:18px;height:18px;border-radius:50%;background:#1a237e;border:2px solid #fff;flex-shrink:0;'
+    // Primary marker — this venue
+    const primaryEl = createPrimaryMarkerEl()
     new mapboxgl.Marker(primaryEl).setLngLat([lng, lat]).addTo(map)
 
     // Secondary markers — other active venues within 1 mile
@@ -66,13 +66,11 @@ export default function VenueMap({
     nearby.forEach((v) => {
       if (!v.lat || !v.lng) return
 
-      const el = document.createElement('div')
-      el.style.cssText =
-        'width:10px;height:10px;border-radius:50%;background:#FFFCEC;border:2px solid #1a237e;cursor:pointer;'
-
+      const el = createSecondaryMarkerEl()
       const targetId = v.institution_id ?? v.id
-      const popup = new mapboxgl.Popup({ closeButton: false, offset: 14 }).setHTML(
-        `<a href="/venues/${targetId}" style="color:#000;text-decoration:none;font-family:system-ui,sans-serif;font-size:13px;line-height:1.4;">${v.name}</a>`
+      const popup = new mapboxgl.Popup({ closeButton: false, offset: 10, maxWidth: '375px' })
+      popup.setDOMContent(
+        buildPopupCard([{ title: v.name, href: `/venues/${targetId}`, linkLabel: 'View Gallery' }])
       )
 
       new mapboxgl.Marker(el).setLngLat([v.lng, v.lat]).setPopup(popup).addTo(map)

@@ -1049,18 +1049,6 @@ a:hover { opacity: 0.75; }
 
 .eim-popup-links a:hover { opacity: 0.65; }
 
-/* Mapbox popup wrapper: no padding, sharp corners */
-.eim-split .mapboxgl-popup-content {
-  padding: 0;
-  border-radius: 0;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
-  overflow: hidden;
-  width: 375px;
-  background: #FFFCEC;
-}
-
-/* Hide the default mapboxgl close button — popup closes on hover-out */
-.eim-split .mapboxgl-popup-close-button { display: none; }
 
 /* Pin pulse */
 @keyframes eim-pin-pulse {
@@ -1157,59 +1145,56 @@ a:hover { opacity: 0.75; }
 }
 
 /*
- * Nav inner is a 1440px centred container, 112px tall (134 * 0.8333).
- * All children are absolutely positioned within it.
+ * Nav inner is a 1440px centred flex row: wordmark, then the link group, then
+ * Search pushed flush to the right edge via margin-left:auto (see .ep-nav-search).
+ * Previously every child here was independently absolutely-positioned (wordmark
+ * from the left, links from a hardcoded left offset, Search from the right edge)
+ * which only stayed non-overlapping when the container was at its full 1440px —
+ * as it narrowed, the left-anchored links and the right-anchored Search converged
+ * and overlapped. Flex with gap/nowrap reflows correctly at every width instead.
  */
 .ep-nav-inner {
   max-width: 1440px;
   margin: 0 auto;
-  position: relative;
-  height: 112px;
-}
-
-/*
- * Wordmark: left=0, width=231px (277 * 0.8333), centered vertically.
- * font-size=53px (64 * 0.8333), weight=700.
- */
-.ep-wordmark {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 231px;
   height: 112px;
   display: flex;
   align-items: center;
+  gap: 13px;
+  padding-right: 29px;
+}
+
+.ep-wordmark {
+  display: flex;
+  align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   font-family: var(--font-logo);
   font-size: 53px;
   font-weight: bold;
   line-height: 1;
   color: #000;
   text-decoration: none;
+  white-space: nowrap;
 }
 
-/*
- * Links: left=244px (293 * 0.8333), top=33px (39 * 0.8333).
- * Each link is 172px wide (206 * 0.8333), 48px tall (58 * 0.8333).
- */
 .ep-nav-links {
-  position: absolute;
-  left: 244px;
-  top: 33px;
   display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .ep-nav-links a {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 172px;
   height: 48px;
+  padding: 0 14px;
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 14px;
   font-weight: 400;
   color: #000;
   text-decoration: none;
+  white-space: nowrap;
   transition: opacity 150ms ease;
 }
 
@@ -1251,7 +1236,7 @@ a:hover { opacity: 0.75; }
  */
 .ep-title {
   font-family: var(--font-inter-tight), sans-serif;
-  font-size: 107px;
+  font-size: 64px;
   font-weight: 700;
   line-height: 1.2;
   color: #000;
@@ -1271,9 +1256,9 @@ a:hover { opacity: 0.75; }
 .ep-artist-name {
   display: block;
   font-family: var(--font-inter-tight), sans-serif;
-  font-size: 27px;
+  font-size: 20px;
   font-weight: 400;
-  font-style: italic;
+  font-style: normal;
   line-height: 33px;
   color: #000;
   margin: 0;
@@ -1289,9 +1274,9 @@ a:hover { opacity: 0.75; }
 
 .ep-gallery-name {
   font-family: var(--font-inter-tight), sans-serif;
-  font-size: 27px;
+  font-size: 20px;
   font-weight: 400;
-  font-style: italic;
+  font-style: normal;
   line-height: 33px;
   color: #000;
   margin: 0;
@@ -1384,24 +1369,14 @@ a:hover { opacity: 0.75; }
   margin-bottom: 8px;
 }
 
-/* Collapsed rich-text prose: max 6 lines with fade */
+/* Collapsed rich-text prose: max 6 lines, hard clip (no fade) */
 .ep-pr-prose {
   overflow: hidden;
   max-height: calc(1.6em * 6);
-  position: relative;
-}
-.ep-pr-prose::after {
-  content: '';
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  height: 36px;
-  background: linear-gradient(to bottom, transparent, #fff);
-  pointer-events: none;
 }
 .ep-pr-prose--expanded {
   max-height: none;
 }
-.ep-pr-prose--expanded::after { display: none; }
 
 /* Typography inside the prose container */
 .ep-pr-prose p  { margin: 0 0 8px; }
@@ -1418,7 +1393,7 @@ a:hover { opacity: 0.75; }
   background: transparent;
   border: none;
   padding: 0;
-  margin-left: 4px;
+  margin-left: 0;
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 14px;
   line-height: 17px;
@@ -1428,9 +1403,13 @@ a:hover { opacity: 0.75; }
   text-underline-offset: 2px;
 }
 
-/* Preread links: same scale, underline on hover */
-.ep-preread-link {
-  display: block;
+/* Preread/coverage rows: thumbnail + text, same scale, underline on hover.
+   Thumbnail sized to match Search's result thumbnails (.sr-thumb / .sr-thumb-img, 40x40). */
+.ep-preread-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 14px;
   font-weight: 400;
@@ -1440,9 +1419,15 @@ a:hover { opacity: 0.75; }
   transition: opacity 150ms ease;
 }
 
-.ep-preread-link:hover { opacity: 0.45; text-decoration: underline; text-underline-offset: 2px; }
-.ep-preread-link--no-url { cursor: default; }
-.ep-preread-link--no-url:hover { opacity: 1; text-decoration: none; }
+.ep-preread-row:last-child { margin-bottom: 0; }
+
+.ep-preread-row:hover { opacity: 0.45; text-decoration: underline; text-underline-offset: 2px; }
+.ep-preread-row--no-url { cursor: default; }
+.ep-preread-row--no-url:hover { opacity: 1; text-decoration: none; }
+
+.ep-preread-thumb-wrap { flex-shrink: 0; width: 40px; height: 40px; }
+.ep-preread-thumb { width: 40px; height: 40px; object-fit: cover; display: block; }
+.ep-preread-thumb-empty { width: 40px; height: 40px; background: #d8d5c8; }
 
 /* ─── Art Historical Context (scholarly preread) ─────────────── */
 .ep-scholarly {
@@ -1564,10 +1549,11 @@ a:hover { opacity: 0.75; }
 }
 
 @media (max-width: 640px) {
-  .ep-nav-inner { height: 72px; }
-  .ep-wordmark { font-size: 32px; width: 160px; height: 72px; }
-  .ep-nav-links { left: 164px; top: 18px; }
-  .ep-nav-links a { width: 120px; height: 36px; font-size: 12px; }
+  .ep-nav-inner { height: 72px; gap: 6px; padding-right: 16px; }
+  .ep-wordmark { font-size: 28px; }
+  .ep-nav-links { gap: 0; }
+  .ep-nav-links a { height: 36px; padding: 0 7px; font-size: 11px; }
+  .ep-nav-search { font-size: 11px; }
   .ep-hero-img { height: 280px; }
   .ep-hero-placeholder { height: 280px; }
   .ep-title { font-size: clamp(44px, 12vw, 72px); }
@@ -2053,24 +2039,20 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
 /* ── NAV SEARCH LINK ─────────────────────────────────────── */
 
 .ep-nav-search {
-  position: absolute;
-  right: 29px;
-  top: 44px;
   display: flex;
   align-items: center;
+  margin-left: auto;
+  flex-shrink: 0;
   font-family: var(--font-inter-tight), sans-serif;
   font-size: 14px;
   font-weight: 400;
   color: #000;
   text-decoration: none;
+  white-space: nowrap;
   transition: opacity 150ms ease;
 }
 
 .ep-nav-search:hover { opacity: 0.45; }
-
-@media (max-width: 640px) {
-  .ep-nav-search { top: 20px; right: 16px; font-size: 12px; }
-}
 
 /* ── SEARCH PAGE ─────────────────────────────────────────── */
 
@@ -2375,9 +2357,9 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
 .ep-gallery-link {
   display: block;
   font-family: var(--font-inter-tight), sans-serif;
-  font-size: 27px;
+  font-size: 20px;
   font-weight: 400;
-  font-style: italic;
+  font-style: normal;
   line-height: 33px;
   color: #000;
   text-decoration: none;
@@ -3008,33 +2990,40 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   color: #000;
 }
 
-/* ── Map popups (injected into Mapbox DOM) ───────────────────── */
+/* ── Map popups (injected into Mapbox DOM) ─────────────────────
+   Fixed size everywhere (StandaloneMap, VenueMap, ExhibitionMiniMap,
+   ExhibitionsSplitView) — content truncates/reserves space instead of
+   resizing the card, so the popup footprint never changes based on
+   whether an item has an image, a subtitle, or how long the title is. */
 
 .mp-popup {
   display: flex;
   flex-direction: row;
-  gap: 0;
+  width: 320px;
+  height: 158px;
+  overflow: hidden;
+  position: relative;
   font-family: var(--font-inter-tight), system-ui, sans-serif;
   background: #FFFCEC;
-}
-
-.mp-popup--multi {
-  flex-direction: column;
-  max-height: 360px;
-  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .mp-popup-thumb {
   width: 110px;
+  height: 100%;
   flex-shrink: 0;
-  align-self: stretch;
-  object-fit: cover;
-  display: block;
+  background-color: rgba(0, 0, 0, 0.06);
+  background-size: cover;
+  background-position: center;
+  position: relative;
 }
 
 .mp-popup-body {
   flex: 1;
-  padding: 12px 14px 14px;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -3046,6 +3035,11 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   color: #000;
   line-height: 1.3;
   margin: 0;
+  height: 36px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .mp-popup-artist {
@@ -3053,6 +3047,11 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   font-weight: 600;
   color: #000;
   margin: 0;
+  height: 16px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mp-popup-gallery {
@@ -3060,6 +3059,11 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   font-weight: 400;
   color: rgba(0, 0, 0, 0.5);
   margin: 0;
+  height: 15px;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mp-popup-date {
@@ -3068,13 +3072,19 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   font-style: italic;
   color: rgba(0, 0, 0, 0.5);
   margin: 0;
+  height: 15px;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mp-popup-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  margin-top: auto;
+  flex-shrink: 0;
 }
 
 .mp-popup-view {
@@ -3082,6 +3092,9 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   font-weight: 400;
   color: #0E2E80;
   text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: opacity 150ms ease;
 }
 
@@ -3095,6 +3108,8 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   border: 1px solid rgba(0, 0, 0, 0.25);
   padding: 3px 8px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: background 150ms ease, border-color 150ms ease;
 }
 
@@ -3103,17 +3118,53 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   border-color: rgba(0, 0, 0, 0.5);
 }
 
-.mp-popup-venue-header {
-  font-weight: 700;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  margin: 0;
+/* Prev/next arrow strip — overlaid on the thumbnail corner, absolutely positioned so it
+   never adds to the card's flow layout or changes its size when a marker groups 2+ shows */
+.mp-popup-nav {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 252, 236, 0.92);
+  padding: 2px 4px;
+  border-radius: 2px;
 }
 
-.mp-popup-divider {
-  border: none;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
-  margin: 0;
+.mp-popup-nav-btn {
+  background: transparent;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  color: #000;
+  font-size: 12px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.mp-popup-nav-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.45);
+}
+
+.mp-popup-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.mp-popup-nav-counter {
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.55);
+  font-weight: 500;
+  min-width: 20px;
+  text-align: center;
 }
 
 .mp-drawer-venue-header {
@@ -3127,14 +3178,26 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-/* Override Mapbox popup padding for our custom content */
-.mp-page .mapboxgl-popup-content {
+/* Every Mapbox popup in the app renders the custom .mp-popup card (see above), so
+   Mapbox's default white padded/rounded chrome and pointer tip are overridden globally
+   here rather than per-page. The extra `.mapboxgl-popup` ancestor qualifier raises
+   specificity above mapbox-gl.css's own (single-class) rules — without it, this loses
+   the cascade whenever mapbox-gl.css's per-component import happens to land later in
+   the compiled stylesheet order, which is what left the default white border visible. */
+.mapboxgl-popup .mapboxgl-popup-content {
   padding: 0;
   border-radius: 0;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
   overflow: hidden;
-  width: 375px;
   background: #FFFCEC;
+}
+
+.mapboxgl-popup .mapboxgl-popup-tip {
+  display: none;
+}
+
+.mapboxgl-popup .mapboxgl-popup-close-button {
+  display: none;
 }
 
 /* ── Mobile bottom drawer ────────────────────────────────────── */

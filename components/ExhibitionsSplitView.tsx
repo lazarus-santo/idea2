@@ -5,138 +5,21 @@ import Link from 'next/link'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import type { MapExhibition } from '@/lib/types'
+import { createPrimaryMarkerEl } from '@/lib/mapMarkers'
+import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
 
-function formatEndDate(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
-function formatArtists(artists: string[]): string {
-  if (artists.length <= 3) return artists.join(', ')
-  return `${artists.slice(0, 3).join(', ')} +${artists.length - 3}`
-}
-
-// Single-show popup — uses mp-popup classes to match the standalone map
-function buildSinglePopupEl(ex: MapExhibition): HTMLElement {
-  const wrap = document.createElement('div')
-  wrap.className = 'mp-popup'
-
-  if (ex.image_url) {
-    const img = document.createElement('img')
-    img.src = ex.image_url
-    img.alt = ex.show_title
-    img.className = 'mp-popup-thumb'
-    wrap.appendChild(img)
-  }
-
-  const body = document.createElement('div')
-  body.className = 'mp-popup-body'
-
-  const title = document.createElement('p')
-  title.className = 'mp-popup-title'
-  title.textContent = ex.show_title
-  body.appendChild(title)
-
-  if (ex.artists.length) {
-    const artists = document.createElement('p')
-    artists.className = 'mp-popup-artist'
-    artists.textContent = formatArtists(ex.artists)
-    body.appendChild(artists)
-  }
-
-  const gallery = document.createElement('p')
-  gallery.className = 'mp-popup-gallery'
-  gallery.textContent = ex.venue_name
-  body.appendChild(gallery)
-
-  if (ex.end_date) {
-    const date = document.createElement('p')
-    date.className = 'mp-popup-date'
-    date.textContent = `Until ${formatEndDate(ex.end_date)}`
-    body.appendChild(date)
-  }
-
-  const actions = document.createElement('div')
-  actions.className = 'mp-popup-actions'
-
-  const viewLink = document.createElement('a')
-  viewLink.href = `/exhibitions/${ex.id}`
-  viewLink.className = 'mp-popup-view'
-  viewLink.textContent = 'View Show'
-  actions.appendChild(viewLink)
-
-  const itinLink = document.createElement('a')
-  itinLink.href = `/map?add=${ex.id}`
-  itinLink.className = 'mp-popup-add'
-  itinLink.textContent = '+ Add to itinerary'
-  actions.appendChild(itinLink)
-
-  body.appendChild(actions)
-  wrap.appendChild(body)
-  return wrap
-}
-
-// Multi-show popup for venues with multiple exhibitions
-function buildMultiPopupEl(shows: MapExhibition[]): HTMLElement {
-  const wrap = document.createElement('div')
-  wrap.className = 'mp-popup mp-popup--multi'
-
-  const header = document.createElement('p')
-  header.className = 'mp-popup-gallery mp-popup-venue-header'
-  header.textContent = shows[0].venue_name
-  wrap.appendChild(header)
-
-  shows.forEach((ex, i) => {
-    if (i > 0) {
-      const divider = document.createElement('hr')
-      divider.className = 'mp-popup-divider'
-      wrap.appendChild(divider)
-    }
-
-    const row = document.createElement('div')
-    row.className = 'mp-popup-body'
-
-    const title = document.createElement('p')
-    title.className = 'mp-popup-title'
-    title.textContent = ex.show_title
-    row.appendChild(title)
-
-    if (ex.artists.length) {
-      const artists = document.createElement('p')
-      artists.className = 'mp-popup-artist'
-      artists.textContent = formatArtists(ex.artists)
-      row.appendChild(artists)
-    }
-
-    if (ex.end_date) {
-      const date = document.createElement('p')
-      date.className = 'mp-popup-date'
-      date.textContent = `Until ${formatEndDate(ex.end_date)}`
-      row.appendChild(date)
-    }
-
-    const actions = document.createElement('div')
-    actions.className = 'mp-popup-actions'
-
-    const viewLink = document.createElement('a')
-    viewLink.href = `/exhibitions/${ex.id}`
-    viewLink.className = 'mp-popup-view'
-    viewLink.textContent = 'View Show'
-    actions.appendChild(viewLink)
-
-    const itinLink = document.createElement('a')
-    itinLink.href = `/map?add=${ex.id}`
-    itinLink.className = 'mp-popup-add'
-    itinLink.textContent = '+ Add to itinerary'
-    actions.appendChild(itinLink)
-
-    row.appendChild(actions)
-    wrap.appendChild(row)
-  })
-
-  return wrap
+function popupItemsFor(shows: MapExhibition[]): PopupCardItem[] {
+  return shows.map((ex) => ({
+    title: ex.show_title,
+    subtitle: ex.artists.length ? formatArtists(ex.artists) : undefined,
+    meta: ex.venue_name,
+    dateLabel: ex.end_date ? `Until ${formatEndDate(ex.end_date)}` : undefined,
+    imageUrl: ex.image_url,
+    href: `/exhibitions/${ex.id}`,
+    addAction: { href: `/map?add=${ex.id}` },
+  }))
 }
 
 // Left-panel card — same ei-card structure as the grid, with hover sync
@@ -263,77 +146,71 @@ export default function ExhibitionsSplitView({ exhibitions, hoveredId, onHover }
     })
 
     byVenue.forEach(shows => {
-      shows.forEach((ex, idx) => {
-        const jitterAngle = shows.length > 1 ? (2 * Math.PI * idx) / shows.length : 0
-        const jitterR = shows.length > 1 ? 0.0003 : 0
-        const lat = ex.venue_lat! + jitterR * Math.cos(jitterAngle)
-        const lng = ex.venue_lng! + jitterR * Math.sin(jitterAngle)
+      const primary = shows[0]
+      const lat = primary.venue_lat!
+      const lng = primary.venue_lng!
 
-        bounds.extend([lng, lat])
+      bounds.extend([lng, lat])
 
-        const el = document.createElement('div')
-        el.style.cssText =
-          'width:14px;height:14px;border-radius:50%;background:#3432A8;' +
-          'border:2px solid #FFFCEC;cursor:pointer;box-sizing:border-box;' +
-          'transition:width 150ms ease,height 150ms ease;'
+      const el = createPrimaryMarkerEl()
+      el.style.transition = 'width 150ms ease, height 150ms ease'
 
-        let pinOver = false
-        let popupOver = false
-        let closeTimer: ReturnType<typeof setTimeout> | null = null
+      let pinOver = false
+      let popupOver = false
+      let closeTimer: ReturnType<typeof setTimeout> | null = null
 
-        function scheduleClose() {
-          closeTimer = setTimeout(() => {
-            if (!pinOver && !popupOver) popup.remove()
-          }, 200)
-        }
+      function scheduleClose() {
+        closeTimer = setTimeout(() => {
+          if (!pinOver && !popupOver) popup.remove()
+        }, 200)
+      }
 
-        function cancelClose() {
-          if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
-        }
+      function cancelClose() {
+        if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
+      }
 
-        // Attach hover listeners directly to the content element — more reliable than
-        // popup.on('open') + getElement(), which can miss events on first render
-        const popupContent = buildSinglePopupEl(ex)
-        popupContent.addEventListener('mouseenter', () => { popupOver = true; cancelClose() })
-        popupContent.addEventListener('mouseleave', () => { popupOver = false; scheduleClose() })
+      // Attach hover listeners directly to the content element — more reliable than
+      // popup.on('open') + getElement(), which can miss events on first render
+      const popupContent = buildPopupCard(popupItemsFor(shows))
+      popupContent.addEventListener('mouseenter', () => { popupOver = true; cancelClose() })
+      popupContent.addEventListener('mouseleave', () => { popupOver = false; scheduleClose() })
 
-        const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 14, maxWidth: '375px' })
-        popup.setDOMContent(popupContent)
+      const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 10, maxWidth: '375px' })
+      popup.setDOMContent(popupContent)
 
-        el.addEventListener('mouseenter', () => {
-          pinOver = true
-          cancelClose()
-          onHoverRef.current(ex.id)
-        })
-
-        el.addEventListener('mouseleave', () => {
-          pinOver = false
-          onHoverRef.current(null)
-          scheduleClose()
-        })
-
-        el.addEventListener('click', () => {
-          pinClickedRef.current = true
-          if (activePopupRef.current && activePopupRef.current !== popup) {
-            activePopupRef.current.remove()
-          }
-          if (!popup.isOpen()) {
-            popup.setLngLat([lng, lat]).addTo(map)
-            activePopupRef.current = popup
-          }
-        })
-
-        popup.on('close', () => {
-          if (activePopupRef.current === popup) activePopupRef.current = null
-        })
-
-        const marker = new mapboxgl.Marker(el)
-          .setLngLat([lng, lat])
-          .addTo(map)
-
-        markersRef.current.push(marker)
-        markerElsRef.current.set(ex.id, el)
+      el.addEventListener('mouseenter', () => {
+        pinOver = true
+        cancelClose()
+        onHoverRef.current(primary.id)
       })
+
+      el.addEventListener('mouseleave', () => {
+        pinOver = false
+        onHoverRef.current(null)
+        scheduleClose()
+      })
+
+      el.addEventListener('click', () => {
+        pinClickedRef.current = true
+        if (activePopupRef.current && activePopupRef.current !== popup) {
+          activePopupRef.current.remove()
+        }
+        if (!popup.isOpen()) {
+          popup.setLngLat([lng, lat]).addTo(map)
+          activePopupRef.current = popup
+        }
+      })
+
+      popup.on('close', () => {
+        if (activePopupRef.current === popup) activePopupRef.current = null
+      })
+
+      const marker = new mapboxgl.Marker(el)
+        .setLngLat([lng, lat])
+        .addTo(map)
+
+      markersRef.current.push(marker)
+      shows.forEach(ex => markerElsRef.current.set(ex.id, el))
     })
 
     if (!hasFitRef.current) {
@@ -349,12 +226,12 @@ export default function ExhibitionsSplitView({ exhibitions, hoveredId, onHover }
   useEffect(() => {
     markerElsRef.current.forEach((el, id) => {
       if (id === hoveredId) {
-        el.style.width = '20px'
-        el.style.height = '20px'
+        el.style.width = '24px'
+        el.style.height = '24px'
         el.style.animation = 'eim-pin-pulse 0.6s ease-out'
       } else {
-        el.style.width = '14px'
-        el.style.height = '14px'
+        el.style.width = '18px'
+        el.style.height = '18px'
         el.style.animation = ''
       }
     })

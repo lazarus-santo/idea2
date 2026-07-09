@@ -5,6 +5,8 @@ import Link from 'next/link'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import type { NearbyExhibition } from '@/lib/types'
+import { createPrimaryMarkerEl, createSecondaryMarkerEl } from '@/lib/mapMarkers'
+import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
 
@@ -34,9 +36,7 @@ export default function ExhibitionMiniMap({ exhibitionId, lat, lng }: Exhibition
     })
     mapRef.current = map
 
-    const primaryEl = document.createElement('div')
-    primaryEl.style.cssText =
-      'width:16px;height:16px;border-radius:50%;background:#3432A8;border:2px solid #fff;box-sizing:border-box;'
+    const primaryEl = createPrimaryMarkerEl()
     new mapboxgl.Marker(primaryEl).setLngLat([lng, lat]).addTo(map)
 
     return () => {
@@ -57,21 +57,33 @@ export default function ExhibitionMiniMap({ exhibitionId, lat, lng }: Exhibition
         secondaryMarkersRef.current = []
 
         const addMarkers = () => {
+          // Group by venue — a nearby venue with 2+ current shows gets one marker,
+          // paged via the shared popup card's prev/next arrows, same as the other map surfaces.
+          const byVenue = new Map<string, NearbyExhibition[]>()
           data.forEach((ex) => {
-            const el = document.createElement('div')
-            el.style.cssText =
-              'width:12px;height:12px;border-radius:50%;background:#FFFCEC;border:2px solid #3432A8;cursor:pointer;box-sizing:border-box;'
+            const arr = byVenue.get(ex.venue_id) ?? []
+            arr.push(ex)
+            byVenue.set(ex.venue_id, arr)
+          })
 
-            const popup = new mapboxgl.Popup({ closeButton: false, offset: 10 }).setHTML(
-              `<div style="font-family:system-ui,sans-serif;font-size:12px;line-height:1.5;color:#000;min-width:130px;padding:2px 0;">
-                <div style="font-weight:600;margin-bottom:1px;">${ex.show_title}</div>
-                <div style="opacity:0.55;margin-bottom:5px;">${ex.institution_name}</div>
-                <a href="/exhibitions/${ex.id}" style="color:#3432A8;text-decoration:none;font-size:11px;">View Show &rsaquo;</a>
-              </div>`
-            )
+          byVenue.forEach((shows) => {
+            const primary = shows[0]
+            const el = createSecondaryMarkerEl()
+
+            const items: PopupCardItem[] = shows.map((ex) => ({
+              title: ex.show_title,
+              subtitle: ex.artists.length ? formatArtists(ex.artists) : undefined,
+              meta: ex.institution_name,
+              dateLabel: ex.end_date ? `Until ${formatEndDate(ex.end_date)}` : undefined,
+              imageUrl: ex.image_url,
+              href: `/exhibitions/${ex.id}`,
+            }))
+
+            const popup = new mapboxgl.Popup({ closeButton: false, offset: 10, maxWidth: '375px' })
+            popup.setDOMContent(buildPopupCard(items))
 
             const marker = new mapboxgl.Marker(el)
-              .setLngLat([ex.lng, ex.lat])
+              .setLngLat([primary.lng, primary.lat])
               .setPopup(popup)
               .addTo(map)
             secondaryMarkersRef.current.push(marker)
