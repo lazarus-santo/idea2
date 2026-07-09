@@ -190,59 +190,53 @@ function isAboutArtist(result: PoolResult, artistName: string): boolean {
   return parts.every((p) => containsWholeWord(text, p))
 }
 
-// A single significant name-part means isAboutArtist can't meaningfully disambiguate —
-// it degrades to "does this mention the one word," which is true of almost every
-// candidate, right person or wrong. This is the signal for when to pay for the more
-// expensive LLM verification pass below instead of trusting the cheap filter alone.
-function isNameAmbiguous(artistName: string): boolean {
-  return significantNameParts(artistName).length <= 1
-}
-
-// Direct comprehension check against the exhibition's own press release, used only for
-// name-ambiguous (mononym) artists where keyword matching can't tell two same-named
-// people apart. Reasons from the actual source text every time, rather than a
-// pre-extracted phrase that can go stale or misattribute a detail about someone else
-// mentioned in the same source to the artist. `sourceText` should be the artist's own
-// bio when available (unambiguously about them, no misattribution risk) — falling back
-// to the exhibition's press release only when no bio exists, since a press release can
-// describe other people too (collaborators, curators, characters). Returns the subset
-// of URLs confirmed to be about the same person; on any failure (no source text, parse
-// failure, API error) returns all candidate URLs unfiltered rather than over-rejecting.
-async function verifyMononymCandidates(
-  artistName: string,
+// Direct comprehension check, run unconditionally on every candidate pool (not just
+// name-ambiguous artists) — keyword/name-presence matching alone can't tell "genuinely
+// about X" from "X gets a passing mention in something bigger." Concretely proven live:
+// an Artforum events index page and a Frieze "5 themes" multi-artist roundup both
+// legitimately contained an artist's name in their highlights and passed a pure
+// name-presence check, despite neither being an article about that artist. Reasons from
+// the actual source text every time rather than a pre-extracted phrase that can go stale
+// or misattribute a detail about someone else in the same source. `sourceText` — an
+// artist's bio, or an exhibition's press release — grounds the "same entity, not a
+// namesake" half of the check when available; the "substantially about, not incidental"
+// half works even without it, from the candidates' own title/highlight alone. Returns
+// the subset of URLs confirmed to genuinely, substantially be about the subject; on any
+// failure (parse failure, API error) returns all candidate URLs unfiltered rather than
+// over-rejecting.
+async function verifySubstantiallyAbout(
+  subjectLabel: string,
   sourceText: string | null,
   candidates: (PoolResult & { title: string })[]
 ): Promise<Set<string>> {
   const allUrls = new Set(candidates.map((c) => c.url))
-  if (candidates.length === 0 || !sourceText?.trim()) return allUrls
+  if (candidates.length === 0) return allUrls
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 1024,
     messages: [{
       role: 'user',
-      content: `The following text describes an artist named "${artistName}":
+      content: `${sourceText ? `The following text describes ${subjectLabel}:\n\n${sourceText.slice(0, 3000)}\n\n` : ''}Below are web search results that may or may not be genuinely, substantially about ${subjectLabel}.
 
-${sourceText.slice(0, 3000)}
-
-Below are web search results that may or may not be about this SAME person — some may be about a completely different, unrelated person who happens to share the name "${artistName}" (this is a common name), and some may be about a different person mentioned in the text above (e.g. a collaborator, curator, or character), not the artist "${artistName}" themself.
-
-For each result, decide whether it is genuinely about the artist "${artistName}" as described above.
+Reject a result if any of these apply:
+- It's about a different, unrelated person or thing that merely shares a name (common names can belong to multiple people/things)
+${sourceText ? `- It's actually about someone else mentioned in the background text above (e.g. a collaborator, curator, or character), not ${subjectLabel} themself\n` : ''}- It only mentions ${subjectLabel} in passing, as one of many in a broader event listing, index/category page, group roundup, or multi-subject survey, rather than being substantially about them specifically
 
 Results:
 ${JSON.stringify(candidates.map((c) => ({ url: c.url, title: c.title, highlight: c.highlights?.[0] ?? '' })))}
 
 Return ONLY a JSON array, one entry per result:
-[{"url": "...", "same_person": true}]`,
+[{"url": "...", "substantially_about": true}]`,
     }],
   }).catch(() => null)
 
   if (!response) return allUrls
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-  const parsed = extractJsonArray<{ url: string; same_person: boolean }>(text)
+  const parsed = extractJsonArray<{ url: string; substantially_about: boolean }>(text)
   if (!parsed) return allUrls
 
-  return new Set(parsed.filter((p) => p.same_person).map((p) => p.url))
+  return new Set(parsed.filter((p) => p.substantially_about).map((p) => p.url))
 }
 
 function isBlockedUrl(url: string, galleryDomains: Set<string>): boolean {
@@ -405,14 +399,18 @@ function classifyGalleryShow(artistCount: number): GalleryShowType {
 
 // Runs the shared "show review" search used by both group tiers: a single,
 // once-per-show query (not per-artist), domain-filtered to major press first,
-// falling back to an unfiltered retry when the filtered pool is too thin.
+// falling back to an unfiltered retry when the filtered pool is too thin. Unlike the
+// per-artist search, this had NO relevance check at all before — proven live to matter:
+// an unrelated New Yorker piece won a group show's review slot purely for being a
+// Tier-2 domain result, with nothing checking it was actually about the show.
 async function searchShowReview(
   exa: Exa,
   showTitle: string,
   venueName: string,
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   wantCount: number,
-  minDomainFilteredResults: number
+  minDomainFilteredResults: number,
+  pressRelease: string | null
 ): Promise<(PoolResult & { title: string })[]> {
   const query = `${showTitle} ${venueName} review exhibition 2025 OR 2026`
 
@@ -440,16 +438,21 @@ async function searchShowReview(
     console.log(`Exa show-review [${showTitle}]: ${candidates.length} domain-filtered result(s) — no retry needed`)
   }
 
+  if (candidates.length > 0) {
+    const confirmed = await verifySubstantiallyAbout(`the exhibition "${showTitle}" at ${venueName}`, pressRelease, candidates)
+    candidates = candidates.filter((r) => confirmed.has(r.url))
+  }
+
   return candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const }))
 }
 
 // Single artist profile/interview search, no domain filter — shared by both group tiers.
 // `disambiguator`, when present, is a short phrase (from the artist's bio, or the
 // exhibition's press release as fallback) appended to the query to widen recall toward
-// the right person — helpful even if imprecise, since the mononym verification pass
-// below (not this query) is what actually guarantees precision. `sourceText` is the
-// artist's own bio when one exists, else the shared press release — passed through to
-// that verification pass as the grounding text to reason against.
+// the right person — helpful even if imprecise, since the verification pass below (not
+// this query) is what actually guarantees precision. `sourceText` is the artist's own
+// bio when one exists, else the shared press release — passed through to that
+// verification pass as the grounding text to reason against.
 async function searchArtistProfile(
   exa: Exa,
   artistName: string,
@@ -469,8 +472,8 @@ async function searchArtistProfile(
 
   let candidates = (results.results as unknown as PoolResult[]).filter(isValid).filter((r) => isAboutArtist(r, artistName))
 
-  if (isNameAmbiguous(artistName) && candidates.length > 0) {
-    const confirmed = await verifyMononymCandidates(artistName, sourceText ?? null, candidates)
+  if (candidates.length > 0) {
+    const confirmed = await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
     candidates = candidates.filter((r) => confirmed.has(r.url))
   }
 
@@ -603,7 +606,7 @@ async function generateSmallGroupPrereads(
   context: Map<string, string>,
   bios: Map<string, string>
 ): Promise<GeneratePrereadsResult> {
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1)
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release)
 
   const perArtistResults = await Promise.all(
     exhibition.artists.map((artist) =>
@@ -640,7 +643,7 @@ async function generateLargeGroupPrereads(
   context: Map<string, string>,
   bios: Map<string, string>
 ): Promise<GeneratePrereadsResult> {
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2)
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release)
 
   const seenUrls = new Set(showReview.map((r) => r.url))
   const rows: (PoolResult & { title: string })[] = [...showReview]
@@ -781,15 +784,17 @@ export async function generatePrereads(
     console.log(`Exa S4 skipped (${valid.length} valid results after filtering)`)
   }
 
-  // Mononym names (e.g. "Klein") can't be disambiguated by name-parts alone — every
-  // candidate above passed isAboutArtist trivially. Run one comprehension check against
-  // the artist's own bio (preferred) or the exhibition's press release to weed out
-  // same-named unrelated people.
-  if (isNameAmbiguous(artistQuery) && valid.length > 0) {
+  // Name-presence alone (isAboutArtist above) can't tell "genuinely about this artist"
+  // from "artist gets a passing mention in something bigger" — proven live: an Artforum
+  // events index page and a Frieze multi-artist roundup both legitimately contained an
+  // artist's name and passed that check, despite neither being about them specifically.
+  // Run one comprehension check against the artist's own bio (preferred) or the
+  // exhibition's press release to catch both that and same-named unrelated people.
+  if (valid.length > 0) {
     const beforeCount = valid.length
-    const confirmed = await verifyMononymCandidates(artistQuery, bios.get(artistQuery) ?? exhibition.press_release, valid)
+    const confirmed = await verifySubstantiallyAbout(`the artist "${artistQuery}"`, bios.get(artistQuery) ?? exhibition.press_release, valid)
     valid = valid.filter((r) => confirmed.has(r.url))
-    console.log(`Mononym verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
+    console.log(`Substantially-about verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
   }
 
   // Sort: tier → content type → standalone-artist signal → recency
