@@ -10,6 +10,7 @@ import {
   classifyExhibitionUrls,
 } from './claude'
 import { geocodeVenueIfNeeded } from './geocoding'
+import { generateMuseumCoverage, crossLinkCoverageToReadings } from './museum-coverage'
 import { auditAndRepairPrereads, repairZeroPrereads } from './audit'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import type { VenueRecord, ExhibitionRaw } from './types'
@@ -1323,6 +1324,29 @@ export async function scrapeInstitution(
             errors.push({
               item: cleanTitle,
               step: 'preread',
+              message: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+      } else {
+        const { data: exRow } = await db
+          .from('exhibitions')
+          .select('coverage_type')
+          .eq('id', exhibitionId)
+          .maybeSingle()
+
+        if (!exRow?.coverage_type) {
+          try {
+            const { coverage, coverageType } = await generateMuseumCoverage(cleanTitle, venue.name, detail.artists)
+            await db.from('exhibitions').update({ coverage, coverage_type: coverageType }).eq('id', exhibitionId)
+            if (coverage.length > 0) {
+              await crossLinkCoverageToReadings(exhibitionId, coverage)
+            }
+          } catch (err) {
+            console.error(`[${vn}] Museum coverage generation failed for "${cleanTitle}":`, err)
+            errors.push({
+              item: cleanTitle,
+              step: 'coverage',
               message: err instanceof Error ? err.message : String(err),
             })
           }

@@ -51,11 +51,11 @@ function scanBalancedJson<T>(text: string, open: string, close: string): T | nul
   return lastValid
 }
 
-function extractJsonArray<T = unknown>(text: string): T[] | null {
+export function extractJsonArray<T = unknown>(text: string): T[] | null {
   return scanBalancedJson<T[]>(text, '[', ']')
 }
 
-function extractJsonObject<T = unknown>(text: string): T | null {
+export function extractJsonObject<T = unknown>(text: string): T | null {
   return scanBalancedJson<T>(text, '{', '}')
 }
 
@@ -94,9 +94,10 @@ const DOMAIN_TO_PUBLICATION: Record<string, string> = {
   'wsj.com': 'The Wall Street Journal',
   'vulture.com': 'Vulture',
   'nymag.com': 'New York Magazine',
+  'news.artnet.com': 'Artnet News',
 }
 
-function getResultDomain(url: string): string {
+export function getResultDomain(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
 }
 
@@ -257,7 +258,7 @@ function isBlockedUrl(url: string, galleryDomains: Set<string>): boolean {
 // Subdomains that are infrastructure, not the publication name itself.
 const STRIP_SUBDOMAIN_RE = /^(www|shop|blog|store|news|press|web|m|app|media)\./i
 
-function publicationFromUrl(url: string): string | null {
+export function publicationFromUrl(url: string): string | null {
   const host = getResultDomain(url)
   for (const [domain, name] of Object.entries(DOMAIN_TO_PUBLICATION)) {
     if (host.includes(domain)) return name

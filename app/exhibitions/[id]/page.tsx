@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
-import type { ExhibitionDetailData } from '@/lib/types'
+import type { ExhibitionDetailData, CoverageItem, CoverageDisplayItem } from '@/lib/types'
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -25,6 +25,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
       override_latitude,
       override_longitude,
       preread_type,
+      coverage,
       venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name)),
       exhibition_artists(artists!inner(name)),
       prereads(id, article_title, publication, article_url, thumbnail_url)
@@ -47,6 +48,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
     override_longitude: number | null
     is_ongoing: boolean | null
     preread_type: string | null
+    coverage: CoverageItem[] | null
   }
 
   const hasOverride = raw.address_override && raw.override_latitude && raw.override_longitude
@@ -107,6 +109,48 @@ export default async function ExhibitionPage({ params }: PageProps) {
     mergedPrereads = allPrereads
   }
 
+  // ── Merge coverage jsonb with exhibition_coverage-linked readings (museums) ────
+  let mergedCoverage: CoverageDisplayItem[] = []
+  if (prereadType === 'coverage_only') {
+    const { data: coverageLinksRaw } = await getSupabaseAdmin()
+      .from('exhibition_coverage')
+      .select('reading_id, readings!inner(id, headline, article_url, author, thumbnail_url, published_at, publications(name))')
+      .eq('exhibition_id', id)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const linkedReadingItems: CoverageDisplayItem[] = (coverageLinksRaw ?? []).map((row: any) => {
+      const r = row.readings
+      return {
+        url: r.article_url,
+        title: r.headline,
+        author: r.author ?? null,
+        publication: r.publications?.name ?? null,
+        published_date: r.published_at ?? null,
+        thumbnail_url: r.thumbnail_url ?? null,
+        reading_id: r.id,
+      }
+    })
+
+    const readingIdByUrl = new Map(linkedReadingItems.map((r) => [r.url, r.reading_id]))
+
+    const seenUrls = new Set<string>()
+    const fromCoverageJsonb: CoverageDisplayItem[] = (raw.coverage ?? [])
+      .filter((c: CoverageItem) => !!c.url && !seenUrls.has(c.url) && seenUrls.add(c.url))
+      .map((c: CoverageItem) => ({
+        url: c.url,
+        title: c.title,
+        author: c.author,
+        publication: c.publication,
+        published_date: c.published_date,
+        thumbnail_url: c.thumbnail_url,
+        reading_id: readingIdByUrl.get(c.url),
+      }))
+
+    const extraFromLinks = linkedReadingItems.filter((r) => !seenUrls.has(r.url) && seenUrls.add(r.url))
+
+    mergedCoverage = [...fromCoverageJsonb, ...extraFromLinks]
+  }
+
   const exhibition: ExhibitionDetailData = {
     id: raw.id,
     show_title: raw.show_title,
@@ -128,6 +172,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
     artists: (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
     preread_type: prereadType,
     prereads: mergedPrereads,
+    coverage: mergedCoverage,
   }
 
   return <ExhibitionDetail exhibition={exhibition} />

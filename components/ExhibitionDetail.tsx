@@ -19,6 +19,28 @@ function formatDateShort(dateStr: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+// Coverage dates come from Exa as full ISO datetimes, unlike the plain YYYY-MM-DD
+// exhibition dates formatDate/formatDateShort above expect.
+function formatCoverageDate(dateStr: string | null): string | null {
+  if (!dateStr) return null
+  const d = new Date(dateStr)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// Coverage titles come straight from a page's raw <title> tag, which often ends in a
+// site-branding suffix (e.g. "... - The Art Newspaper - International art news and
+// events") — redundant since the publication is already shown separately. Strips a
+// trailing separator + the publication name (and anything after it), but only when
+// preceded by a separator, so a legitimate in-title mention isn't cut.
+function stripTitleSiteSuffix(title: string, publication: string | null): string {
+  if (!publication) return title
+  const idx = title.toLowerCase().lastIndexOf(publication.toLowerCase())
+  if (idx <= 0) return title
+  const before = title.slice(0, idx).trimEnd()
+  return /[-|—·]\s*$/.test(before) ? before.replace(/[-|—·]\s*$/, '').trim() : title
+}
+
 function formatDateRange(start: string | null, end: string | null, isOngoing: boolean): string {
   if (!start && !end) return ''
   if (isOngoing || (!end && start)) {
@@ -33,6 +55,20 @@ function formatDateRange(start: string | null, end: string | null, isOngoing: bo
   }
   if (end) return `Through ${formatDate(end)}`
   return ''
+}
+
+// Sized to match Search's result thumbnails (.sr-thumb / .sr-thumb-img, 40x40).
+function PrereadThumbnail({ url }: { url: string | null }) {
+  return (
+    <div className="ep-preread-thumb-wrap">
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt="" className="ep-preread-thumb" />
+      ) : (
+        <div className="ep-preread-thumb-empty" />
+      )}
+    </div>
+  )
 }
 
 export default function ExhibitionDetail({ exhibition }: { exhibition: ExhibitionDetailData }) {
@@ -142,21 +178,55 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
               <p className="ep-pr-label">The Preread</p>
               <div className="ep-section-body">
                 {sortByTier(exhibition.prereads).map((p) => {
-                  const label = [p.publication, p.article_title].filter(Boolean).join(' — ')
+                  const title = p.article_title ? stripTitleSiteSuffix(p.article_title, p.publication) : p.article_title
+                  const label = [p.publication, title].filter(Boolean).join(' — ')
                   return p.article_url ? (
                     <a
                       key={p.id}
                       href={p.article_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="ep-preread-link"
+                      className="ep-preread-row"
                     >
-                      {label || p.article_url}
+                      <PrereadThumbnail url={p.thumbnail_url} />
+                      <span>{label || p.article_url}</span>
                     </a>
                   ) : (
-                    <span key={p.id} className="ep-preread-link ep-preread-link--no-url">
-                      {label}
+                    <span key={p.id} className="ep-preread-row ep-preread-row--no-url">
+                      <PrereadThumbnail url={p.thumbnail_url} />
+                      <span>{label}</span>
                     </span>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {exhibition.coverage.length > 0 && (
+            <div className="ep-section">
+              <p className="ep-pr-label">Coverage</p>
+              <div className="ep-section-body">
+                {exhibition.coverage.map((c) => {
+                  const meta = [c.publication, formatCoverageDate(c.published_date)].filter(Boolean).join(' · ')
+                  const title = c.title ? stripTitleSiteSuffix(c.title, c.publication) : c.title
+                  const label = [meta, title].filter(Boolean).join(' — ')
+                  const content = label || c.url
+                  return c.reading_id ? (
+                    <Link key={c.url} href={`/readings/${c.reading_id}`} className="ep-preread-row">
+                      <PrereadThumbnail url={c.thumbnail_url} />
+                      <span>{content}</span>
+                    </Link>
+                  ) : (
+                    <a
+                      key={c.url}
+                      href={c.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ep-preread-row"
+                    >
+                      <PrereadThumbnail url={c.thumbnail_url} />
+                      <span>{content}</span>
+                    </a>
                   )
                 })}
               </div>
