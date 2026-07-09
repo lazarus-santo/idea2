@@ -71,51 +71,30 @@ export default async function ExhibitionPage({ params }: PageProps) {
     } catch { return 3 }
   }
 
-  // ── Merge prereads with River-linked readings ─────────────────────────────────
+  // Prereads shown here are Agent 2's own output only — Agent 3's readings_tags cross-link
+  // used to be merged in too, but that tagging is a raw substring match with no relevance
+  // verification (proven live: it matched "Klein" inside "Kleinert," a venue name, and
+  // surfaced an unrelated Hudson Valley gallery guide on Klein's own exhibition page).
+  // Halted until Agent 3's tagging gets the same verification Agent 2 now has.
   let mergedPrereads: ExhibitionDetailData['prereads'] = []
   if (prereadType === 'full') {
-    const { data: linkedReadingsRaw } = await getSupabaseAdmin()
-      .from('readings_tags')
-      .select('readings!inner(id, headline, article_url, thumbnail_url, published_at, publications(name))')
-      .eq('exhibition_id', id)
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const linkedPrereads: ExhibitionDetailData['prereads'] = (linkedReadingsRaw ?? []).map((tag: any) => {
-      const r = tag.readings
-      return {
-        id: r.id,
-        article_title: r.headline,
-        publication: r.publications?.name ?? null,
-        article_url: r.article_url,
-        thumbnail_url: r.thumbnail_url ?? null,
-        _published_at: r.published_at as string | null,
-      }
-    })
-
-    const seenUrls = new Set<string>()
-    const allPrereads = [...(raw.prereads ?? []), ...linkedPrereads].filter((p) => {
-      if (!p.article_url || seenUrls.has(p.article_url)) return false
-      seenUrls.add(p.article_url)
-      return true
-    })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    allPrereads.sort((a, b) => {
-      const tierDiff = urlTier(a.article_url) - urlTier(b.article_url)
-      if (tierDiff !== 0) return tierDiff
-      const dateA = (a as any)._published_at ? new Date((a as any)._published_at).getTime() : 0
-      const dateB = (b as any)._published_at ? new Date((b as any)._published_at).getTime() : 0
-      return dateB - dateA
-    })
-    mergedPrereads = allPrereads
+    mergedPrereads = (raw.prereads ?? [])
+      .filter((p) => !!p.article_url)
+      .sort((a, b) => urlTier(a.article_url) - urlTier(b.article_url))
   }
 
   // ── Merge coverage jsonb with exhibition_coverage-linked readings (museums) ────
+  // Only source='agent2' links are included — Agent 3's own cross-linking (tagReading in
+  // readings-curator.ts) uses the same unverified substring matching that caused the
+  // "Kleinert" bug on the gallery side, so it's excluded here until it gets a real
+  // relevance check too.
   let mergedCoverage: CoverageDisplayItem[] = []
   if (prereadType === 'coverage_only') {
     const { data: coverageLinksRaw } = await getSupabaseAdmin()
       .from('exhibition_coverage')
       .select('reading_id, readings!inner(id, headline, article_url, author, thumbnail_url, published_at, publications(name))')
       .eq('exhibition_id', id)
+      .eq('source', 'agent2')
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const linkedReadingItems: CoverageDisplayItem[] = (coverageLinksRaw ?? []).map((row: any) => {
