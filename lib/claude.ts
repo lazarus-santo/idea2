@@ -191,10 +191,27 @@ function isAboutArtist(result: PoolResult, artistName: string): boolean {
 }
 
 type CandidateContentType = 'interview' | 'profile' | 'review' | 'news' | 'other'
+type CandidateSourceType = 'editorial' | 'venue' | 'self' | 'listing' | 'other'
 
 interface VerifiedCandidate {
   substantiallyAbout: boolean
   contentType: CandidateContentType
+  sourceType: CandidateSourceType
+}
+
+// The storage gate: a candidate must be genuinely about the subject AND come from an
+// actual editorial publication. Domain heuristics can't reliably catch non-press
+// sources — proven live: a representing gallery's own artist page ("Sawako Goda |
+// Nonaka-Hill"), a museum's event listing ("Riobamba | Activity | MACBA"), and a
+// directory profile ("Michele Cesaratto | HENI News Profile") all passed every
+// domain/name/aboutness check, because they ARE about the right artist — they're just
+// not press. Candidates that fail this gate are dropped entirely, even if that leaves
+// fewer results than the cap (or none): a sparse-but-real preread list beats a padded
+// one. Fails open only when verification itself errored (v missing), matching the
+// existing fail-open behavior for API errors.
+function passesQualityGate(v: VerifiedCandidate | undefined): boolean {
+  if (!v) return true
+  return v.substantiallyAbout && v.sourceType === 'editorial'
 }
 
 // Direct comprehension check, run unconditionally on every candidate pool (not just
@@ -223,12 +240,12 @@ async function verifySubstantiallyAbout(
   sourceText: string | null,
   candidates: (PoolResult & { title: string })[]
 ): Promise<Map<string, VerifiedCandidate>> {
-  const fallback = new Map(candidates.map((c) => [c.url, { substantiallyAbout: true, contentType: 'other' as CandidateContentType }]))
+  const fallback = new Map(candidates.map((c) => [c.url, { substantiallyAbout: true, contentType: 'other' as CandidateContentType, sourceType: 'editorial' as CandidateSourceType }]))
   if (candidates.length === 0) return fallback
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
+    max_tokens: 1500,
     messages: [{
       role: 'user',
       content: `${sourceText ? `The following text describes ${subjectLabel}:\n\n${sourceText.slice(0, 3000)}\n\n` : ''}Below are web search results that may or may not be genuinely, substantially about ${subjectLabel}.
@@ -239,17 +256,24 @@ ${sourceText ? `- It's actually about someone else mentioned in the background t
 
 For every result, also classify its content_type as one of: "interview" (a direct Q&A or conversation with the subject), "profile" (a feature/biographical piece primarily about the subject, not structured as Q&A), "review" (a review of a specific work — an album, show, book, film, etc.), "news" (a news/announcement item), or "other".
 
+For every result, also classify its source_type — judge from the URL's domain/path and the title, e.g. a title like "Artist Name | Gallery Name" or a URL path like /artists/ or /activity/ signals a venue or listing page, not an article:
+- "editorial": an article published by a news outlet, magazine, journal, radio/culture site, or independent editorial blog — someone writing ABOUT the subject as press
+- "venue": a gallery's, museum's, or institution's own website — artist roster pages, exhibition pages, event listings, program pages, or press releases they host themselves
+- "self": the subject's own website, label/artist page, online store, streaming or social profile
+- "listing": a directory, database, aggregator, ticketing, retail, or index page
+- "other": anything else
+
 Results:
 ${JSON.stringify(candidates.map((c) => ({ url: c.url, title: c.title, highlight: c.highlights?.[0] ?? '' })))}
 
 Return ONLY a JSON array, one entry per result:
-[{"url": "...", "substantially_about": true, "content_type": "interview"}]`,
+[{"url": "...", "substantially_about": true, "content_type": "interview", "source_type": "editorial"}]`,
     }],
   }).catch(() => null)
 
   if (!response) return fallback
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-  const parsed = extractJsonArray<{ url: string; substantially_about: boolean; content_type?: string }>(text)
+  const parsed = extractJsonArray<{ url: string; substantially_about: boolean; content_type?: string; source_type?: string }>(text)
   if (!parsed) return fallback
 
   const result = new Map<string, VerifiedCandidate>()
@@ -258,7 +282,11 @@ Return ONLY a JSON array, one entry per result:
       (['interview', 'profile', 'review', 'news'] as const).includes(p.content_type as 'interview' | 'profile' | 'review' | 'news')
         ? (p.content_type as CandidateContentType)
         : 'other'
-    result.set(p.url, { substantiallyAbout: !!p.substantially_about, contentType })
+    const sourceType: CandidateSourceType =
+      (['editorial', 'venue', 'self', 'listing'] as const).includes(p.source_type as 'editorial' | 'venue' | 'self' | 'listing')
+        ? (p.source_type as CandidateSourceType)
+        : 'other'
+    result.set(p.url, { substantiallyAbout: !!p.substantially_about, contentType, sourceType })
   }
   return result
 }
@@ -267,6 +295,7 @@ function isBlockedUrl(url: string, galleryDomains: Set<string>): boolean {
   const host = getResultDomain(url)
   if (host.includes('wikipedia.org')) return true
   if (host.includes('substack.com')) return true
+  if (host.includes('linkedin.com')) return true
   if (isArtsyArtistPage(url)) return true
   if (galleryDomains.has(registrableDomain(url))) return true
   if (GALLERY_HOSTNAME_RE.test(host)) return true
@@ -464,7 +493,7 @@ async function searchShowReview(
 
   if (candidates.length > 0) {
     const verified = await verifySubstantiallyAbout(`the exhibition "${showTitle}" at ${venueName}`, pressRelease, candidates)
-    candidates = candidates.filter((r) => verified.get(r.url)?.substantiallyAbout ?? true)
+    candidates = candidates.filter((r) => passesQualityGate(verified.get(r.url)))
   }
 
   return candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const }))
@@ -499,7 +528,7 @@ async function searchArtistProfile(
   let verified = new Map<string, VerifiedCandidate>()
   if (candidates.length > 0) {
     verified = await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
-    candidates = candidates.filter((r) => verified.get(r.url)?.substantiallyAbout ?? true)
+    candidates = candidates.filter((r) => passesQualityGate(verified.get(r.url)))
   }
 
   // Tier still wins first — a Tier-1 review shouldn't lose to a random blog's interview.
@@ -844,7 +873,7 @@ export async function generatePrereads(
   if (valid.length > 0) {
     const beforeCount = valid.length
     verifiedSolo = await verifySubstantiallyAbout(`the artist "${artistQuery}"`, bios.get(artistQuery) ?? exhibition.press_release, valid)
-    valid = valid.filter((r) => verifiedSolo.get(r.url)?.substantiallyAbout ?? true)
+    valid = valid.filter((r) => passesQualityGate(verifiedSolo.get(r.url)))
     console.log(`Substantially-about verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
   }
 

@@ -86,7 +86,7 @@ export async function auditAndRepairPrereads(exhibitionIds?: string[], errors: A
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const artists = (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[]
 
-        const { prereads: newPrereads } = await generatePrereads({
+        const { prereads: regenerated_ } = await generatePrereads({
           show_title: raw.show_title,
           artists,
           start_date: raw.start_date,
@@ -97,6 +97,13 @@ export async function auditAndRepairPrereads(exhibitionIds?: string[], errors: A
           image_url: raw.image_url ?? null,
           venue_name: raw.venues.name,
         })
+
+        // Generation now enforces a quality gate, so an exhibition can legitimately sit
+        // below the "< 2" threshold indefinitely — a repair run must not re-insert the
+        // article(s) it already has each time it retries.
+        const deletedIds = new Set(toDelete.map((p) => p.id))
+        const keptUrls = new Set(prereads.filter((p) => !deletedIds.has(p.id)).map((p) => p.article_url))
+        const newPrereads = regenerated_.filter((p) => p.article_url && !keptUrls.has(p.article_url))
 
         if (newPrereads.length > 0) {
           await db.from('prereads').insert(newPrereads.map((p) => ({ ...p, exhibition_id: raw.id })))
