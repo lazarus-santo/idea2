@@ -190,6 +190,13 @@ function isAboutArtist(result: PoolResult, artistName: string): boolean {
   return parts.every((p) => containsWholeWord(text, p))
 }
 
+type CandidateContentType = 'interview' | 'profile' | 'review' | 'news' | 'other'
+
+interface VerifiedCandidate {
+  substantiallyAbout: boolean
+  contentType: CandidateContentType
+}
+
 // Direct comprehension check, run unconditionally on every candidate pool (not just
 // name-ambiguous artists) — keyword/name-presence matching alone can't tell "genuinely
 // about X" from "X gets a passing mention in something bigger." Concretely proven live:
@@ -200,17 +207,24 @@ function isAboutArtist(result: PoolResult, artistName: string): boolean {
 // or misattribute a detail about someone else in the same source. `sourceText` — an
 // artist's bio, or an exhibition's press release — grounds the "same entity, not a
 // namesake" half of the check when available; the "substantially about, not incidental"
-// half works even without it, from the candidates' own title/highlight alone. Returns
-// the subset of URLs confirmed to genuinely, substantially be about the subject; on any
-// failure (parse failure, API error) returns all candidate URLs unfiltered rather than
-// over-rejecting.
+// half works even without it, from the candidates' own title/highlight alone.
+//
+// Also classifies each candidate's content type in the same call (no extra cost) — added
+// after a live case where a search explicitly intended to find an interview/profile
+// (searchArtistProfile's own query says so) instead picked an album review over an
+// available interview, purely because both were Tier 3 and the review was 4 days more
+// recent. Tier/recency alone can't express "this search wanted an interview."
+//
+// Returns a map from URL to verification result; on any failure (parse failure, API
+// error) marks every candidate as substantially-about with contentType 'other' rather
+// than over-rejecting — callers that don't care about content type can ignore that field.
 async function verifySubstantiallyAbout(
   subjectLabel: string,
   sourceText: string | null,
   candidates: (PoolResult & { title: string })[]
-): Promise<Set<string>> {
-  const allUrls = new Set(candidates.map((c) => c.url))
-  if (candidates.length === 0) return allUrls
+): Promise<Map<string, VerifiedCandidate>> {
+  const fallback = new Map(candidates.map((c) => [c.url, { substantiallyAbout: true, contentType: 'other' as CandidateContentType }]))
+  if (candidates.length === 0) return fallback
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -219,24 +233,34 @@ async function verifySubstantiallyAbout(
       role: 'user',
       content: `${sourceText ? `The following text describes ${subjectLabel}:\n\n${sourceText.slice(0, 3000)}\n\n` : ''}Below are web search results that may or may not be genuinely, substantially about ${subjectLabel}.
 
-Reject a result if any of these apply:
+Reject a result (substantially_about: false) if any of these apply:
 - It's about a different, unrelated person or thing that merely shares a name (common names can belong to multiple people/things)
 ${sourceText ? `- It's actually about someone else mentioned in the background text above (e.g. a collaborator, curator, or character), not ${subjectLabel} themself\n` : ''}- It only mentions ${subjectLabel} in passing, as one of many in a broader event listing, index/category page, group roundup, or multi-subject survey, rather than being substantially about them specifically
+
+For every result, also classify its content_type as one of: "interview" (a direct Q&A or conversation with the subject), "profile" (a feature/biographical piece primarily about the subject, not structured as Q&A), "review" (a review of a specific work — an album, show, book, film, etc.), "news" (a news/announcement item), or "other".
 
 Results:
 ${JSON.stringify(candidates.map((c) => ({ url: c.url, title: c.title, highlight: c.highlights?.[0] ?? '' })))}
 
 Return ONLY a JSON array, one entry per result:
-[{"url": "...", "substantially_about": true}]`,
+[{"url": "...", "substantially_about": true, "content_type": "interview"}]`,
     }],
   }).catch(() => null)
 
-  if (!response) return allUrls
+  if (!response) return fallback
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-  const parsed = extractJsonArray<{ url: string; substantially_about: boolean }>(text)
-  if (!parsed) return allUrls
+  const parsed = extractJsonArray<{ url: string; substantially_about: boolean; content_type?: string }>(text)
+  if (!parsed) return fallback
 
-  return new Set(parsed.filter((p) => p.substantially_about).map((p) => p.url))
+  const result = new Map<string, VerifiedCandidate>()
+  for (const p of parsed) {
+    const contentType: CandidateContentType =
+      (['interview', 'profile', 'review', 'news'] as const).includes(p.content_type as 'interview' | 'profile' | 'review' | 'news')
+        ? (p.content_type as CandidateContentType)
+        : 'other'
+    result.set(p.url, { substantiallyAbout: !!p.substantially_about, contentType })
+  }
+  return result
 }
 
 function isBlockedUrl(url: string, galleryDomains: Set<string>): boolean {
@@ -439,8 +463,8 @@ async function searchShowReview(
   }
 
   if (candidates.length > 0) {
-    const confirmed = await verifySubstantiallyAbout(`the exhibition "${showTitle}" at ${venueName}`, pressRelease, candidates)
-    candidates = candidates.filter((r) => confirmed.has(r.url))
+    const verified = await verifySubstantiallyAbout(`the exhibition "${showTitle}" at ${venueName}`, pressRelease, candidates)
+    candidates = candidates.filter((r) => verified.get(r.url)?.substantiallyAbout ?? true)
   }
 
   return candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const }))
@@ -472,12 +496,31 @@ async function searchArtistProfile(
 
   let candidates = (results.results as unknown as PoolResult[]).filter(isValid).filter((r) => isAboutArtist(r, artistName))
 
+  let verified = new Map<string, VerifiedCandidate>()
   if (candidates.length > 0) {
-    const confirmed = await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
-    candidates = candidates.filter((r) => confirmed.has(r.url))
+    verified = await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
+    candidates = candidates.filter((r) => verified.get(r.url)?.substantiallyAbout ?? true)
   }
 
-  const sorted = sortByTierAndRecency(candidates)
+  // Tier still wins first — a Tier-1 review shouldn't lose to a random blog's interview.
+  // But this search explicitly asks for "interview profile" content, so within the same
+  // tier, prefer a genuine interview/profile match over e.g. an album review that merely
+  // happens to be more recent. Proven live: a Pitchfork album review beat a Pitchfork
+  // interview for Klein by 4 days, purely on recency, despite the interview being the
+  // clearly better fit for a piece meant to introduce a reader to the artist.
+  const CONTENT_TYPE_RANK: Record<CandidateContentType, number> = {
+    interview: 0, profile: 0, review: 1, news: 2, other: 2,
+  }
+  const sorted = [...candidates].sort((a, b) => {
+    const tierDiff = getResultTier(a.url) - getResultTier(b.url)
+    if (tierDiff !== 0) return tierDiff
+    const rankA = CONTENT_TYPE_RANK[verified.get(a.url)?.contentType ?? 'other']
+    const rankB = CONTENT_TYPE_RANK[verified.get(b.url)?.contentType ?? 'other']
+    if (rankA !== rankB) return rankA - rankB
+    const dateA = a.publishedDate ? new Date(a.publishedDate).getTime() : 0
+    const dateB = b.publishedDate ? new Date(b.publishedDate).getTime() : 0
+    return dateB - dateA
+  })
   return sorted[0] ? { ...sorted[0], contentPriority: 1 as const } : null
 }
 
@@ -496,22 +539,28 @@ async function fetchArtistBios(artistNames: string[]): Promise<Map<string, strin
   return bios
 }
 
-// Extracts a short disambiguating phrase for one artist from their own bio — single-
-// subject text, so no misattribution risk, cheap Haiku call is reliable here.
+// Extracts a disambiguating phrase for one artist from their own bio — single-subject
+// text, so no misattribution risk, cheap Haiku call is reliable here. Asks for ALL
+// distinctive roles, not just one — a single 2-5 word pick is a lottery on which facet
+// of a multi-hyphenate gets mentioned, and that facet is what actually drives search
+// recall. Proven live: Klein is genuinely a musician AND composer AND filmmaker, but a
+// disambiguator that happened to land on "composer and artist based in London" (true,
+// but missing "musician") meant Dazed and Vogue — outlets that frame her specifically as
+// a musician — never surfaced in any query, run after run.
 async function extractDisambiguatorFromBio(artistName: string, bio: string): Promise<string> {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 128,
     messages: [{
       role: 'user',
-      content: `From this artist bio, extract a short disambiguating phrase (2-5 words) that would help distinguish "${artistName}" from an unrelated person who happens to share their name in a web search.
+      content: `From this artist bio, extract ALL distinctive roles or professions "${artistName}" is described as — every one stated or clearly implied, not just the single most prominent one. These will be used to help find them in a web search among unrelated people who happen to share their name.
 
-Do NOT include generic words like "artist," "visual artist," "gallery," or "exhibition." Only include what's actually distinctive: another profession or medium (e.g. "musician," "photographer," "filmmaker," "sculptor"), nationality, or a city they're based in. Use only what's stated or implied in the text — do not invent details.
+Do NOT include generic words like "artist," "visual artist," "gallery," or "exhibition." Only include what's actually distinctive: other professions or mediums (e.g. "musician," "composer," "photographer," "filmmaker," "sculptor"), nationality, or a city they're based in. Use only what's stated or implied in the text — do not invent details.
 
 Bio:
 ${bio.slice(0, 2000)}
 
-Return ONLY the phrase itself, nothing else. If nothing distinctive is stated, return an empty string.`,
+Return ONLY a comma-separated list of the distinguishing terms, nothing else. If nothing distinctive is stated, return an empty string.`,
     }],
   }).catch(() => null)
   if (!response) return ''
@@ -554,18 +603,18 @@ async function extractArtistSearchContext(
     max_tokens: 512,
     messages: [{
       role: 'user',
-      content: `From this exhibition press release, extract a short disambiguating phrase (2-5 words) for each artist listed below. It should be specific enough to help distinguish them in a web search from an unrelated person who happens to share their name.
+      content: `From this exhibition press release, extract ALL distinctive roles or professions for each artist listed below — every one stated or clearly implied for that artist, not just the single most prominent one. A single pick is a lottery on which facet of a multi-hyphenate artist gets used, and that facet is what actually drives whether the right web search results get found later.
 
 Press releases often mention OTHER people too — collaborators, curators, actors, or characters in a work. Only extract details stated about the named artist THEMSELF, never a detail that actually describes someone else mentioned in the text. Read carefully to confirm who a given description's subject really is before attributing it — do not assume the nearest adjective or nationality in the text belongs to the artist just because it appears near their name.
 
-Do NOT include generic words like "artist," "visual artist," "gallery," or "exhibition" — everyone in this context is already an artist, so those words don't distinguish anyone. Only include what's actually distinctive: another profession or medium (e.g. "musician," "photographer," "filmmaker," "sculptor"), nationality, a city they're based in, or a similarly specific identifying detail. Use only what's stated or clearly implied in the text — do not invent details, and do not guess if uncertain. If nothing distinctive and clearly-attributed is stated for an artist, use an empty string for them.
+Do NOT include generic words like "artist," "visual artist," "gallery," or "exhibition" — everyone in this context is already an artist, so those words don't distinguish anyone. Only include what's actually distinctive: other professions or mediums (e.g. "musician," "composer," "photographer," "filmmaker," "sculptor"), nationality, a city they're based in, or similarly specific identifying details. Use only what's stated or clearly implied in the text — do not invent details, and do not guess if uncertain. If nothing distinctive and clearly-attributed is stated for an artist, use an empty string for them.
 
 Artists: ${JSON.stringify(remaining)}
 
 Press release:
 ${pressRelease.slice(0, 4000)}
 
-Return ONLY a JSON object mapping each artist name to their disambiguating phrase:
+Return ONLY a JSON object mapping each artist name to a comma-separated list of their distinguishing terms:
 {"${remaining[0]}": "..."}`,
     }],
   }).catch(() => null)
@@ -789,20 +838,34 @@ export async function generatePrereads(
   // events index page and a Frieze multi-artist roundup both legitimately contained an
   // artist's name and passed that check, despite neither being about them specifically.
   // Run one comprehension check against the artist's own bio (preferred) or the
-  // exhibition's press release to catch both that and same-named unrelated people.
+  // exhibition's press release to catch both that and same-named unrelated people —
+  // also classifies content type (interview/profile/review/news/other) in the same call.
+  let verifiedSolo = new Map<string, VerifiedCandidate>()
   if (valid.length > 0) {
     const beforeCount = valid.length
-    const confirmed = await verifySubstantiallyAbout(`the artist "${artistQuery}"`, bios.get(artistQuery) ?? exhibition.press_release, valid)
-    valid = valid.filter((r) => confirmed.has(r.url))
+    verifiedSolo = await verifySubstantiallyAbout(`the artist "${artistQuery}"`, bios.get(artistQuery) ?? exhibition.press_release, valid)
+    valid = valid.filter((r) => verifiedSolo.get(r.url)?.substantiallyAbout ?? true)
     console.log(`Substantially-about verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
   }
 
-  // Sort: tier → content type → standalone-artist signal → recency
+  // Sort: tier → which search found it → content type → standalone-artist signal → recency
   // Tier wins first: Artforum always beats a Tier 3 blog regardless of content type.
+  // contentPriority next: S2's critical-essay search is intentionally ranked above S1's
+  // general search, and that's still a real signal worth keeping. Content type (from the
+  // verification pass above) then breaks ties WITHIN the same priority tier — proven live:
+  // two same-priority Pitchfork pieces (an interview and an album review) were tied on
+  // everything above, and recency alone picked the review over the clearly-better-fit
+  // interview by 4 days. This only kicks in on that kind of tie, not as an override.
+  const SOLO_CONTENT_TYPE_RANK: Record<CandidateContentType, number> = {
+    interview: 0, profile: 0, review: 1, news: 2, other: 2,
+  }
   valid.sort((a, b) => {
     const tierDiff = getResultTier(a.url) - getResultTier(b.url)
     if (tierDiff !== 0) return tierDiff
     if (a.contentPriority !== b.contentPriority) return a.contentPriority - b.contentPriority
+    const typeRankA = SOLO_CONTENT_TYPE_RANK[verifiedSolo.get(a.url)?.contentType ?? 'other']
+    const typeRankB = SOLO_CONTENT_TYPE_RANK[verifiedSolo.get(b.url)?.contentType ?? 'other']
+    if (typeRankA !== typeRankB) return typeRankA - typeRankB
     const aStandalone = isStandaloneArticle(a.title, artistQuery) ? 0 : 1
     const bStandalone = isStandaloneArticle(b.title, artistQuery) ? 0 : 1
     if (aStandalone !== bStandalone) return aStandalone - bStandalone
