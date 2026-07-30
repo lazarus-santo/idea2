@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter_Tight } from "next/font/google";
+import LiquidGlassFilter from "@/components/LiquidGlassFilter";
 import "./globals.css";
 
 const interTight = Inter_Tight({
@@ -20,7 +21,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={interTight.variable}>{children}</body>
+      <body className={interTight.variable}>
+        <LiquidGlassFilter />
+        {children}
+      </body>
     </html>
   );
 }

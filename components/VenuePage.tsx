@@ -95,7 +95,7 @@ export default function VenuePage({
   return (
     <div className="gp-body">
       {/* Nav — reuses ep-nav pattern */}
-      <nav className="ep-nav" style={{ position: 'relative', background: '#FFFCEC' }} aria-label="Site navigation">
+      <nav className="ep-nav" style={{ position: 'relative' }} aria-label="Site navigation">
         <div className="ep-nav-inner">
           <Link href="/" className="ep-wordmark">Idea 2</Link>
           <div className="ep-nav-links">

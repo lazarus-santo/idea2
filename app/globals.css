@@ -688,8 +688,13 @@ a:hover { opacity: 0.75; }
   width: 100%;
 }
 
+/* Interior-page nav: sticky so content slides beneath the glass pill */
 .ei-nav {
-  background: #FFFCEC;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 14px 24px 0;
+  background: transparent;
 }
 
 .ei-main {
@@ -1135,13 +1140,14 @@ a:hover { opacity: 0.75; }
   left: 0;
   right: 0;
   z-index: 10;
+  padding: 14px 24px 0;
   background: transparent;
 }
 
-/* No hero image: nav sits in normal flow with cream background */
+/* No hero image: nav sits in normal flow, glass pill over cream */
 .ep-hero--no-image .ep-nav {
   position: relative;
-  background: #FFFCEC;
+  background: transparent;
 }
 
 /*
@@ -1153,14 +1159,64 @@ a:hover { opacity: 0.75; }
  * as it narrowed, the left-anchored links and the right-anchored Search converged
  * and overlapped. Flex with gap/nowrap reflows correctly at every width instead.
  */
+/*
+ * Liquid-glass pill (after aave.com/design/building-glass-for-the-web).
+ * Layer stack: refraction (SVG feDisplacementMap via backdrop-filter url(),
+ * see components/LiquidGlassFilter.tsx) → chroma tint (cream at low alpha +
+ * saturate) → inner glow → 45° specular edge highlight (bright top-left inset,
+ * faint bottom-right) → soft lift shadow.
+ *
+ * max-width is pinned to 1344px because that is the displacement map's intrinsic
+ * width. feImage draws the map at intrinsic size (its preserveAspectRatio="none"
+ * can't stretch it — the primitive subregion has no definite size to stretch to),
+ * so any pill wider than the map leaves the overhang with no displacement data:
+ * at 1392px the last 48px — exactly the rounded right cap, where Search sits —
+ * rendered as flat opaque cream with a hard vertical seam. Keep these two numbers
+ * equal; if the pill width changes, regenerate the map to match.
+ */
 .ep-nav-inner {
-  max-width: 1440px;
+  position: relative;
+  isolation: isolate;
+  max-width: 1344px;
   margin: 0 auto;
-  height: 112px;
+  height: 64px;
   display: flex;
   align-items: center;
   gap: 13px;
-  padding-right: 29px;
+  padding: 0 24px;
+  border-radius: 32px;
+  background: rgba(255, 252, 236, 0.22);
+  /* Baseline every engine can actually render. Must be the only backdrop-filter
+     declaration in this rule: stacking a second one here as a progressive
+     enhancement does not survive the build. Lightning CSS collapses duplicate
+     longhands to the last value AND copies it onto -webkit-backdrop-filter, so
+     the blur fallback vanished from the compiled stylesheet and Safari — which
+     supports -webkit-backdrop-filter but renders nothing for an SVG url() —
+     was left with no backdrop effect at all. The upgrade lives in its own
+     rule below, where nothing can merge it away. */
+  -webkit-backdrop-filter: blur(4px) saturate(1.5);
+  backdrop-filter: blur(4px) saturate(1.5);
+  box-shadow:
+    inset 1.5px 1.5px 1px -1px rgba(255, 255, 255, 0.65),
+    inset -1.5px -1.5px 1px -1px rgba(255, 255, 255, 0.2),
+    inset 0 0 20px rgba(255, 255, 255, 0.12),
+    0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/*
+ * Chromium-only refraction upgrade. A bare @supports (backdrop-filter: url(...))
+ * is not enough: Safari and Firefox both parse the value as valid syntax and pass
+ * the query, then render nothing. So pair it with negative tests for an engine
+ * marker each — -webkit-touch-callout is WebKit-only (Chromium dropped it) and
+ * -moz-appearance is Gecko-only — leaving Chromium as the only engine that
+ * satisfies all three conditions and therefore the only one that swaps in url().
+ */
+@supports (backdrop-filter: url('#liquid-glass'))
+  and (not (-webkit-touch-callout: none))
+  and (not (-moz-appearance: none)) {
+  .ep-nav-inner {
+    backdrop-filter: url('#liquid-glass') saturate(1.5);
+  }
 }
 
 .ep-wordmark {
@@ -1169,7 +1225,7 @@ a:hover { opacity: 0.75; }
   justify-content: center;
   flex-shrink: 0;
   font-family: var(--font-logo);
-  font-size: 53px;
+  font-size: 30px;
   font-weight: bold;
   line-height: 1;
   color: #000;
@@ -1536,7 +1592,7 @@ a:hover { opacity: 0.75; }
 /* ─── Responsive ─────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .ep-title { font-size: clamp(72px, 8.5vw, 107px); line-height: 1.2; }
-  .ep-wordmark { font-size: clamp(36px, 4vw, 53px); }
+  .ep-wordmark { font-size: clamp(24px, 2.2vw, 30px); }
 }
 
 @media (max-width: 900px) {
@@ -1549,8 +1605,9 @@ a:hover { opacity: 0.75; }
 }
 
 @media (max-width: 640px) {
-  .ep-nav-inner { height: 72px; gap: 6px; padding-right: 16px; }
-  .ep-wordmark { font-size: 28px; }
+  .ei-nav, .ep-nav { padding: 10px 12px 0; }
+  .ep-nav-inner { height: 52px; gap: 6px; padding: 0 16px; border-radius: 26px; }
+  .ep-wordmark { font-size: 20px; }
   .ep-nav-links { gap: 0; }
   .ep-nav-links a { height: 36px; padding: 0 7px; font-size: 11px; }
   .ep-nav-search { font-size: 11px; }
