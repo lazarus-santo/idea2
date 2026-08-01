@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getActiveInstitutions } from '@/lib/scraper'
 import { extractExhibitionsFromPage } from '@/lib/claude'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // GET /api/debug-scrape?venue=hannah+traore
 // Runs extraction synchronously and returns raw Claude output for inspection.
+//
+// Curl-only dev tool, but each call is a live page fetch plus a Claude
+// extraction, so it is gated alongside the agent routes.
 export async function GET(request: NextRequest) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const filter = request.nextUrl.searchParams.get('venue')?.toLowerCase() ?? ''
   const institutions = await getActiveInstitutions()
   const institution = institutions.find((v) => v.name.toLowerCase().includes(filter))

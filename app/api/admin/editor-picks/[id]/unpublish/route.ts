@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/admin/editor-picks/[id]/unpublish — retire a live or scheduled pick
-export async function POST(
-  _request: NextRequest,
+export async function POST(request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
 
   const { error } = await getSupabaseAdmin()

@@ -56,5 +56,5 @@ export default async function SeedPage({ searchParams }: Props) {
     )
   }
 
-  return <SeedTool />
+  return <SeedTool adminPw={pw} />
 }

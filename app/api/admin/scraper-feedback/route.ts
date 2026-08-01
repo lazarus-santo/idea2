@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // GET /api/admin/scraper-feedback — downloads all admin_notes as a .txt file
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const db = getSupabaseAdmin()
 
   const [{ data, error }, { data: missingShows, error: missingShowsError }] = await Promise.all([

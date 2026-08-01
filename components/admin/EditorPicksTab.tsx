@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { adminFetch } from '@/lib/admin-fetch'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -74,7 +75,7 @@ function UnpublishBtn({ pickId, onDone }: { pickId: string; onDone: () => void }
   async function go() {
     setBusy(true)
     try {
-      await fetch(`/api/admin/editor-picks/${pickId}/unpublish`, { method: 'POST' })
+      await adminFetch(`/api/admin/editor-picks/${pickId}/unpublish`, { method: 'POST' })
       onDone()
     } finally {
       setBusy(false)
@@ -177,7 +178,7 @@ function SearchPicker<T extends { id: string }>({
   async function load() {
     if (loaded) return
     try {
-      const res = await fetch(fetchUrl)
+      const res = await adminFetch(fetchUrl)
       if (res.ok) { setItems(await res.json()); setLoaded(true) }
     } catch { /* silent */ }
   }
@@ -186,7 +187,7 @@ function SearchPicker<T extends { id: string }>({
     setSelecting(id)
     setMsg('')
     try {
-      const res = await fetch('/api/admin/editor-picks', {
+      const res = await adminFetch('/api/admin/editor-picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pick_type: pickType, reference_id: id, mode }),
@@ -249,7 +250,7 @@ function BookForm({ onSelected }: { onSelected: (referenceId: string, mode: Mode
     setSub(mode)
     setMsg('')
     try {
-      const res = await fetch('/api/admin/editor-picks', {
+      const res = await adminFetch('/api/admin/editor-picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pick_type: 'book', title: title.trim(), author: author.trim() || null, publisher: publisher.trim() || null, image_url: imageUrl.trim() || null, mode }),
@@ -360,7 +361,7 @@ function ExhibitionSection({ current: init, suggestions: initSugg }: { current: 
                   <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{s.artists.join(', ')}{s.end_date ? ` · Closes ${fmtDate(s.end_date)}` : ''}</div>
                 </div>
                 <ActionBtns onAction={async (mode) => {
-                  const res = await fetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
                   if (!res.ok) throw new Error()
                   const { status, goes_live_at } = await res.json()
                   applyCurrent(s.pick_id, s.reference_id, status, goes_live_at, { show_title: s.show_title, artists: s.artists, venue_name: s.venue_name, end_date: s.end_date, image_url: s.image_url })
@@ -426,7 +427,7 @@ function ArticleSection({ current: init, suggestions: initSugg }: { current: Art
                   {s.rss_summary && <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.5)', lineHeight: 1.5 }}>{s.rss_summary}</div>}
                 </div>
                 <ActionBtns onAction={async (mode) => {
-                  const res = await fetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
                   if (!res.ok) throw new Error()
                   const { status, goes_live_at } = await res.json()
                   applyCurrent(s.pick_id, s.reference_id, status, goes_live_at, { headline: s.headline, author: s.author, publication: s.publication })
@@ -491,7 +492,7 @@ function BookSection({ current: init, suggestions: initSugg }: { current: BookCu
                   <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{[s.author, s.source, s.goodreads_rating != null ? `${s.goodreads_rating} ★` : null].filter(Boolean).join(' · ')}</div>
                 </div>
                 <ActionBtns onAction={async (mode) => {
-                  const res = await fetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
                   if (!res.ok) throw new Error()
                   const { status, goes_live_at } = await res.json()
                   applyCurrent(s.pick_id, s.reference_id, status, goes_live_at, { title: s.title, author: s.author, source: s.source })
@@ -519,7 +520,7 @@ export default function EditorPicksTab() {
   const [err, setErr] = useState('')
 
   useEffect(() => {
-    fetch('/api/admin/editor-picks')
+    adminFetch('/api/admin/editor-picks')
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(setData)
       .catch(() => setErr('Failed to load'))

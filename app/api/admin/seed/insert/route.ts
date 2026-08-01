@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 interface VenueInput {
   name: string
@@ -27,6 +28,8 @@ function normalizeForDedup(name: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorizedAgentRequest(req)) return unauthorized()
+
   const { institutions }: { institutions: InstitutionInput[] } = await req.json()
 
   if (!Array.isArray(institutions) || institutions.length === 0) {

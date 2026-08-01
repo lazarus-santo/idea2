@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
+import { adminFetch } from '@/lib/admin-fetch'
 
 type Preread = {
   id: string
@@ -75,7 +76,7 @@ function AddPrereadForm({ exhibitionId, onAdded }: { exhibitionId: string; onAdd
     if (!url) return
     setSaving(true)
     try {
-      const res = await fetch('/api/admin/prereads', {
+      const res = await adminFetch('/api/admin/prereads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ exhibition_id: exhibitionId, article_url: url, article_title: title || null, publication: pub || null }),
@@ -148,7 +149,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   async function save() {
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/exhibitions/${ex.id}`, {
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -172,7 +173,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   async function saveNotes() {
     const val = notesRef.current
     if (val === (ex.admin_notes ?? '')) return
-    await fetch(`/api/admin/exhibitions/${ex.id}`, {
+    await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ admin_notes: val || null }),
@@ -182,7 +183,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   async function unpublish() {
     setUnpublishing(true)
     try {
-      await fetch(`/api/admin/exhibitions/${ex.id}`, {
+      await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'pending' }),
@@ -194,7 +195,7 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   }
 
   async function deletePreread(prId: string) {
-    await fetch(`/api/admin/prereads/${prId}`, { method: 'DELETE' })
+    await adminFetch(`/api/admin/prereads/${prId}`, { method: 'DELETE' })
     setPrereads(prev => prev.filter(p => p.id !== prId))
   }
 
@@ -384,7 +385,7 @@ export default function PublishedTab() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/admin/exhibitions')
+      const res = await adminFetch('/api/admin/exhibitions')
       const all = await res.json()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setExhibitions(all.filter((e: any) => e.status === 'published'))

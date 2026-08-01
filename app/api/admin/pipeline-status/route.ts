@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import type { AgentName } from '@/lib/agent-runs'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 const AGENTS: AgentName[] = ['agent1', 'agent2', 'agent3_daily', 'agent3_hourly']
 
@@ -12,7 +13,9 @@ interface AgentStatus {
   items_failed: number
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const db = getSupabaseAdmin()
   const today = new Date().toISOString().split('T')[0]
 

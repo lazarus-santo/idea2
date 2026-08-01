@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // PATCH /api/admin/publications/[id] — approve or reject a publication domain
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
   const { status } = await request.json()
 

@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/admin/prereads — manually add a preread to an exhibition
 export async function POST(request: NextRequest) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const body = await request.json()
   const { exhibition_id, article_url, article_title, publication } = body
 

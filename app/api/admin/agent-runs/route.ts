@@ -1,12 +1,15 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import type { AgentName } from '@/lib/agent-runs'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 const AGENTS: AgentName[] = ['agent1', 'agent2', 'agent3_daily', 'agent3_hourly']
 
 // Last 5 runs per agent — powers the Section 2 run-history timeline and the
 // "recent errors" list (errors of the most recent run, runs[0]).
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const db = getSupabaseAdmin()
 
   const results = await Promise.all(

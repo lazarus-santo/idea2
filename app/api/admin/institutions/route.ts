@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // GET /api/admin/institutions — id/name list for admin dropdowns
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { data, error } = await getSupabaseAdmin()
     .from('institutions')
     .select('id, name')

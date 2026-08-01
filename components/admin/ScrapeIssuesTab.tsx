@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, type CSSProperties } from 'react'
+import { adminFetch } from '@/lib/admin-fetch'
 
 type IssueVenue = {
   id: string
@@ -43,7 +44,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await fetch('/api/admin/venues/issues')
+    const res = await adminFetch('/api/admin/venues/issues')
     const data = await res.json()
     const list = Array.isArray(data) ? data : []
     setVenues(list)
@@ -54,7 +55,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    fetch('/api/admin/institutions')
+    adminFetch('/api/admin/institutions')
       .then((res) => res.json())
       .then((data) => setInstitutions(Array.isArray(data) ? data : []))
   }, [])
@@ -65,7 +66,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
       return
     }
     setReportStatus('Saving...')
-    const res = await fetch('/api/admin/missing-show-reports', {
+    const res = await adminFetch('/api/admin/missing-show-reports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -90,7 +91,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
 
   async function retryScrape(venue: IssueVenue) {
     setMsg(venue.id, 'Starting scrape...')
-    const res = await fetch(`/api/admin/venues/${venue.id}/retry-scrape`, { method: 'POST' })
+    const res = await adminFetch(`/api/admin/venues/${venue.id}/retry-scrape`, { method: 'POST' })
     if (res.ok) {
       setMsg(venue.id, 'Scrape started in background')
     } else {
@@ -100,7 +101,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
 
   async function markManual(venue: IssueVenue) {
     setMsg(venue.id, 'Saving...')
-    const res = await fetch(`/api/admin/venues/${venue.id}`, {
+    const res = await adminFetch(`/api/admin/venues/${venue.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ manual_entry_required: true, scrape_failed: false }),
@@ -114,7 +115,7 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
 
   async function clearIssue(venue: IssueVenue) {
     setMsg(venue.id, 'Clearing...')
-    const res = await fetch(`/api/admin/venues/${venue.id}`, {
+    const res = await adminFetch(`/api/admin/venues/${venue.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ manual_entry_required: false, scrape_failed: false, scrape_failure_reason: null }),

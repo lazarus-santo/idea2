@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // GET /api/admin/publications — pending publications with a sample article
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const db = getSupabaseAdmin()
 
   const { data, error } = await db

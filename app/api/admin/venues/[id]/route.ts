@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // PATCH /api/admin/venues/[id] — update scrape flags
 // Body: { manual_entry_required?: boolean, scrape_failed?: boolean, scrape_failure_reason?: string }
@@ -7,6 +8,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
   const body = await request.json() as Record<string, unknown>
 

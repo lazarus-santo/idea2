@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // GET /api/admin/missing-show-reports — unresolved reports for admin display/export
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { data, error } = await getSupabaseAdmin()
     .from('agent1_missing_show_reports')
     .select('id, institution_id, exhibition_name, notes, reported_at, resolved, institutions(name)')
@@ -15,6 +18,8 @@ export async function GET() {
 
 // POST /api/admin/missing-show-reports — admin reports a show missing from a scrape
 export async function POST(request: NextRequest) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const body = await request.json()
   const { institution_id, exhibition_name, notes } = body
 

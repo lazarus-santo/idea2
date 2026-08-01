@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 
@@ -99,6 +100,8 @@ async function fetchGoogleHours(name: string, address: string): Promise<HoursMap
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorizedAgentRequest(req)) return unauthorized()
+
   const body = await req.json()
   const name: string = body.name ?? ''
   const address: string = body.address ?? ''

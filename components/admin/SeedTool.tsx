@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useId, useCallback } from 'react'
+import { adminFetch, setAdminSecret } from '@/lib/admin-fetch'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -288,7 +289,7 @@ function InstitutionGroup({
     setInstInserting(true)
     setInstInsertError(null)
     try {
-      const res = await fetch('/api/admin/seed/insert', {
+      const res = await adminFetch('/api/admin/seed/insert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -458,7 +459,7 @@ function ManualVenueForm({
     onChange({ ...venue, _geoStatus: 'loading' })
     try {
       const searchName = [institutionName, venue.name].filter(Boolean).join(' ').trim()
-      const res = await fetch('/api/admin/seed/enrich', {
+      const res = await adminFetch('/api/admin/seed/enrich', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: searchName, address: venue.address }),
@@ -542,7 +543,7 @@ function ManualEntryForm({ onInserted }: { onInserted: () => void }) {
     setSubmitting(true)
     setError(null)
     try {
-      const res = await fetch('/api/admin/seed/insert', {
+      const res = await adminFetch('/api/admin/seed/insert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -661,7 +662,12 @@ function Toast({ msg, ok }: { msg: string; ok: boolean }) {
 
 type Mode = 'suggest' | 'manual'
 
-export default function SeedTool({ inline }: { inline?: boolean }) {
+// `adminPw` is only passed by /admin/seed, which renders this tool standalone.
+// Inside the main dashboard it arrives as undefined because AdminPage has
+// already recorded the secret.
+export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminPw?: string }) {
+  if (adminPw) setAdminSecret(adminPw)
+
   const [mode, setMode] = useState<Mode>('suggest')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
@@ -684,7 +690,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
     setError(null)
     setInstitutions([])
     try {
-      const res = await fetch('/api/admin/seed/suggest', {
+      const res = await adminFetch('/api/admin/seed/suggest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
@@ -705,7 +711,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
                 return { ...v, _addressFallback: true, _hoursFallback: true, _geoStatus: 'failed' as GeoStatus }
               }
               try {
-                const er = await fetch('/api/admin/seed/enrich', {
+                const er = await adminFetch('/api/admin/seed/enrich', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ name: `${v.name || inst.name}`, address: v.address }),
@@ -751,7 +757,7 @@ export default function SeedTool({ inline }: { inline?: boolean }) {
       })),
     }))
     try {
-      const res = await fetch('/api/admin/seed/insert', {
+      const res = await adminFetch('/api/admin/seed/insert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ institutions: payload }),

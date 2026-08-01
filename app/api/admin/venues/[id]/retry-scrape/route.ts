@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scrapeInstitution, getVenueById } from '@/lib/scraper'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/admin/venues/[id]/retry-scrape — manually retry a failed or
 // manual-entry-flagged institution. Looked up directly by id (not filtered
 // through getActiveInstitutions) so manual_entry_required venues are reachable —
 // scrapeInstitution() itself decides whether to re-flag or clear it.
-export async function POST(
-  _request: NextRequest,
+export async function POST(request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
   const venue = await getVenueById(id)
 

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { adminFetch } from '@/lib/admin-fetch'
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
 
@@ -102,35 +103,28 @@ function Agent3Breakdown({ summary }: { summary: Agent3Summary }) {
 
 type AgentRunsMap = Record<AgentName, RunRow[]>
 
-// Every trigger route now requires the x-admin-secret header (see lib/api-auth.ts);
-// agent1 and agent2 previously ran unauthenticated, so needsAuthHeader stayed false
-// for them. It is kept as a field rather than dropped because the flag is what makes
-// the requirement visible here — if a route's gate ever changes, this is where the
-// dashboard has to change with it.
-const AGENT_META: Record<AgentName, { title: string; description: string; triggerPath: string; needsAuthHeader: boolean }> = {
+// All four trigger routes require the admin credential; adminFetch attaches it,
+// so there is no longer a per-agent flag for it.
+const AGENT_META: Record<AgentName, { title: string; description: string; triggerPath: string }> = {
   agent1: {
     title: 'Agent 1 — Exhibition Scraper',
     description: 'Scrapes venue pages, extracts shows, writes to Supabase',
     triggerPath: '/api/scrape',
-    needsAuthHeader: true,
   },
   agent2: {
     title: 'Agent 2 — Preread & Audit',
     description: 'Repairs prereads for gallery exhibitions (galleries only)',
     triggerPath: '/api/admin/audit-prereads',
-    needsAuthHeader: true,
   },
   agent3_daily: {
     title: 'Agent 3 Daily — Readings Curator',
     description: 'Non-T1 publications, once daily',
     triggerPath: '/api/curate',
-    needsAuthHeader: true,
   },
   agent3_hourly: {
     title: 'Agent 3 Hourly — Readings Curator',
     description: 'T1 publications, hourly',
     triggerPath: '/api/curate/hourly',
-    needsAuthHeader: true,
   },
 }
 
@@ -237,7 +231,7 @@ function PipelineFlowRow({ label, count, action, onAction, busy, first }: {
   )
 }
 
-export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string; onNavigate: (tab: NavTab) => void }) {
+export default function DashboardTab({ onNavigate }: { onNavigate: (tab: NavTab) => void }) {
   const [status, setStatus] = useState<PipelineStatus | null>(null)
   const [runs, setRuns] = useState<AgentRunsMap | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -249,8 +243,8 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
   const fetchAll = useCallback(async () => {
     try {
       const [statusRes, runsRes] = await Promise.all([
-        fetch('/api/admin/pipeline-status'),
-        fetch('/api/admin/agent-runs'),
+        adminFetch('/api/admin/pipeline-status'),
+        adminFetch('/api/admin/agent-runs'),
       ])
       if (statusRes.ok) setStatus(await statusRes.json())
       if (runsRes.ok) setRuns(await runsRes.json())
@@ -299,15 +293,12 @@ export default function DashboardTab({ adminPw, onNavigate }: { adminPw: string;
 
     const meta = AGENT_META[agent]
     try {
-      await fetch(meta.triggerPath, {
-        method: 'POST',
-        headers: meta.needsAuthHeader ? { 'x-admin-secret': adminPw } : undefined,
-      })
+      await adminFetch(meta.triggerPath, { method: 'POST' })
     } catch (err) {
       console.error(`Failed to trigger ${agent}:`, err)
     }
     fetchAll()
-  }, [triggering, adminPw, fetchAll])
+  }, [triggering, fetchAll])
 
   const toggleErrors = useCallback((agent: AgentName) => {
     setExpandedErrors((prev) => {

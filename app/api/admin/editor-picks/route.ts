@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 function nextMonday(): string {
   const d = new Date()
@@ -12,7 +13,9 @@ function nextMonday(): string {
 
 // GET /api/admin/editor-picks
 // Returns current pick (live/pending) and suggestions (suggested) for each type.
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const db = getSupabaseAdmin()
 
   const { data: allPicks, error } = await db
@@ -136,6 +139,8 @@ export async function GET() {
 // For exhibitions and articles: body = { pick_type, reference_id }
 // For books: body = { pick_type: 'book', title, author, publisher, image_url }
 export async function POST(request: NextRequest) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const body = await request.json()
   const { pick_type } = body
 

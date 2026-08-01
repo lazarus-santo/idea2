@@ -2,10 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { generatePrereads } from '@/lib/claude'
 import type { ExhibitionRaw } from '@/lib/types'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/debug-prereads?show=furniture
 // Deletes and regenerates prereads for a specific show title.
+//
+// A curl-only dev tool with no UI caller, but it deletes rows and spends
+// Anthropic + Exa calls, so it takes the same gate as the agent routes.
 export async function POST(request: NextRequest) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const filter = request.nextUrl.searchParams.get('show')?.toLowerCase() ?? ''
   const db = getSupabaseAdmin()
 

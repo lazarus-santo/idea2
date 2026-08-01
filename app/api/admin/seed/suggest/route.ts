@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -13,6 +14,8 @@ function normalizeForDedup(name: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorizedAgentRequest(req)) return unauthorized()
+
   const { query } = await req.json()
   if (!query?.trim()) {
     return NextResponse.json({ error: 'query is required' }, { status: 400 })

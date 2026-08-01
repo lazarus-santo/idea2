@@ -8,12 +8,37 @@ import EditorPicksTab from '@/components/admin/EditorPicksTab'
 import PublishedTab from '@/components/admin/PublishedTab'
 import SeedTool from '@/components/admin/SeedTool'
 import ScrapeIssuesTab from '@/components/admin/ScrapeIssuesTab'
+import { adminFetch, setAdminSecret } from '@/lib/admin-fetch'
 
 type Tab = 'dashboard' | 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues'
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
 
+// Was an <a href download>. Now that /api/admin/scraper-feedback requires the
+// x-admin-secret header, a plain link can no longer reach it — a navigation
+// cannot carry a custom header — so the export is fetched and handed to the
+// browser as a blob instead.
+async function downloadScraperFeedback() {
+  const res = await adminFetch('/api/admin/scraper-feedback')
+  if (!res.ok) {
+    console.error('Scraper feedback export failed:', res.status)
+    return
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'scraper-feedback.json'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function AdminPage({ adminPw }: { adminPw: string }) {
+  // Recorded during render, not in an effect: the tabs fire their loads from
+  // their own effects, which run after this component has already rendered.
+  // Doing it in an effect here would race the first request of every tab.
+  setAdminSecret(adminPw)
+
   const [tab, setTab] = useState<Tab>('dashboard')
   const [pendingCount, setPendingCount] = useState(0)
   const [pubCount, setPubCount] = useState(0)
@@ -53,13 +78,12 @@ export default function AdminPage({ adminPw }: { adminPw: string }) {
             Admin
           </span>
           <div style={{ display: 'flex', gap: 20, alignItems: 'baseline' }}>
-            <a
-              href="/api/admin/scraper-feedback"
-              download
-              style={{ fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.4)', textDecoration: 'none', borderBottom: '1px solid rgba(0,0,0,0.2)' }}
+            <button
+              onClick={downloadScraperFeedback}
+              style={{ fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.4)', background: 'none', border: 'none', borderBottom: '1px solid rgba(0,0,0,0.2)', padding: 0, cursor: 'pointer' }}
             >
               Export Scraper Feedback
-            </a>
+            </button>
             <a href="/" style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.4)', textDecoration: 'none' }}>
               ← Site
             </a>
@@ -74,7 +98,7 @@ export default function AdminPage({ adminPw }: { adminPw: string }) {
           ))}
         </div>
 
-        {tab === 'dashboard' && <DashboardTab adminPw={adminPw} onNavigate={setTab} />}
+        {tab === 'dashboard' && <DashboardTab onNavigate={setTab} />}
         {tab === 'pending' && <PendingTab onCount={setPendingCount} />}
         {tab === 'publications' && <PublicationsTab onCount={setPubCount} />}
         {tab === 'picks' && <EditorPicksTab />}

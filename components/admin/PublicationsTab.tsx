@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { adminFetch } from '@/lib/admin-fetch'
 
 type Pub = {
   id: string
@@ -24,7 +25,7 @@ function PubCard({ pub, onDone }: { pub: Pub; onDone: (id: string) => void }) {
   async function act(status: 'approved' | 'rejected') {
     setBusy(true)
     try {
-      const res = await fetch(`/api/admin/publications/${pub.id}`, {
+      const res = await adminFetch(`/api/admin/publications/${pub.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -82,7 +83,7 @@ export default function PublicationsTab({ onCount }: { onCount: (n: number) => v
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/admin/publications')
+      const res = await adminFetch('/api/admin/publications')
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setPubs(data)

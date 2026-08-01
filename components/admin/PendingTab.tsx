@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
+import { adminFetch } from '@/lib/admin-fetch'
 
 type ScrapeFailedVenue = {
   id: string
@@ -246,7 +247,7 @@ function EditModal({
   async function save() {
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/exhibitions/${ex.id}`, {
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fieldPatchBody()),
@@ -265,7 +266,7 @@ function EditModal({
     if (val === (ex.admin_notes ?? '')) return
     setNotesSaveStatus('saving')
     try {
-      const res = await fetch(`/api/admin/exhibitions/${ex.id}`, {
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ admin_notes: val || null }),
@@ -282,14 +283,14 @@ function EditModal({
     setApproving(true)
     try {
       if (isDirty) {
-        const patchRes = await fetch(`/api/admin/exhibitions/${ex.id}`, {
+        const patchRes = await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(fieldPatchBody()),
         })
         if (!patchRes.ok) throw new Error()
       }
-      const res = await fetch(`/api/admin/exhibitions/${ex.id}/approve`, { method: 'POST' })
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}/approve`, { method: 'POST' })
       if (!res.ok) throw new Error()
       onPublished(ex.id)
     } catch {
@@ -301,7 +302,7 @@ function EditModal({
   async function doDelete() {
     setDeleting(true)
     try {
-      await fetch(`/api/admin/exhibitions/${ex.id}`, { method: 'DELETE' })
+      await adminFetch(`/api/admin/exhibitions/${ex.id}`, { method: 'DELETE' })
       onRemove(ex.id)
     } finally {
       setDeleting(false)
@@ -504,7 +505,7 @@ function ScrapeFailed({ venues, onRetried }: { venues: ScrapeFailedVenue[]; onRe
   async function retry(id: string) {
     setRetrying((prev) => ({ ...prev, [id]: true }))
     try {
-      const res = await fetch(`/api/admin/venues/${id}/retry-scrape`, { method: 'POST' })
+      const res = await adminFetch(`/api/admin/venues/${id}/retry-scrape`, { method: 'POST' })
       if (!res.ok) throw new Error()
       setMsgs((prev) => ({ ...prev, [id]: 'Retry started' }))
       setTimeout(() => {
@@ -594,8 +595,8 @@ export default function PendingTab({ onCount }: { onCount: (n: number) => void }
     setLoading(true)
     try {
       const [exRes, venueRes] = await Promise.all([
-        fetch('/api/admin/exhibitions'),
-        fetch('/api/admin/venues'),
+        adminFetch('/api/admin/exhibitions'),
+        adminFetch('/api/admin/venues'),
       ])
       const all = await exRes.json()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

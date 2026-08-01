@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 function nextMonday(): string {
   const d = new Date()
@@ -18,6 +19,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
   const body = await request.json().catch(() => ({}))
   const mode: 'now' | 'scheduled' = body.mode === 'now' ? 'now' : 'scheduled'

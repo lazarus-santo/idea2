@@ -8,6 +8,7 @@ import TextAlign from '@tiptap/extension-text-align'
 import { TextStyle } from '@tiptap/extension-text-style'
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { sanitizeHtml, normalizeToHtml } from '@/lib/sanitize-html'
+import { adminFetch } from '@/lib/admin-fetch'
 
 // ── FontSize: extend TextStyle mark with a fontSize attribute ─────────────────
 const FontSizeTextStyle = TextStyle.extend({
@@ -240,7 +241,7 @@ export default function TipTapEditor({
     retryHtml.current = clean
     setSaveStatus('saving')
     try {
-      const res = await fetch(`/api/admin/exhibitions/${exhibitionId}`, {
+      const res = await adminFetch(`/api/admin/exhibitions/${exhibitionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [field]: clean || null }),

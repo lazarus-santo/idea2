@@ -1,17 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { fetchOgImage } from '@/lib/readings-curator'
-
-function isAuthorized(request: Request): boolean {
-  const adminSecret = request.headers.get('x-admin-secret')
-  return !!(adminSecret && adminSecret === process.env.ADMIN_PASSWORD)
-}
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/admin/backfill-thumbnails — fetch OG images for readings with null thumbnail_url
 export async function POST(request: Request) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
   const db = getSupabaseAdmin()
   const { data: readings, error } = await db

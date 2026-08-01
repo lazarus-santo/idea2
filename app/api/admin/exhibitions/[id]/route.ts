@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/geocode'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 const PATCHABLE = [
   'status',
@@ -22,6 +23,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
   const body = await request.json()
 
@@ -56,10 +59,11 @@ export async function PATCH(
 }
 
 // DELETE /api/admin/exhibitions/[id]
-export async function DELETE(
-  _request: NextRequest,
+export async function DELETE(request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const { id } = await params
 
   const { error } = await getSupabaseAdmin()
