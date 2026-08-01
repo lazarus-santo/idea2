@@ -1450,12 +1450,18 @@ export async function getVenueById(id: string): Promise<VenueRecord | null> {
 }
 
 // Venues flagged manual_entry_required are excluded from automated scrape runs
+// Ordered oldest-checked-first, which is what makes a force run resumable across
+// invocations: scraping a venue pushes its check_back_date a week out, so the
+// ones already done in this pass sort to the back and the next invocation picks
+// up where the last one stopped. Without the order the slice would be arbitrary
+// and a chunked force run could scrape the same venues forever.
 export async function getActiveInstitutions(): Promise<VenueRecord[]> {
   const { data } = await getSupabaseAdmin()
     .from('venues')
     .select(VENUE_SELECT)
     .eq('active', true)
     .eq('manual_entry_required', false)
+    .order('check_back_date', { ascending: true, nullsFirst: true })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data ?? []).map((v: any) => normalizeVenueRow(v))
@@ -1470,6 +1476,7 @@ export async function getInstitutionsDueForRefresh(): Promise<VenueRecord[]> {
     .eq('active', true)
     .eq('manual_entry_required', false)
     .or(`check_back_date.is.null,check_back_date.lte.${today}`)
+    .order('check_back_date', { ascending: true, nullsFirst: true })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (data ?? []).map((v: any) => normalizeVenueRow(v))
@@ -1507,14 +1514,37 @@ export interface RunAgent1Options {
   force?: boolean
   skipPrereads?: boolean
   venueFilter?: string[] | null
+  /** Stop after this many venues. Omitted means "no cap" (local/manual runs). */
+  limit?: number
+  /**
+   * Stop starting new venues once this much wall-clock has elapsed. A venue
+   * already in flight is allowed to finish, so the real ceiling is this plus one
+   * venue — size it against the platform limit accordingly.
+   */
+  timeBudgetMs?: number
 }
 
+/**
+ * One pass of Agent 1.
+ *
+ * `limit` and `timeBudgetMs` exist because a full pass does not fit in a
+ * serverless invocation. Measured against agent_runs, a single venue takes
+ * 85–257s, and the queue is 17 venues — a complete run has taken up to 38.6
+ * minutes, which no Vercel function duration can cover.
+ *
+ * The queue drains itself without any new state: a scraped venue gets
+ * check_back_date = +7 days, so it drops out of getInstitutionsDueForRefresh()
+ * and sorts to the back of getActiveInstitutions(). Each invocation therefore
+ * takes the next slice, and summary.remaining says whether another is needed.
+ */
 export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunResult> {
   const runId = await startAgentRun('agent1')
   const errors: AgentRunError[] = []
+  const startedAt = Date.now()
   let itemsProcessed = 0
   let itemsSucceeded = 0
   let totalUpserted = 0
+  let remaining = 0
 
   try {
     let institutions = opts.force ? await getActiveInstitutions() : await getInstitutionsDueForRefresh()
@@ -1524,9 +1554,16 @@ export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunRe
       institutions = institutions.filter((v) => filter.some((f) => v.name.toLowerCase().includes(f)))
     }
 
+    const queueSize = institutions.length
     const scrapedInstitutionIds: string[] = []
 
     for (const institution of institutions) {
+      if (opts.limit != null && itemsProcessed >= opts.limit) break
+      // Checked before starting a venue, never mid-venue: a half-scraped venue
+      // would leave its check_back_date unadvanced and be retried anyway, so
+      // there is nothing to gain from aborting one in progress.
+      if (opts.timeBudgetMs != null && Date.now() - startedAt >= opts.timeBudgetMs) break
+
       itemsProcessed++
       try {
         const count = await scrapeInstitution(institution, opts.skipPrereads, errors)
@@ -1541,6 +1578,11 @@ export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunRe
           message: err instanceof Error ? err.message : String(err),
         })
       }
+    }
+
+    remaining = queueSize - itemsProcessed
+    if (remaining > 0) {
+      console.log(`Agent 1 stopped early: ${itemsProcessed}/${queueSize} venues, ${remaining} left for the next invocation.`)
     }
 
     if (!opts.skipPrereads && scrapedInstitutionIds.length > 0) {
@@ -1561,12 +1603,18 @@ export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunRe
         errors.push({ item: '(post-scrape audit)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
       }
 
-      try {
-        const { attempted, report } = await repairZeroPrereads(errors)
-        if (attempted > 0) console.log(`Zero-preread retry: ${attempted} attempted, ${report.length} repaired`, JSON.stringify(report))
-      } catch (err) {
-        console.error('Zero-preread retry failed:', err)
-        errors.push({ item: '(zero-preread retry)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
+      // Deferred while the queue still has venues in it. Unlike the audit above,
+      // this one is global rather than scoped to what was just scraped, so
+      // running it on every slice would repeat the same sweep 9 times over a
+      // chunked pass and spend the time budget on work the last slice redoes.
+      if (remaining === 0) {
+        try {
+          const { attempted, report } = await repairZeroPrereads(errors)
+          if (attempted > 0) console.log(`Zero-preread retry: ${attempted} attempted, ${report.length} repaired`, JSON.stringify(report))
+        } catch (err) {
+          console.error('Zero-preread retry failed:', err)
+          errors.push({ item: '(zero-preread retry)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
+        }
       }
     }
 
@@ -1576,7 +1624,7 @@ export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunRe
       itemsSucceeded,
       itemsFailed,
       errors,
-      summary: { venues_scraped: itemsSucceeded, total_exhibitions_upserted: totalUpserted },
+      summary: { venues_scraped: itemsSucceeded, total_exhibitions_upserted: totalUpserted, remaining },
     }
     await finishAgentRun(runId, result)
     return result

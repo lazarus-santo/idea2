@@ -5,11 +5,21 @@ import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/scrape — scrape venues past check_back_date
 // POST /api/scrape?force=true — re-scrape all active venues
-// Returns 202 immediately; scrape runs in the background.
+// POST /api/scrape?venues=gagosian,pace — restrict to matching venues
+// POST /api/scrape?limit=3 — cap how many venues this call processes
 //
 // Requires CRON_SECRET (bearer) or ADMIN_PASSWORD (x-admin-secret). Every call
 // opens Browserbase sessions and Anthropic completions, so leaving this open on
 // a public domain is a standing invitation to run up the bill.
+
+export const maxDuration = 800
+
+// Deliberately shorter than the cron route's budget. This is the dashboard's
+// "Run Now" button, and a button that hangs for thirteen minutes reads as
+// broken; four minutes of work per press, with the remaining count in the
+// response, is a usable manual control. The nightly cron does the bulk drain.
+const MANUAL_TIME_BUDGET_MS = 240_000
+
 export async function POST(request: NextRequest) {
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
@@ -17,9 +27,11 @@ export async function POST(request: NextRequest) {
   const force = params.get('force') === 'true'
   const skipPrereads = params.get('skip_prereads') === 'true'
   const venueFilter = params.get('venues')?.split(',').map((v) => v.trim().toLowerCase()) ?? null
+  const limitParam = Number(params.get('limit'))
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : undefined
 
-  // Peek at the institution list up front just to report it in the immediate response —
-  // runAgent1() re-derives the same list itself when the background job actually runs.
+  // Peeked only to report the queue in the response; runAgent1() re-derives the
+  // same list itself.
   let institutions = force
     ? await getActiveInstitutions()
     : await getInstitutionsDueForRefresh()
@@ -35,23 +47,19 @@ export async function POST(request: NextRequest) {
   // Reset the diagnostic log file for this run
   try { writeFileSync('/tmp/scrape-diag.jsonl', '') } catch {}
 
-  if (!force) {
-    console.log(`Refreshing ${institutions.length} institutions due for refresh:`, institutions.map((v) => v.name))
-  }
+  console.log(`Manual scrape (force=${force}): ${institutions.length} institution(s) queued`)
 
-  // Fire-and-forget — do not await, respond immediately
-  Promise.resolve().then(async () => {
-    try {
-      await runAgent1({ force, skipPrereads, venueFilter })
-      console.log('Scrape complete.')
-    } catch (err) {
-      console.error('Agent 1 run failed:', err)
-    }
-  })
+  // Awaited rather than fire-and-forget: on Vercel the instance is frozen once
+  // the response is sent, so a backgrounded Promise never finishes. See the
+  // note in app/api/cron/scrape/route.ts.
+  const result = await runAgent1({ force, skipPrereads, venueFilter, limit, timeBudgetMs: MANUAL_TIME_BUDGET_MS })
 
   return NextResponse.json({
-    message: `Scraping ${institutions.length} institution(s) in the background`,
-    venues: institutions.map((v) => v.name),
-    scraped: institutions.length,
+    message: `Scraped ${result.itemsSucceeded}/${result.itemsProcessed} institution(s)`,
+    processed: result.itemsProcessed,
+    succeeded: result.itemsSucceeded,
+    failed: result.itemsFailed,
+    remaining: result.summary?.remaining ?? 0,
+    errors: result.errors,
   })
 }
