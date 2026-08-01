@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { writeFileSync } from 'fs'
 import { runAgent1, getActiveInstitutions, getInstitutionsDueForRefresh } from '@/lib/scraper'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/scrape — scrape venues past check_back_date
 // POST /api/scrape?force=true — re-scrape all active venues
 // Returns 202 immediately; scrape runs in the background.
+//
+// Requires CRON_SECRET (bearer) or ADMIN_PASSWORD (x-admin-secret). Every call
+// opens Browserbase sessions and Anthropic completions, so leaving this open on
+// a public domain is a standing invitation to run up the bill.
 export async function POST(request: NextRequest) {
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
+
   const params = request.nextUrl.searchParams
   const force = params.get('force') === 'true'
   const skipPrereads = params.get('skip_prereads') === 'true'

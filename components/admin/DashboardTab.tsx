@@ -102,18 +102,23 @@ function Agent3Breakdown({ summary }: { summary: Agent3Summary }) {
 
 type AgentRunsMap = Record<AgentName, RunRow[]>
 
+// Every trigger route now requires the x-admin-secret header (see lib/api-auth.ts);
+// agent1 and agent2 previously ran unauthenticated, so needsAuthHeader stayed false
+// for them. It is kept as a field rather than dropped because the flag is what makes
+// the requirement visible here — if a route's gate ever changes, this is where the
+// dashboard has to change with it.
 const AGENT_META: Record<AgentName, { title: string; description: string; triggerPath: string; needsAuthHeader: boolean }> = {
   agent1: {
     title: 'Agent 1 — Exhibition Scraper',
     description: 'Scrapes venue pages, extracts shows, writes to Supabase',
     triggerPath: '/api/scrape',
-    needsAuthHeader: false,
+    needsAuthHeader: true,
   },
   agent2: {
     title: 'Agent 2 — Preread & Audit',
     description: 'Repairs prereads for gallery exhibitions (galleries only)',
     triggerPath: '/api/admin/audit-prereads',
-    needsAuthHeader: false,
+    needsAuthHeader: true,
   },
   agent3_daily: {
     title: 'Agent 3 Daily — Readings Curator',

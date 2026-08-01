@@ -1,18 +1,6 @@
 import { NextResponse } from 'next/server'
 import { runAgent3 } from '@/lib/readings-curator'
-
-function isAuthorized(request: Request): boolean {
-  // Vercel Cron: GET with Authorization: Bearer <CRON_SECRET>
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret) {
-    const auth = request.headers.get('authorization')
-    if (auth === `Bearer ${cronSecret}`) return true
-  }
-  // Manual trigger: any method with x-admin-secret
-  const adminSecret = request.headers.get('x-admin-secret')
-  if (adminSecret && adminSecret === process.env.ADMIN_PASSWORD) return true
-  return false
-}
+import { isAuthorizedAgentRequest as isAuthorized } from '@/lib/api-auth'
 
 function runInBackground() {
   Promise.resolve().then(async () => {

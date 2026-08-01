@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runAgent1, getActiveInstitutions, getInstitutionsDueForRefresh } from '@/lib/scraper'
+import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // GET /api/cron/scrape          — daily: scrape venues whose check_back_date has passed
 // GET /api/cron/scrape?force=true — weekly (Sundays): force-scrape all active venues
-// Called by Vercel Cron. Verified via Authorization: Bearer CRON_SECRET header.
+// Called by Vercel Cron via Authorization: Bearer CRON_SECRET.
+//
+// Now shares the agent gate with the other three routes, which also accepts
+// x-admin-secret. That is a deliberate widening: previously an unset CRON_SECRET
+// made the comparison `authHeader !== 'Bearer undefined'`, so this route would
+// have 401'd every legitimate cron call rather than failing loudly.
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get('authorization')
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
   const force = request.nextUrl.searchParams.get('force') === 'true'
   // FIX 4 CONFIRMED: both getActiveInstitutions and getInstitutionsDueForRefresh
