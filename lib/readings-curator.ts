@@ -771,15 +771,38 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
 }
 
 async function pruneOldReadings(): Promise<number> {
+  const db = getSupabaseAdmin()
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() - 7)
 
-  const { count, error } = await getSupabaseAdmin()
+  // Never delete a reading an editor's pick points at. editor_picks.reference_id
+  // is not a foreign key, so nothing at the database level stops this, and it has
+  // already happened at least once: a live article pick from 2026-05-31 now
+  // resolves to nothing because its reading was pruned out from under it. The
+  // public Editor's Picks page renders whatever it can find, so the failure is
+  // silent — the pick just stops appearing.
+  //
+  // This was harmless only for as long as top_story was set on every row, which
+  // made the prune a no-op. Now that the flag means something again, the picks
+  // need protecting explicitly.
+  const { data: pickedRows } = await db
+    .from('editor_picks')
+    .select('reference_id')
+    .eq('pick_type', 'article')
+
+  const picked = [...new Set((pickedRows ?? []).map((p) => p.reference_id as string).filter(Boolean))]
+
+  let query = db
     .from('readings')
     .delete({ count: 'exact' })
     .lt('published_at', cutoff.toISOString())
     .eq('top_story', false)
 
+  if (picked.length > 0) {
+    query = query.not('id', 'in', `(${picked.join(',')})`)
+  }
+
+  const { count, error } = await query
   if (error) console.error('Prune failed:', error.message)
   return count ?? 0
 }
