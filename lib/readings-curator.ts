@@ -1,5 +1,4 @@
 import Anthropic from '@anthropic-ai/sdk'
-import Exa from 'exa-js'
 import he from 'he'
 import { getSupabaseAdmin } from './supabase'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
@@ -366,7 +365,7 @@ function deriveTopStoryCandidate(
     case 'institutional_news': return significantAnnouncement
     case 'interview': return majorArtist
     case 'show_review': return majorArtist || mentionsMajorMuseum(articleText)
-    case 'opinion': return false // Exa cross-source corroboration handles opinion, not this call
+    case 'opinion': return false // opinion is never a Top Story on its own
     case 'show_roundup': return false
   }
 }
@@ -473,56 +472,24 @@ async function classifyArticles(
   return results
 }
 
-// ─── Top story detection (Exa cross-source corroboration) ────────────────────
-
-async function detectTopStories(): Promise<number> {
-  const exa = new Exa(process.env.EXA_API_KEY!)
-  const db = getSupabaseAdmin()
-
-  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
-  const { data: uncheckedArticles } = await db
-    .from('readings')
-    .select('id, headline')
-    .gte('created_at', cutoff)
-    .eq('top_story', false)
-    .eq('top_story_checked', false)
-
-  if (!uncheckedArticles || uncheckedArticles.length === 0) return 0
-
-  const startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-  let marked = 0
-
-  for (const article of uncheckedArticles) {
-    try {
-      const results = await exa.search(article.headline as string, {
-        type: 'auto',
-        numResults: 10,
-        startPublishedDate: startDate,
-      })
-
-      const uniqueDomains = new Set(
-        results.results
-          .map((r) => { try { return new URL(r.url).hostname.replace('www.', '') } catch { return null } })
-          .filter((h): h is string => h !== null)
-      )
-
-      const isTopStory = uniqueDomains.size >= 3
-      await db
-        .from('readings')
-        .update({ top_story: isTopStory, top_story_checked: true })
-        .eq('id', article.id)
-
-      if (isTopStory) {
-        marked++
-        console.log(`Top Story (${uniqueDomains.size} sources): ${article.headline}`)
-      }
-    } catch (err) {
-      console.error(`detectTopStories error for "${article.headline}":`, err)
-    }
-  }
-
-  return marked
-}
+// ─── Top Stories ─────────────────────────────────────────────────────────────
+//
+// A reading is a Top Story when it is a candidate (deriveTopStoryCandidate), from
+// a T1 publication, and scores at least TOP_STORY_MIN_RELEVANCE. That decision is
+// made inline at insert time; there is no second pass.
+//
+// There used to be one: detectTopStories() ran an Exa search per article and
+// promoted anything whose top 10 results spanned 3+ unique domains. It was removed
+// because the gate never actually gated. Nothing checked that the results were
+// about the same story, or even excluded the article's own domain, so any
+// headline-shaped query cleared the bar — measured at 11 of 11 on the last run and
+// 98.8% across the historical sample. It cost one Exa search per article (140+ on
+// a daily run) to produce a decision it never really made.
+//
+// The knock-on was worse than the noise. pruneOldReadings only deletes rows with
+// top_story = false, so flagging everything silently disabled the 7-day retention
+// policy: 261 of 288 readings were older than a week and none could be removed.
+const TOP_STORY_MIN_RELEVANCE = 0.8
 
 // ─── Main Agent 3 pipeline ────────────────────────────────────────────────────
 
@@ -640,9 +607,8 @@ export async function curateReadings(
 
   if (candidates.length === 0) {
     const pruned = await pruneOldReadings()
-    const topStories = await detectTopStories()
     return {
-      written: 0, tagged: 0, classified: 0, pruned, topStories, candidatesConsidered: 0,
+      written: 0, tagged: 0, classified: 0, pruned, topStories: 0, candidatesConsidered: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -668,6 +634,7 @@ export async function curateReadings(
   const institutionNames = (institutionRows ?? []).map((r) => r.name as string)
 
   let written = 0
+  let topStories = 0
   let tagged = 0
   let classified = 0
   const byCategory = emptyCategoryBreakdown()
@@ -694,9 +661,15 @@ export async function curateReadings(
     const rawEnclosure = item.enclosure ? item.enclosure.replace(/[?&]w=\d+/, '') : null
     const thumbnailUrl = ogImage ?? rawEnclosure
 
-    // Fast-path: any candidate meeting the deterministic Top Stories rules
-    // goes live immediately, without waiting on Exa cross-source corroboration.
-    const isTopStoryFastPath = cls?.top_story_candidate === true
+    // Top Stories, in full. Candidacy alone is not enough: deriveTopStoryCandidate
+    // returns true unconditionally for breaking_news and art_market, so on its own
+    // this promoted every market and breaking item from every publication. The spec
+    // gates it on a T1 source and a high art-relevance score, and neither check had
+    // ever been written — which is how 288 of 288 readings ended up flagged.
+    const isTopStory =
+      cls?.top_story_candidate === true &&
+      pubTier === 't1' &&
+      (cls?.art_relevance_score ?? 0) >= TOP_STORY_MIN_RELEVANCE
 
     const { data: inserted, error } = await db
       .from('readings')
@@ -716,8 +689,7 @@ export async function curateReadings(
         significant_announcement:  cls?.significant_announcement ?? false,
         top_story_candidate:       cls?.top_story_candidate ?? false,
         tier:                      pubTier,
-        // Fast-pathed top stories skip the Exa corroboration wait entirely
-        ...(isTopStoryFastPath ? { top_story: true } : {}),
+        top_story:                 isTopStory,
       })
       .select('id')
       .single()
@@ -741,16 +713,18 @@ export async function curateReadings(
     }
     existingUrls.add(item.link)
 
-    if (isTopStoryFastPath) {
-      console.log(`Top Story (candidate fast-path): ${item.title}`)
+    if (isTopStory) {
+      topStories++
+      console.log(`Top Story: ${item.title} (${cls?.category}, relevance ${cls?.art_relevance_score})`)
     }
 
     const tagCount = await tagReading(inserted.id, item.title, plainSummary, item.link)
     if (tagCount > 0) tagged++
   }
 
+  // Pruning runs last, and now actually removes things: with top_story no longer
+  // set on nearly every row, the 7-day retention policy applies again.
   const pruned = await pruneOldReadings()
-  const topStories = await detectTopStories()
   console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, tagged: ${tagged}, pruned: ${pruned}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
     written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length,
