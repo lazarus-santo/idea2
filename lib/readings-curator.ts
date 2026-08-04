@@ -499,6 +499,7 @@ export interface CurationResult {
   classified: number
   pruned: number
   topStories: number
+  staleSkipped: number
   candidatesConsidered: number
   byCategory: Record<ReadingCategory, number>
   byRiverGroup: Record<RiverGroup, number>
@@ -562,7 +563,7 @@ export async function curateReadings(
   if (!publications || publications.length === 0) {
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
     return {
-      written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0,
+      written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0, staleSkipped: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -573,6 +574,7 @@ export async function curateReadings(
   const existingUrls = new Set((existingRows ?? []).map((r) => r.article_url as string))
 
   const candidates: Array<{ pubId: string; pubTier: string; item: RssItem }> = []
+  let staleSkipped = 0
 
   for (const pub of publications) {
     try {
@@ -591,6 +593,7 @@ export async function curateReadings(
       for (const item of items) {
         if (existingUrls.has(item.link)) continue
         if (!passesKeywordFilter(item.title, item.description)) continue
+        if (isOutsideRetention(item.pubDate)) { staleSkipped++; continue }
         candidates.push({ pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
       }
     } catch (err) {
@@ -603,12 +606,12 @@ export async function curateReadings(
     }
   }
 
-  console.log(`Agent 3 [${tierFilter}]: ${candidates.length} keyword-filtered candidate(s) across ${publications.length} feed(s)`)
+  console.log(`Agent 3 [${tierFilter}]: ${candidates.length} candidate(s) across ${publications.length} feed(s); ${staleSkipped} skipped as older than ${RETENTION_DAYS} days`)
 
   if (candidates.length === 0) {
     const pruned = await pruneOldReadings()
     return {
-      written: 0, tagged: 0, classified: 0, pruned, topStories: 0, candidatesConsidered: 0,
+      written: 0, tagged: 0, classified: 0, pruned, topStories: 0, candidatesConsidered: 0, staleSkipped,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -727,7 +730,7 @@ export async function curateReadings(
   const pruned = await pruneOldReadings()
   console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, tagged: ${tagged}, pruned: ${pruned}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
-    written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length,
+    written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length, staleSkipped,
     byCategory, byRiverGroup, topStoryCandidates, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
@@ -754,6 +757,7 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
         classified: curation.classified,
         pruned: curation.pruned,
         topStories: curation.topStories,
+        stale_skipped: curation.staleSkipped,
         by_category: curation.byCategory,
         by_river_group: curation.byRiverGroup,
         top_story_candidates: curation.topStoryCandidates,
@@ -770,10 +774,43 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
   }
 }
 
+// How long a reading survives unless it is a Top Story. Single source of truth:
+// pruneOldReadings deletes past it, and isOutsideRetention refuses to spend a
+// classification on anything already beyond it. If these two ever disagree, the
+// pipeline either pays to classify rows it is about to delete (the old
+// behaviour) or drops articles it would have kept.
+const RETENTION_DAYS = 7
+
+function retentionCutoff(): Date {
+  const d = new Date()
+  d.setDate(d.getDate() - RETENTION_DAYS)
+  return d
+}
+
+/**
+ * True when an RSS item is already older than the retention window, so writing
+ * it would be immediately undone by the next prune.
+ *
+ * Measured on the 2026-08-04 daily run before this existed: 111 articles were
+ * classified and written, 92 of them pruned in the same run — 83% of the
+ * Anthropic spend for that run bought rows that did not survive it. Feeds that
+ * serve long back-catalogues (The Nation's culture feed returns 50 items
+ * spanning months) are the main source.
+ *
+ * Undated items are kept. A null published_at is never less than the cutoff, so
+ * pruneOldReadings will not delete them either — dropping them here would lose
+ * articles the retention policy intends to keep.
+ */
+function isOutsideRetention(pubDate: string | null): boolean {
+  if (!pubDate) return false
+  const t = new Date(pubDate).getTime()
+  if (Number.isNaN(t)) return false // unparseable — treat as undated, keep
+  return t < retentionCutoff().getTime()
+}
+
 async function pruneOldReadings(): Promise<number> {
   const db = getSupabaseAdmin()
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - 7)
+  const cutoff = retentionCutoff()
 
   // Never delete a reading an editor's pick points at. editor_picks.reference_id
   // is not a foreign key, so nothing at the database level stops this, and it has
