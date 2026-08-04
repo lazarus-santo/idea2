@@ -2,8 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
-// GET /api/admin/editor-picks
-// Returns the current live pick and any suggestions for each type.
+// GET /api/admin/editor-picks — the current live pick for each type.
+//
+// There were once auto-generated suggestions here: rows written with
+// status='suggested' that the admin could approve into place. Nothing ever
+// generated them. The status CHECK constraint has only ever allowed
+// ('pending','live','past'), so a 'suggested' row could not be inserted even by
+// hand, and these filters matched nothing on every request since the feature
+// shipped. Removed along with the approve route that existed to promote them.
 export async function GET(request: Request) {
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
@@ -11,44 +17,20 @@ export async function GET(request: Request) {
 
   const { data: allPicks, error } = await db
     .from('editor_picks')
-    .select('id, pick_type, reference_id, status')
-    .in('status', ['live', 'suggested'])
-    .order('created_at', { ascending: false })
+    .select('id, pick_type, reference_id')
+    .eq('status', 'live')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const picks = allPicks ?? []
 
-  // Current = the live pick per type. migration_v27 guarantees there is at most
-  // one, so the !currentByType guard is belt-and-braces, not a tie-break.
+  // migration_v27 guarantees at most one live pick per type.
   const currentByType: Record<string, typeof picks[0] | undefined> = {}
-  for (const p of picks) {
-    if (p.status === 'live' && !currentByType[p.pick_type]) {
-      currentByType[p.pick_type] = p
-    }
-  }
+  for (const p of picks) currentByType[p.pick_type] = p
 
-  const suggestedByType: Record<string, typeof picks> = {
-    exhibition: picks.filter(p => p.pick_type === 'exhibition' && p.status === 'suggested').slice(0, 5),
-    article:    picks.filter(p => p.pick_type === 'article'    && p.status === 'suggested').slice(0, 5),
-    book:       picks.filter(p => p.pick_type === 'book'       && p.status === 'suggested').slice(0, 5),
-  }
-
-  // Collect all reference IDs by type for batch fetching
-  const allExhibitionIds = [
-    currentByType.exhibition?.reference_id,
-    ...suggestedByType.exhibition.map(p => p.reference_id),
-  ].filter(Boolean) as string[]
-
-  const allArticleIds = [
-    currentByType.article?.reference_id,
-    ...suggestedByType.article.map(p => p.reference_id),
-  ].filter(Boolean) as string[]
-
-  const allBookIds = [
-    currentByType.book?.reference_id,
-    ...suggestedByType.book.map(p => p.reference_id),
-  ].filter(Boolean) as string[]
+  const allExhibitionIds = [currentByType.exhibition?.reference_id].filter(Boolean) as string[]
+  const allArticleIds    = [currentByType.article?.reference_id].filter(Boolean) as string[]
+  const allBookIds       = [currentByType.book?.reference_id].filter(Boolean) as string[]
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const exMap: Record<string, any> = {}
@@ -100,30 +82,21 @@ export async function GET(request: Request) {
 
   function buildCurrentEx(p: typeof picks[0] | undefined) {
     if (!p) return null
-    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, ...(exMap[p.reference_id] ?? {}) }
+    return { pick_id: p.id, reference_id: p.reference_id, ...(exMap[p.reference_id] ?? {}) }
   }
   function buildCurrentArticle(p: typeof picks[0] | undefined) {
     if (!p) return null
-    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, ...(articleMap[p.reference_id] ?? {}) }
+    return { pick_id: p.id, reference_id: p.reference_id, ...(articleMap[p.reference_id] ?? {}) }
   }
   function buildCurrentBook(p: typeof picks[0] | undefined) {
     if (!p) return null
-    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, ...(bookMap[p.reference_id] ?? {}) }
+    return { pick_id: p.id, reference_id: p.reference_id, ...(bookMap[p.reference_id] ?? {}) }
   }
 
   return NextResponse.json({
-    exhibitions: {
-      current: buildCurrentEx(currentByType.exhibition),
-      suggestions: suggestedByType.exhibition.map(p => ({ pick_id: p.id, reference_id: p.reference_id, ...(exMap[p.reference_id] ?? {}) })),
-    },
-    articles: {
-      current: buildCurrentArticle(currentByType.article),
-      suggestions: suggestedByType.article.map(p => ({ pick_id: p.id, reference_id: p.reference_id, ...(articleMap[p.reference_id] ?? {}) })),
-    },
-    books: {
-      current: buildCurrentBook(currentByType.book),
-      suggestions: suggestedByType.book.map(p => ({ pick_id: p.id, reference_id: p.reference_id, ...(bookMap[p.reference_id] ?? {}) })),
-    },
+    exhibitions: { current: buildCurrentEx(currentByType.exhibition) },
+    articles:    { current: buildCurrentArticle(currentByType.article) },
+    books:       { current: buildCurrentBook(currentByType.book) },
   })
 }
 

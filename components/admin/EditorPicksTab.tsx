@@ -15,14 +15,10 @@ type ExhibitionCurrentPick = CurrentPick & { show_title?: string; artists?: stri
 type ArticleCurrentPick    = CurrentPick & { headline?: string; author?: string | null; publication?: string | null; published_at?: string | null }
 type BookCurrentPick       = CurrentPick & { title?: string; author?: string | null; source?: string | null }
 
-type ExhibitionSuggestion = { pick_id: string; reference_id: string; show_title: string; artists: string[]; venue_name: string; end_date: string | null; image_url: string | null }
-type ArticleSuggestion    = { pick_id: string; reference_id: string; headline: string; publication: string | null; author: string | null; published_at: string | null; rss_summary: string | null }
-type BookSuggestion       = { pick_id: string; reference_id: string; title: string; author: string | null; source: string | null; goodreads_rating: number | null }
-
 type PicksData = {
-  exhibitions: { current: ExhibitionCurrentPick | null; suggestions: ExhibitionSuggestion[] }
-  articles:    { current: ArticleCurrentPick | null;    suggestions: ArticleSuggestion[] }
-  books:       { current: BookCurrentPick | null;       suggestions: BookSuggestion[] }
+  exhibitions: { current: ExhibitionCurrentPick | null }
+  articles:    { current: ArticleCurrentPick | null }
+  books:       { current: BookCurrentPick | null }
 }
 
 type ExItem = { id: string; show_title: string; artists: string[]; venue_name: string; end_date: string | null; image_url: string | null }
@@ -48,12 +44,6 @@ const labelS: React.CSSProperties = {
   display: 'block', fontFamily: F, fontSize: 10, fontWeight: 700,
   letterSpacing: '0.12em', textTransform: 'uppercase',
   color: 'rgba(0,0,0,0.4)', marginBottom: 4,
-}
-
-const colHead: React.CSSProperties = {
-  fontFamily: F, fontSize: 10, fontWeight: 700,
-  letterSpacing: '0.14em', textTransform: 'uppercase',
-  color: 'rgba(0,0,0,0.35)', marginBottom: 12,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -111,38 +101,6 @@ function CurrentPickPanel({
           <UnpublishBtn pickId={pickId} onDone={onUnpublish} />
         </div>
       </div>
-    </div>
-  )
-}
-
-// ── Publish button ────────────────────────────────────────────────────────────
-
-function ActionBtns({
-  onAction,
-}: {
-  onAction: () => Promise<void>
-}) {
-  const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
-
-  async function go() {
-    setBusy(true)
-    try {
-      await onAction()
-      setDone(true)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  if (done) return <span style={{ fontFamily: F, fontSize: 12, color: '#1a5c2a', fontWeight: 600, flexShrink: 0 }}>Live</span>
-
-  return (
-    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-      <button onClick={go} disabled={busy}
-        style={{ ...btnBase, background: '#000', color: '#FFFCEC', opacity: busy ? 0.6 : 1 }}>
-        {busy ? '…' : 'Make live'}
-      </button>
     </div>
   )
 }
@@ -282,27 +240,10 @@ function BookForm({ onSelected }: { onSelected: (referenceId: string) => void })
   )
 }
 
-// ── Section layout ────────────────────────────────────────────────────────────
-
-function SectionLayout({ hasSuggestions, suggestionsPanel, manualPanel }: {
-  hasSuggestions: boolean
-  suggestionsPanel: React.ReactNode
-  manualPanel: React.ReactNode
-}) {
-  if (!hasSuggestions) return <div>{manualPanel}</div>
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, alignItems: 'start' }}>
-      <div><p style={colHead}>Suggestions</p>{suggestionsPanel}</div>
-      <div><p style={colHead}>Set pick</p>{manualPanel}</div>
-    </div>
-  )
-}
-
 // ── Exhibition section ────────────────────────────────────────────────────────
 
-function ExhibitionSection({ current: init, suggestions: initSugg }: { current: ExhibitionCurrentPick | null; suggestions: ExhibitionSuggestion[] }) {
+function ExhibitionSection({ current: init }: { current: ExhibitionCurrentPick | null }) {
   const [current, setCurrent] = useState(init)
-  const [suggestions, setSuggestions] = useState(initSugg)
 
   function applyCurrent(pick_id: string, reference_id: string, details: Partial<ExhibitionCurrentPick>) {
     setCurrent({ pick_id, reference_id, ...details })
@@ -326,46 +267,19 @@ function ExhibitionSection({ current: init, suggestions: initSugg }: { current: 
           </div>
         </CurrentPickPanel>
       )}
-      <SectionLayout
-        hasSuggestions={suggestions.length > 0}
-        suggestionsPanel={
-          <div>
-            {suggestions.map((s, i) => (
-              <div key={s.pick_id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', borderBottom: '1px solid rgba(0,0,0,0.08)', padding: '12px 0' }}>
-                <span style={{ fontFamily: F, fontSize: 11, fontWeight: 700, color: 'rgba(0,0,0,0.3)', width: 16, flexShrink: 0, paddingTop: 2 }}>{i + 1}</span>
-                <div style={{ width: 52, height: 40, flexShrink: 0, background: '#e0ddd0', overflow: 'hidden' }}>
-                  {s.image_url && <img src={s.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}
-                </div>
-                <div style={{ flex: 1, minWidth: 0, fontFamily: F }}>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{s.show_title}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{s.artists.join(', ')}{s.end_date ? ` · Closes ${fmtDate(s.end_date)}` : ''}</div>
-                </div>
-                <ActionBtns onAction={async () => {
-                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST' })
-                  if (!res.ok) throw new Error()
-                  applyCurrent(s.pick_id, s.reference_id, { show_title: s.show_title, artists: s.artists, venue_name: s.venue_name, end_date: s.end_date, image_url: s.image_url })
-                  setSuggestions(prev => prev.filter(x => x.pick_id !== s.pick_id))
-                }} />
-              </div>
-            ))}
+      <SearchPicker<ExItem>
+        pickType="exhibition"
+        fetchUrl="/api/admin/exhibitions"
+        filterFn={(item, q) => item.show_title.toLowerCase().includes(q.toLowerCase()) || item.artists.some(a => a.toLowerCase().includes(q.toLowerCase()))}
+        renderRow={item => (
+          <div style={{ fontFamily: F }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{item.show_title}</div>
+            <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{item.artists.join(', ')}{item.venue_name ? ` · ${item.venue_name}` : ''}</div>
           </div>
-        }
-        manualPanel={
-          <SearchPicker<ExItem>
-            pickType="exhibition"
-            fetchUrl="/api/admin/exhibitions"
-            filterFn={(item, q) => item.show_title.toLowerCase().includes(q.toLowerCase()) || item.artists.some(a => a.toLowerCase().includes(q.toLowerCase()))}
-            renderRow={item => (
-              <div style={{ fontFamily: F }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{item.show_title}</div>
-                <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{item.artists.join(', ')}{item.venue_name ? ` · ${item.venue_name}` : ''}</div>
-              </div>
-            )}
-            onSelected={(refId) => {
-              applyCurrent('', refId, {})
-            }}
-          />
-        }
+        )}
+        onSelected={(refId) => {
+          applyCurrent('', refId, {})
+        }}
       />
     </div>
   )
@@ -373,9 +287,8 @@ function ExhibitionSection({ current: init, suggestions: initSugg }: { current: 
 
 // ── Article section ───────────────────────────────────────────────────────────
 
-function ArticleSection({ current: init, suggestions: initSugg }: { current: ArticleCurrentPick | null; suggestions: ArticleSuggestion[] }) {
+function ArticleSection({ current: init }: { current: ArticleCurrentPick | null }) {
   const [current, setCurrent] = useState(init)
-  const [suggestions, setSuggestions] = useState(initSugg)
 
   function applyCurrent(pick_id: string, reference_id: string, details: Partial<ArticleCurrentPick>) {
     setCurrent({ pick_id, reference_id, ...details })
@@ -393,44 +306,19 @@ function ArticleSection({ current: init, suggestions: initSugg }: { current: Art
           </div>
         </CurrentPickPanel>
       )}
-      <SectionLayout
-        hasSuggestions={suggestions.length > 0}
-        suggestionsPanel={
-          <div>
-            {suggestions.map((s, i) => (
-              <div key={s.pick_id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', borderBottom: '1px solid rgba(0,0,0,0.08)', padding: '12px 0' }}>
-                <span style={{ fontFamily: F, fontSize: 11, fontWeight: 700, color: 'rgba(0,0,0,0.3)', width: 16, flexShrink: 0, paddingTop: 2 }}>{i + 1}</span>
-                <div style={{ flex: 1, minWidth: 0, fontFamily: F }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.35 }}>{s.headline}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)', marginBottom: s.rss_summary ? 4 : 0 }}>{[s.publication, s.author, fmtDate(s.published_at)].filter(Boolean).join(' · ')}</div>
-                  {s.rss_summary && <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.5)', lineHeight: 1.5 }}>{s.rss_summary}</div>}
-                </div>
-                <ActionBtns onAction={async () => {
-                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST' })
-                  if (!res.ok) throw new Error()
-                  applyCurrent(s.pick_id, s.reference_id, { headline: s.headline, author: s.author, publication: s.publication })
-                  setSuggestions(prev => prev.filter(x => x.pick_id !== s.pick_id))
-                }} />
-              </div>
-            ))}
+      <SearchPicker<ArItem>
+        pickType="article"
+        fetchUrl="/api/readings"
+        filterFn={(item, q) => item.headline.toLowerCase().includes(q.toLowerCase()) || (item.publication_name ?? '').toLowerCase().includes(q.toLowerCase()) || (item.author ?? '').toLowerCase().includes(q.toLowerCase())}
+        renderRow={item => (
+          <div style={{ fontFamily: F }}>
+            <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.35 }}>{item.headline}</div>
+            <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{[item.publication_name, item.author].filter(Boolean).join(' · ')}</div>
           </div>
-        }
-        manualPanel={
-          <SearchPicker<ArItem>
-            pickType="article"
-            fetchUrl="/api/readings"
-            filterFn={(item, q) => item.headline.toLowerCase().includes(q.toLowerCase()) || (item.publication_name ?? '').toLowerCase().includes(q.toLowerCase()) || (item.author ?? '').toLowerCase().includes(q.toLowerCase())}
-            renderRow={item => (
-              <div style={{ fontFamily: F }}>
-                <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.35 }}>{item.headline}</div>
-                <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{[item.publication_name, item.author].filter(Boolean).join(' · ')}</div>
-              </div>
-            )}
-            onSelected={(refId) => {
-              applyCurrent('', refId, {})
-            }}
-          />
-        }
+        )}
+        onSelected={(refId) => {
+          applyCurrent('', refId, {})
+        }}
       />
     </div>
   )
@@ -438,9 +326,8 @@ function ArticleSection({ current: init, suggestions: initSugg }: { current: Art
 
 // ── Book section ──────────────────────────────────────────────────────────────
 
-function BookSection({ current: init, suggestions: initSugg }: { current: BookCurrentPick | null; suggestions: BookSuggestion[] }) {
+function BookSection({ current: init }: { current: BookCurrentPick | null }) {
   const [current, setCurrent] = useState(init)
-  const [suggestions, setSuggestions] = useState(initSugg)
 
   function applyCurrent(pick_id: string, reference_id: string, details: Partial<BookCurrentPick>) {
     setCurrent({ pick_id, reference_id, ...details })
@@ -458,33 +345,9 @@ function BookSection({ current: init, suggestions: initSugg }: { current: BookCu
           </div>
         </CurrentPickPanel>
       )}
-      <SectionLayout
-        hasSuggestions={suggestions.length > 0}
-        suggestionsPanel={
-          <div>
-            {suggestions.map((s, i) => (
-              <div key={s.pick_id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', borderBottom: '1px solid rgba(0,0,0,0.08)', padding: '12px 0' }}>
-                <span style={{ fontFamily: F, fontSize: 11, fontWeight: 700, color: 'rgba(0,0,0,0.3)', width: 16, flexShrink: 0, paddingTop: 2 }}>{i + 1}</span>
-                <div style={{ flex: 1, minWidth: 0, fontFamily: F }}>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{s.title}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{[s.author, s.source, s.goodreads_rating != null ? `${s.goodreads_rating} ★` : null].filter(Boolean).join(' · ')}</div>
-                </div>
-                <ActionBtns onAction={async () => {
-                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST' })
-                  if (!res.ok) throw new Error()
-                  applyCurrent(s.pick_id, s.reference_id, { title: s.title, author: s.author, source: s.source })
-                  setSuggestions(prev => prev.filter(x => x.pick_id !== s.pick_id))
-                }} />
-              </div>
-            ))}
-          </div>
-        }
-        manualPanel={
-          <BookForm onSelected={(refId) => {
-            applyCurrent('', refId, {})
-          }} />
-        }
-      />
+      <BookForm onSelected={(refId) => {
+        applyCurrent('', refId, {})
+      }} />
     </div>
   )
 }
@@ -518,15 +381,15 @@ export default function EditorPicksTab() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 52 }}>
       <div>
         <p style={headStyle}>Exhibition pick</p>
-        <ExhibitionSection current={data.exhibitions.current} suggestions={data.exhibitions.suggestions} />
+        <ExhibitionSection current={data.exhibitions.current} />
       </div>
       <div>
         <p style={headStyle}>Article pick</p>
-        <ArticleSection current={data.articles.current} suggestions={data.articles.suggestions} />
+        <ArticleSection current={data.articles.current} />
       </div>
       <div>
         <p style={headStyle}>Book pick</p>
-        <BookSection current={data.books.current} suggestions={data.books.suggestions} />
+        <BookSection current={data.books.current} />
       </div>
     </div>
   )
