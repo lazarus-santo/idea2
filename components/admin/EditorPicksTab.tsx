@@ -5,14 +5,10 @@ import { adminFetch } from '@/lib/admin-fetch'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type PickStatus = 'live' | 'pending'
-type Mode = 'now' | 'scheduled'
 
 type CurrentPick = {
   pick_id: string
   reference_id: string
-  status: PickStatus
-  goes_live_at: string | null
 }
 
 type ExhibitionCurrentPick = CurrentPick & { show_title?: string; artists?: string[]; venue_name?: string; end_date?: string | null; image_url?: string | null }
@@ -93,11 +89,9 @@ function UnpublishBtn({ pickId, onDone }: { pickId: string; onDone: () => void }
 // ── Current pick panel ────────────────────────────────────────────────────────
 
 function CurrentPickPanel({
-  pickId, status, goesLiveAt, onUnpublish, children,
+  pickId, onUnpublish, children,
 }: {
   pickId: string
-  status: PickStatus
-  goesLiveAt: string | null
   onUnpublish: () => void
   children: React.ReactNode
 }) {
@@ -109,11 +103,10 @@ function CurrentPickPanel({
           <span style={{
             fontFamily: F, fontSize: 10, fontWeight: 700,
             letterSpacing: '0.1em', textTransform: 'uppercase',
-            color: status === 'live' ? '#1a5c2a' : '#92400e',
-            background: status === 'live' ? '#dcfce7' : '#fef3c7',
+            color: '#1a5c2a', background: '#dcfce7',
             padding: '2px 8px',
           }}>
-            {status === 'live' ? 'Live now' : `Scheduled · ${fmtDate(goesLiveAt) ?? 'Monday'}`}
+            Live now
           </span>
           <UnpublishBtn pickId={pickId} onDone={onUnpublish} />
         </div>
@@ -122,37 +115,33 @@ function CurrentPickPanel({
   )
 }
 
-// ── Dual action buttons (Now / Schedule) ──────────────────────────────────────
+// ── Publish button ────────────────────────────────────────────────────────────
 
 function ActionBtns({
   onAction,
 }: {
-  onAction: (mode: Mode) => Promise<void>
+  onAction: () => Promise<void>
 }) {
-  const [busy, setBusy] = useState<Mode | null>(null)
-  const [done, setDone] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
 
-  async function go(mode: Mode) {
-    setBusy(mode)
+  async function go() {
+    setBusy(true)
     try {
-      await onAction(mode)
-      setDone(mode === 'now' ? 'Live' : 'Scheduled')
+      await onAction()
+      setDone(true)
     } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
-  if (done) return <span style={{ fontFamily: F, fontSize: 12, color: '#1a5c2a', fontWeight: 600, flexShrink: 0 }}>{done}</span>
+  if (done) return <span style={{ fontFamily: F, fontSize: 12, color: '#1a5c2a', fontWeight: 600, flexShrink: 0 }}>Live</span>
 
   return (
     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-      <button onClick={() => go('now')} disabled={!!busy}
-        style={{ ...btnBase, background: '#000', color: '#FFFCEC', opacity: busy === 'now' ? 0.6 : 1 }}>
-        {busy === 'now' ? '…' : 'Now'}
-      </button>
-      <button onClick={() => go('scheduled')} disabled={!!busy}
-        style={{ ...btnBase, background: 'transparent', color: '#000', border: '1px solid rgba(0,0,0,0.3)', opacity: busy === 'scheduled' ? 0.6 : 1 }}>
-        {busy === 'scheduled' ? '…' : 'Schedule'}
+      <button onClick={go} disabled={busy}
+        style={{ ...btnBase, background: '#000', color: '#FFFCEC', opacity: busy ? 0.6 : 1 }}>
+        {busy ? '…' : 'Make live'}
       </button>
     </div>
   )
@@ -167,7 +156,7 @@ function SearchPicker<T extends { id: string }>({
   fetchUrl: string
   filterFn: (item: T, q: string) => boolean
   renderRow: (item: T) => React.ReactNode
-  onSelected: (referenceId: string, mode: Mode) => void
+  onSelected: (referenceId: string) => void
 }) {
   const [q, setQ] = useState('')
   const [items, setItems] = useState<T[]>([])
@@ -183,20 +172,19 @@ function SearchPicker<T extends { id: string }>({
     } catch { /* silent */ }
   }
 
-  async function select(id: string, mode: Mode) {
+  async function select(id: string) {
     setSelecting(id)
     setMsg('')
     try {
       const res = await adminFetch('/api/admin/editor-picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pick_type: pickType, reference_id: id, mode }),
+        body: JSON.stringify({ pick_type: pickType, reference_id: id }),
       })
       if (!res.ok) throw new Error()
-      const { goes_live_at } = await res.json()
       setQ('')
-      setMsg(mode === 'now' ? 'Live now' : `Scheduled · ${fmtDate(goes_live_at) ?? 'Monday'}`)
-      onSelected(id, mode)
+      setMsg('Live now')
+      onSelected(id)
     } catch { setMsg('Error — try again') }
     finally { setSelecting(null) }
   }
@@ -217,13 +205,9 @@ function SearchPicker<T extends { id: string }>({
               <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>{renderRow(item)}</div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                  <button onClick={() => select(item.id, 'now')} disabled={!!selecting}
+                  <button onClick={() => select(item.id)} disabled={!!selecting}
                     style={{ ...btnBase, background: '#000', color: '#FFFCEC', opacity: selecting === item.id ? 0.6 : 1 }}>
-                    Now
-                  </button>
-                  <button onClick={() => select(item.id, 'scheduled')} disabled={!!selecting}
-                    style={{ ...btnBase, background: 'transparent', color: '#000', border: '1px solid rgba(0,0,0,0.3)', opacity: selecting === item.id ? 0.6 : 1 }}>
-                    Schedule
+                    Make live
                   </button>
                 </div>
               </div>
@@ -237,31 +221,31 @@ function SearchPicker<T extends { id: string }>({
 
 // ── Book form ─────────────────────────────────────────────────────────────────
 
-function BookForm({ onSelected }: { onSelected: (referenceId: string, mode: Mode, goesLiveAt: string | null) => void }) {
+function BookForm({ onSelected }: { onSelected: (referenceId: string) => void }) {
   const [title, setTitle]       = useState('')
   const [author, setAuthor]     = useState('')
   const [publisher, setPub]     = useState('')
   const [imageUrl, setImageUrl] = useState('')
-  const [submitting, setSub]    = useState<Mode | null>(null)
+  const [submitting, setSub]    = useState(false)
   const [msg, setMsg]           = useState('')
 
-  async function submit(mode: Mode) {
+  async function submit() {
     if (!title.trim()) return
-    setSub(mode)
+    setSub(true)
     setMsg('')
     try {
       const res = await adminFetch('/api/admin/editor-picks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pick_type: 'book', title: title.trim(), author: author.trim() || null, publisher: publisher.trim() || null, image_url: imageUrl.trim() || null, mode }),
+        body: JSON.stringify({ pick_type: 'book', title: title.trim(), author: author.trim() || null, publisher: publisher.trim() || null, image_url: imageUrl.trim() || null }),
       })
       if (!res.ok) throw new Error()
-      const { goes_live_at, reference_id } = await res.json()
-      onSelected(reference_id, mode, goes_live_at)
+      const { reference_id } = await res.json()
+      onSelected(reference_id)
       setTitle(''); setAuthor(''); setPub(''); setImageUrl('')
-      setMsg(mode === 'now' ? 'Live now' : `Scheduled · ${fmtDate(goes_live_at) ?? 'Monday'}`)
+      setMsg('Live now')
     } catch { setMsg('Error — try again') }
-    finally { setSub(null) }
+    finally { setSub(false) }
   }
 
   const canSubmit = title.trim().length > 0
@@ -288,13 +272,9 @@ function BookForm({ onSelected }: { onSelected: (referenceId: string, mode: Mode
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14 }}>
-        <button onClick={() => submit('now')} disabled={!!submitting || !canSubmit}
-          style={{ ...btnBase, background: canSubmit ? '#000' : 'transparent', color: canSubmit ? '#FFFCEC' : 'rgba(0,0,0,0.3)', border: canSubmit ? 'none' : '1px solid rgba(0,0,0,0.18)', cursor: canSubmit ? 'pointer' : 'default', opacity: submitting === 'now' ? 0.6 : 1 }}>
-          {submitting === 'now' ? '…' : 'Publish now'}
-        </button>
-        <button onClick={() => submit('scheduled')} disabled={!!submitting || !canSubmit}
-          style={{ ...btnBase, background: 'transparent', color: canSubmit ? '#000' : 'rgba(0,0,0,0.3)', border: canSubmit ? '1px solid rgba(0,0,0,0.3)' : '1px solid rgba(0,0,0,0.18)', cursor: canSubmit ? 'pointer' : 'default', opacity: submitting === 'scheduled' ? 0.6 : 1 }}>
-          {submitting === 'scheduled' ? '…' : 'Schedule'}
+        <button onClick={submit} disabled={submitting || !canSubmit}
+          style={{ ...btnBase, background: canSubmit ? '#000' : 'transparent', color: canSubmit ? '#FFFCEC' : 'rgba(0,0,0,0.3)', border: canSubmit ? 'none' : '1px solid rgba(0,0,0,0.18)', cursor: canSubmit ? 'pointer' : 'default', opacity: submitting ? 0.6 : 1 }}>
+          {submitting ? '…' : 'Publish now'}
         </button>
         {msg && <span style={{ fontFamily: F, fontSize: 12, color: msg.startsWith('Error') ? '#dc2626' : '#1a5c2a' }}>{msg}</span>}
       </div>
@@ -324,14 +304,14 @@ function ExhibitionSection({ current: init, suggestions: initSugg }: { current: 
   const [current, setCurrent] = useState(init)
   const [suggestions, setSuggestions] = useState(initSugg)
 
-  function applyCurrent(pick_id: string, reference_id: string, status: PickStatus, goes_live_at: string | null, details: Partial<ExhibitionCurrentPick>) {
-    setCurrent({ pick_id, reference_id, status, goes_live_at, ...details })
+  function applyCurrent(pick_id: string, reference_id: string, details: Partial<ExhibitionCurrentPick>) {
+    setCurrent({ pick_id, reference_id, ...details })
   }
 
   return (
     <div>
       {current && (
-        <CurrentPickPanel pickId={current.pick_id} status={current.status} goesLiveAt={current.goes_live_at} onUnpublish={() => setCurrent(null)}>
+        <CurrentPickPanel pickId={current.pick_id} onUnpublish={() => setCurrent(null)}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
             {current.image_url && (
               <div style={{ width: 60, height: 46, flexShrink: 0, background: '#e0ddd0', overflow: 'hidden' }}>
@@ -360,11 +340,10 @@ function ExhibitionSection({ current: init, suggestions: initSugg }: { current: 
                   <div style={{ fontSize: 13, fontWeight: 700 }}>{s.show_title}</div>
                   <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{s.artists.join(', ')}{s.end_date ? ` · Closes ${fmtDate(s.end_date)}` : ''}</div>
                 </div>
-                <ActionBtns onAction={async (mode) => {
-                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+                <ActionBtns onAction={async () => {
+                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST' })
                   if (!res.ok) throw new Error()
-                  const { status, goes_live_at } = await res.json()
-                  applyCurrent(s.pick_id, s.reference_id, status, goes_live_at, { show_title: s.show_title, artists: s.artists, venue_name: s.venue_name, end_date: s.end_date, image_url: s.image_url })
+                  applyCurrent(s.pick_id, s.reference_id, { show_title: s.show_title, artists: s.artists, venue_name: s.venue_name, end_date: s.end_date, image_url: s.image_url })
                   setSuggestions(prev => prev.filter(x => x.pick_id !== s.pick_id))
                 }} />
               </div>
@@ -382,8 +361,8 @@ function ExhibitionSection({ current: init, suggestions: initSugg }: { current: 
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{item.artists.join(', ')}{item.venue_name ? ` · ${item.venue_name}` : ''}</div>
               </div>
             )}
-            onSelected={(refId, mode) => {
-              applyCurrent('', refId, mode === 'now' ? 'live' : 'pending', mode === 'scheduled' ? 'next Monday' : null, {})
+            onSelected={(refId) => {
+              applyCurrent('', refId, {})
             }}
           />
         }
@@ -398,14 +377,14 @@ function ArticleSection({ current: init, suggestions: initSugg }: { current: Art
   const [current, setCurrent] = useState(init)
   const [suggestions, setSuggestions] = useState(initSugg)
 
-  function applyCurrent(pick_id: string, reference_id: string, status: PickStatus, goes_live_at: string | null, details: Partial<ArticleCurrentPick>) {
-    setCurrent({ pick_id, reference_id, status, goes_live_at, ...details })
+  function applyCurrent(pick_id: string, reference_id: string, details: Partial<ArticleCurrentPick>) {
+    setCurrent({ pick_id, reference_id, ...details })
   }
 
   return (
     <div>
       {current && (
-        <CurrentPickPanel pickId={current.pick_id} status={current.status} goesLiveAt={current.goes_live_at} onUnpublish={() => setCurrent(null)}>
+        <CurrentPickPanel pickId={current.pick_id} onUnpublish={() => setCurrent(null)}>
           <div style={{ fontFamily: F }}>
             <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.35 }}>{current.headline}</div>
             <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.5)', marginTop: 2 }}>
@@ -426,11 +405,10 @@ function ArticleSection({ current: init, suggestions: initSugg }: { current: Art
                   <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)', marginBottom: s.rss_summary ? 4 : 0 }}>{[s.publication, s.author, fmtDate(s.published_at)].filter(Boolean).join(' · ')}</div>
                   {s.rss_summary && <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.5)', lineHeight: 1.5 }}>{s.rss_summary}</div>}
                 </div>
-                <ActionBtns onAction={async (mode) => {
-                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+                <ActionBtns onAction={async () => {
+                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST' })
                   if (!res.ok) throw new Error()
-                  const { status, goes_live_at } = await res.json()
-                  applyCurrent(s.pick_id, s.reference_id, status, goes_live_at, { headline: s.headline, author: s.author, publication: s.publication })
+                  applyCurrent(s.pick_id, s.reference_id, { headline: s.headline, author: s.author, publication: s.publication })
                   setSuggestions(prev => prev.filter(x => x.pick_id !== s.pick_id))
                 }} />
               </div>
@@ -448,8 +426,8 @@ function ArticleSection({ current: init, suggestions: initSugg }: { current: Art
                 <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{[item.publication_name, item.author].filter(Boolean).join(' · ')}</div>
               </div>
             )}
-            onSelected={(refId, mode) => {
-              applyCurrent('', refId, mode === 'now' ? 'live' : 'pending', mode === 'scheduled' ? 'next Monday' : null, {})
+            onSelected={(refId) => {
+              applyCurrent('', refId, {})
             }}
           />
         }
@@ -464,14 +442,14 @@ function BookSection({ current: init, suggestions: initSugg }: { current: BookCu
   const [current, setCurrent] = useState(init)
   const [suggestions, setSuggestions] = useState(initSugg)
 
-  function applyCurrent(pick_id: string, reference_id: string, status: PickStatus, goes_live_at: string | null, details: Partial<BookCurrentPick>) {
-    setCurrent({ pick_id, reference_id, status, goes_live_at, ...details })
+  function applyCurrent(pick_id: string, reference_id: string, details: Partial<BookCurrentPick>) {
+    setCurrent({ pick_id, reference_id, ...details })
   }
 
   return (
     <div>
       {current && (
-        <CurrentPickPanel pickId={current.pick_id} status={current.status} goesLiveAt={current.goes_live_at} onUnpublish={() => setCurrent(null)}>
+        <CurrentPickPanel pickId={current.pick_id} onUnpublish={() => setCurrent(null)}>
           <div style={{ fontFamily: F }}>
             <div style={{ fontSize: 13, fontWeight: 700 }}>{current.title}</div>
             <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.5)', marginTop: 2 }}>
@@ -491,11 +469,10 @@ function BookSection({ current: init, suggestions: initSugg }: { current: BookCu
                   <div style={{ fontSize: 13, fontWeight: 700 }}>{s.title}</div>
                   <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)' }}>{[s.author, s.source, s.goodreads_rating != null ? `${s.goodreads_rating} ★` : null].filter(Boolean).join(' · ')}</div>
                 </div>
-                <ActionBtns onAction={async (mode) => {
-                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+                <ActionBtns onAction={async () => {
+                  const res = await adminFetch(`/api/admin/editor-picks/${s.pick_id}/approve`, { method: 'POST' })
                   if (!res.ok) throw new Error()
-                  const { status, goes_live_at } = await res.json()
-                  applyCurrent(s.pick_id, s.reference_id, status, goes_live_at, { title: s.title, author: s.author, source: s.source })
+                  applyCurrent(s.pick_id, s.reference_id, { title: s.title, author: s.author, source: s.source })
                   setSuggestions(prev => prev.filter(x => x.pick_id !== s.pick_id))
                 }} />
               </div>
@@ -503,8 +480,8 @@ function BookSection({ current: init, suggestions: initSugg }: { current: BookCu
           </div>
         }
         manualPanel={
-          <BookForm onSelected={(refId, mode, goesLiveAt) => {
-            applyCurrent('', refId, mode === 'now' ? 'live' : 'pending', goesLiveAt, {})
+          <BookForm onSelected={(refId) => {
+            applyCurrent('', refId, {})
           }} />
         }
       />

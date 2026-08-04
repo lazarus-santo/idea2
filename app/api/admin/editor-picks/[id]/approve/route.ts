@@ -2,19 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
-function nextMonday(): string {
-  const d = new Date()
-  const day = d.getDay() // 0=Sun … 6=Sat
-  const daysUntil = day === 1 ? 7 : (8 - day) % 7
-  d.setDate(d.getDate() + daysUntil)
-  d.setHours(0, 0, 0, 0)
-  return d.toISOString()
-}
-
-// POST /api/admin/editor-picks/[id]/approve
-// body: { mode: 'now' | 'scheduled' }
-// 'now'       → status='live'    immediately
-// 'scheduled' → status='pending', goes_live_at=next Monday
+// POST /api/admin/editor-picks/[id]/approve — make this pick the live one.
+//
+// There is no scheduling. The route used to take { mode: 'now' | 'scheduled' },
+// where 'scheduled' parked the pick at status='pending' with goes_live_at set to
+// the next Monday — but nothing ever read goes_live_at, so a scheduled pick
+// simply never went live. Picks are now published when you publish them.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -22,9 +15,6 @@ export async function POST(
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
   const { id } = await params
-  const body = await request.json().catch(() => ({}))
-  const mode: 'now' | 'scheduled' = body.mode === 'now' ? 'now' : 'scheduled'
-
   const db = getSupabaseAdmin()
 
   const { data: pick, error: fetchErr } = await db
@@ -37,9 +27,11 @@ export async function POST(
     return NextResponse.json({ error: fetchErr?.message ?? 'Not found' }, { status: 404 })
   }
 
-  // Retire ALL existing live and pending picks of the same type.
-  // We use neq('status','past') rather than .in() so any stale 'live' rows
-  // created outside the admin are also caught.
+  // Retire the incumbent before promoting this one. Ordering is load-bearing:
+  // editor_picks_one_live_per_type (migration_v27) is a partial unique index on
+  // (pick_type) WHERE status = 'live', so promoting first would hit a 23505.
+  // neq('status','past') rather than .in() so any stale row created outside the
+  // admin is caught too.
   const { error: retireErr } = await db
     .from('editor_picks')
     .update({ status: 'past' })
@@ -48,14 +40,11 @@ export async function POST(
     .neq('id', id)
   if (retireErr) console.error('retire error:', retireErr.message)
 
-  const goesLiveAt = mode === 'now' ? null : nextMonday()
-  const status     = mode === 'now' ? 'live' : 'pending'
-
   const { error } = await db
     .from('editor_picks')
-    .update({ status, goes_live_at: goesLiveAt })
+    .update({ status: 'live' })
     .eq('id', id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true, status, goes_live_at: goesLiveAt })
+  return NextResponse.json({ ok: true, status: 'live' })
 }

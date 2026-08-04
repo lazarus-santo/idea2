@@ -2,17 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
-function nextMonday(): string {
-  const d = new Date()
-  const day = d.getDay()
-  const daysUntil = day === 1 ? 7 : (8 - day) % 7
-  d.setDate(d.getDate() + daysUntil)
-  d.setHours(0, 0, 0, 0)
-  return d.toISOString()
-}
-
 // GET /api/admin/editor-picks
-// Returns current pick (live/pending) and suggestions (suggested) for each type.
+// Returns the current live pick and any suggestions for each type.
 export async function GET(request: Request) {
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
@@ -20,18 +11,19 @@ export async function GET(request: Request) {
 
   const { data: allPicks, error } = await db
     .from('editor_picks')
-    .select('id, pick_type, reference_id, status, goes_live_at')
-    .in('status', ['live', 'pending', 'suggested'])
+    .select('id, pick_type, reference_id, status')
+    .in('status', ['live', 'suggested'])
     .order('created_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const picks = allPicks ?? []
 
-  // Current = the most recent live or pending pick per type
+  // Current = the live pick per type. migration_v27 guarantees there is at most
+  // one, so the !currentByType guard is belt-and-braces, not a tie-break.
   const currentByType: Record<string, typeof picks[0] | undefined> = {}
   for (const p of picks) {
-    if ((p.status === 'live' || p.status === 'pending') && !currentByType[p.pick_type]) {
+    if (p.status === 'live' && !currentByType[p.pick_type]) {
       currentByType[p.pick_type] = p
     }
   }
@@ -108,15 +100,15 @@ export async function GET(request: Request) {
 
   function buildCurrentEx(p: typeof picks[0] | undefined) {
     if (!p) return null
-    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, goes_live_at: p.goes_live_at, ...(exMap[p.reference_id] ?? {}) }
+    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, ...(exMap[p.reference_id] ?? {}) }
   }
   function buildCurrentArticle(p: typeof picks[0] | undefined) {
     if (!p) return null
-    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, goes_live_at: p.goes_live_at, ...(articleMap[p.reference_id] ?? {}) }
+    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, ...(articleMap[p.reference_id] ?? {}) }
   }
   function buildCurrentBook(p: typeof picks[0] | undefined) {
     if (!p) return null
-    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, goes_live_at: p.goes_live_at, ...(bookMap[p.reference_id] ?? {}) }
+    return { pick_id: p.id, reference_id: p.reference_id, status: p.status, ...(bookMap[p.reference_id] ?? {}) }
   }
 
   return NextResponse.json({
@@ -135,7 +127,7 @@ export async function GET(request: Request) {
   })
 }
 
-// POST /api/admin/editor-picks — manually set a pick (retires current, schedules for next Monday)
+// POST /api/admin/editor-picks — set a pick live, retiring whatever it replaces
 // For exhibitions and articles: body = { pick_type, reference_id }
 // For books: body = { pick_type: 'book', title, author, publisher, image_url }
 export async function POST(request: NextRequest) {
@@ -175,8 +167,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'reference_id required for this pick type' }, { status: 400 })
   }
 
-  const mode: 'now' | 'scheduled' = body.mode === 'now' ? 'now' : 'scheduled'
-
+  // Retire the current pick before inserting the replacement. This ordering is
+  // load-bearing: editor_picks_one_live_per_type (migration_v27) is a partial
+  // unique index on (pick_type) WHERE status = 'live', so inserting first would
+  // hit a 23505.
   const { error: retireErr } = await db
     .from('editor_picks')
     .update({ status: 'past' })
@@ -184,15 +178,12 @@ export async function POST(request: NextRequest) {
     .neq('status', 'past')
   if (retireErr) console.error('retire error:', retireErr.message)
 
-  const goesLiveAt = mode === 'now' ? null : nextMonday()
-  const status     = mode === 'now' ? 'live' : 'pending'
-
   const { data, error } = await db
     .from('editor_picks')
-    .insert({ pick_type, reference_id: referenceId, status, goes_live_at: goesLiveAt })
+    .insert({ pick_type, reference_id: referenceId, status: 'live' })
     .select('id')
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true, pick_id: data.id, reference_id: referenceId, status, goes_live_at: goesLiveAt })
+  return NextResponse.json({ ok: true, pick_id: data.id, reference_id: referenceId, status: 'live' })
 }
