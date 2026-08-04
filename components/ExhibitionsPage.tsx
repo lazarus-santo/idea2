@@ -7,7 +7,7 @@ import ExhibitionsSplitView from './ExhibitionsSplitView'
 import ExhibitionFilters from './ExhibitionFilters'
 
 type Tab = 'museums' | 'galleries' | 'fairs'
-type SubFilter = 'closing-soon' | 'opening-soon' | null
+type SubFilter = 'closing-soon' | null
 type ViewMode = 'grid' | 'split'
 
 const TAB_LABEL: Record<Tab, string> = { museums: 'Museums', galleries: 'Galleries', fairs: 'Fairs' }
@@ -22,12 +22,6 @@ function isClosingSoon(ex: { end_date: string | null; start_date: string | null;
     const isLive = ex.start_date ? new Date(ex.start_date + 'T00:00:00').getTime() <= now : true
     return isLive && diff >= 0 && diff <= 7
   }
-  return diff >= 0 && diff <= 7
-}
-
-function isOpeningSoon(ex: { start_date: string | null }): boolean {
-  if (!ex.start_date) return false
-  const diff = (new Date(ex.start_date + 'T00:00:00').getTime() - Date.now()) / 86400000
   return diff >= 0 && diff <= 7
 }
 
@@ -105,14 +99,12 @@ export default function ExhibitionsPage() {
   // Filtered grid exhibitions
   let visibleGrid = exhibitions.filter(ex => ex.venue_type === TAB_TYPE[tab])
   if (subFilter === 'closing-soon') visibleGrid = visibleGrid.filter(isClosingSoon)
-  if (subFilter === 'opening-soon') visibleGrid = visibleGrid.filter(isOpeningSoon)
 
   // Filtered map exhibitions — memoized so hoveredId changes don't produce a new array
   // reference and re-trigger the markers useEffect in ExhibitionsSplitView
   const visibleMap = useMemo(() => {
     let result = mapExhibitions.filter(ex => ex.venue_type === TAB_TYPE[tab])
     if (subFilter === 'closing-soon') result = result.filter(isClosingSoon)
-    if (subFilter === 'opening-soon') result = result.filter(isOpeningSoon)
     return result
   }, [mapExhibitions, tab, subFilter])
 

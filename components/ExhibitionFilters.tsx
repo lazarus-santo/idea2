@@ -1,13 +1,18 @@
 'use client'
 
-type SubFilter = 'closing-soon' | 'opening-soon' | null
+// 'closing-soon' is the only sub-filter. There was an 'Opening Soon' alongside it,
+// removed deliberately: most galleries do not publish a show before it opens, so
+// the filter surfaced whichever handful of venues happened to announce early
+// rather than what is actually opening. The union is kept rather than collapsed
+// to a boolean so a future second filter slots in without reshaping the props.
+type SubFilter = 'closing-soon' | null
 
 interface Props {
   tabs: { label: string; value: string }[]
   activeTab: string
   subFilter: SubFilter
   onTabChange: (value: string) => void
-  onSubFilterToggle: (f: 'closing-soon' | 'opening-soon') => void
+  onSubFilterToggle: (f: 'closing-soon') => void
 }
 
 export default function ExhibitionFilters({ tabs, activeTab, subFilter, onTabChange, onSubFilterToggle }: Props) {
@@ -25,15 +30,12 @@ export default function ExhibitionFilters({ tabs, activeTab, subFilter, onTabCha
         ))}
       </div>
       <div className="ei-filters">
-        {(['closing-soon', 'opening-soon'] as const).map(f => (
-          <button
-            key={f}
-            className={`ei-filter${subFilter === f ? ' ei-filter--active' : ''}`}
-            onClick={() => onSubFilterToggle(f)}
-          >
-            {f === 'closing-soon' ? 'Closing Soon' : 'Opening Soon'}
-          </button>
-        ))}
+        <button
+          className={`ei-filter${subFilter === 'closing-soon' ? ' ei-filter--active' : ''}`}
+          onClick={() => onSubFilterToggle('closing-soon')}
+        >
+          Closing Soon
+        </button>
       </div>
     </div>
   )

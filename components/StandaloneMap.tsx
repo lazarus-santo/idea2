@@ -330,7 +330,7 @@ function TimePicker({ value, onChange, label }: { value: string; onChange: (v: s
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
 type VenueFilter = 'all' | 'museum' | 'gallery' | 'fair'
-type SubFilter = 'closing-soon' | 'opening-soon' | null
+type SubFilter = 'closing-soon' | null
 const FILTER_TABS: { label: string; value: VenueFilter }[] = [
   { label: 'All', value: 'all' },
   { label: 'Museums', value: 'museum' },
@@ -346,12 +346,6 @@ function isClosingSoon(ex: MapExhibition): boolean {
     const isLive = ex.start_date ? new Date(ex.start_date + 'T00:00:00').getTime() <= now : true
     return isLive && diff >= 0 && diff <= 7
   }
-  return diff >= 0 && diff <= 7
-}
-
-function isOpeningSoon(ex: MapExhibition): boolean {
-  if (!ex.start_date) return false
-  const diff = (new Date(ex.start_date + 'T00:00:00').getTime() - Date.now()) / 86400000
   return diff >= 0 && diff <= 7
 }
 
@@ -462,7 +456,6 @@ export default function StandaloneMap() {
       ? exhibitions
       : exhibitions.filter(ex => ex.venue_type === venueFilter)
     if (subFilter === 'closing-soon') visible = visible.filter(isClosingSoon)
-    if (subFilter === 'opening-soon') visible = visible.filter(isOpeningSoon)
 
     // Group by venue only to detect co-located exhibitions for jitter
     const byVenue = new Map<string, MapExhibition[]>()
