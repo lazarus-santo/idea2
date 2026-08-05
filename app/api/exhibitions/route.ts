@@ -27,7 +27,13 @@ export async function GET() {
   const cutoff = ninetyDaysAgo.toISOString().split('T')[0]
 
   const normalized = (exhibitions ?? [])
-    .filter((ex) => !ex.start_date || ex.start_date <= today)
+    // Gallery and museum shows appear once they have opened — announcing an
+    // unopened show is not what this index is for. Fairs are exempt: a fair runs
+    // about four days a year, so applying the same rule would leave the Fairs tab
+    // empty for the other 361 and the announcement window is the whole point of
+    // listing one. The end_date filter above still drops fairs once they close.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((ex) => (ex as any).venues?.institutions?.type === 'fair' || !ex.start_date || ex.start_date <= today)
     .filter((ex) => ex.is_ongoing || ex.end_date || (ex.start_date && ex.start_date >= cutoff))
     .map((ex) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

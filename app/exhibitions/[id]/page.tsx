@@ -26,7 +26,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
       override_longitude,
       preread_type,
       coverage,
-      venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name)),
+      venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name, type, exhibitors)),
       exhibition_artists(artists!inner(name)),
       prereads(id, article_title, publication, article_url, thumbnail_url)
     `)
@@ -37,7 +37,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
   if (error || !data) notFound()
 
   const raw = data as typeof data & {
-    venues: { name: string; address: string | null; neighborhood: string | null; institution_id: string | null; latitude: number | null; longitude: number | null; institutions: { name: string } | null }
+    venues: { name: string; address: string | null; neighborhood: string | null; institution_id: string | null; latitude: number | null; longitude: number | null; institutions: { name: string; type: string | null; exhibitors: string[] | null } | null }
     exhibition_artists: { artists: { name: string } }[]
     prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null; thumbnail_url: string | null }[]
     description: string | null
@@ -150,6 +150,8 @@ export default async function ExhibitionPage({ params }: PageProps) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     artists: (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
     preread_type: prereadType,
+    venue_type: (raw.venues.institutions?.type ?? 'gallery') as 'gallery' | 'museum' | 'fair',
+    exhibitors: Array.isArray(raw.venues.institutions?.exhibitors) ? raw.venues.institutions.exhibitors : [],
     prereads: mergedPrereads,
     coverage: mergedCoverage,
   }

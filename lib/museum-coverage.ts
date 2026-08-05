@@ -294,6 +294,43 @@ export async function generateMuseumCoverage(
   return { coverage, coverageType: classification.type }
 }
 
+// ─── Fair coverage ────────────────────────────────────────────────────────────
+//
+// Fairs take the coverage-only path like museums, but none of the Type A-D
+// machinery applies. That system keys off artists — solo vs small group vs large
+// group, whether the artist is historical — and a fair has no artist association
+// at all: it has exhibiting galleries, and the artists shown are a booth-level
+// detail this feature deliberately does not model. So this is a flat show-level
+// search, two queries, no classification call.
+//
+// The two queries are deliberately different in kind: "<fair> review" finds
+// critical write-ups, "<fair> NYC" catches previews, roundups and market reports
+// that never use the word review. Results are merged and de-duplicated by URL,
+// then ranked by publication importance so the strongest outlet leads.
+const FAIR_COVERAGE_CAP = 5
+
+export async function generateFairCoverage(fairName: string): Promise<CoverageItem[]> {
+  const [reviews, nyc] = await Promise.all([
+    museumSearch(`${fairName} review`, 5),
+    museumSearch(`${fairName} NYC`, 5),
+  ])
+
+  const seenUrls = new Set<string>()
+  const items: CoverageItem[] = []
+
+  for (const r of [...reviews, ...nyc].filter(isValidResult)) {
+    if (seenUrls.has(r.url)) continue
+    seenUrls.add(r.url)
+    items.push(toCoverageItem(r, 'show_coverage', null))
+  }
+
+  items.sort((a, b) => publicationImportanceRank(a.url) - publicationImportanceRank(b.url))
+  const capped = items.slice(0, FAIR_COVERAGE_CAP)
+
+  console.log(`Fair coverage [${fairName}]: ${capped.length} of ${items.length} found`, capped.map((c) => ({ title: c.title, url: c.url })))
+  return capped
+}
+
 // ─── Cross-link Agent 2's own coverage results into exhibition_coverage ────────
 // Mirrors Agent 3's existing agent3-sourced cross-linking (lib/readings-curator.ts) —
 // this is the agent2 direction: when a coverage result's URL already exists as a

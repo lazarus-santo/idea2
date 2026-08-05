@@ -3360,3 +3360,14 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
     padding: 24px 20px 60px;
   }
 }
+
+/* Fair exhibitor list — one flowing run of names rather than a column, since a
+   fair can list 200+ galleries and a vertical list would dwarf the page. */
+.ep-exhibitors {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 13px;
+  line-height: 1.8;
+  color: rgba(0, 0, 0, 0.62);
+  margin: 0;
+  word-spacing: 0.05em;
+}

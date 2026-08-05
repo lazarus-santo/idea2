@@ -202,6 +202,18 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
             </div>
           )}
 
+          {exhibition.venue_type === 'fair' && exhibition.exhibitors.length > 0 && (
+            <div className="ep-section">
+              <p className="ep-pr-label">Exhibitors ({exhibition.exhibitors.length})</p>
+              <div className="ep-section-body">
+                {/* Plain text, deliberately not linked. These are names as printed on
+                    the fair's exhibitor list, not matched institution records —
+                    resolving them would need fuzzy name matching that is out of scope. */}
+                <p className="ep-exhibitors">{exhibition.exhibitors.join(' · ')}</p>
+              </div>
+            </div>
+          )}
+
           {exhibition.coverage.length > 0 && (
             <div className="ep-section">
               <p className="ep-pr-label">Coverage</p>

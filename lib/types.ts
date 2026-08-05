@@ -79,6 +79,9 @@ export interface ExhibitionDetailData {
   lng: number | null
   artists: string[]
   preread_type: 'full' | 'coverage_only'
+  venue_type: 'gallery' | 'museum' | 'fair'
+  /** Fairs only — exhibiting gallery names as printed on the fair's own list. */
+  exhibitors: string[]
   prereads: {
     id: string
     article_title: string | null
