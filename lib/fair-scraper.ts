@@ -152,6 +152,31 @@ function normalize(s: string): string {
     .toLowerCase()
 }
 
+/**
+ * Removes the trailing location from an exhibitor name.
+ *
+ * Fairs print their rosters as "Gallery, City" — sometimes several cities:
+ * "193 Gallery, Paris, Venice, Saint Tropez", "BANK, Shanghai, New York". The
+ * model strips these inconsistently when asked to copy names exactly: on the
+ * Armory's six pages it dropped them for Galleries and Presents and kept them
+ * for Solo, Focus, Platform and Not-For-Profit — 64 of 241 names, split by page
+ * rather than by anything in the data. Doing it in code instead of asking the
+ * prompt more nicely is the only way to get a consistent result.
+ *
+ * Everything from the first comma is dropped. Verified against all 241 Armory
+ * names: no gallery there carries a comma inside its own name, and the ones that
+ * use other separators — Archeus / Post-Modern, Casterline|Goodman, EBONY/CURATED,
+ * Uffner & Liu, Secrist | Beach — have no comma to trip on.
+ *
+ * The known cost: a gallery genuinely named "Something, Inc." would lose its
+ * suffix. That is the accepted trade for consistency across the whole list.
+ */
+function stripLocation(name: string): string {
+  const idx = name.indexOf(',')
+  const base = idx === -1 ? name : name.slice(0, idx)
+  return base.trim().replace(/[\s·–-]+$/, '').trim()
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -174,7 +199,7 @@ Return ONLY a JSON object, no commentary:
 }
 
 Rules:
-- exhibitors: every exhibiting gallery name shown on this page, copied EXACTLY as printed. Do not expand abbreviations, do not add cities, do not tidy punctuation, do not deduplicate variants that genuinely appear differently.
+- exhibitors: every exhibiting gallery name shown on this page, copied EXACTLY as printed, INCLUDING any city or cities printed after the name (e.g. "193 Gallery, Paris, Venice, Saint Tropez"). Do not expand abbreviations, do not tidy punctuation, do not deduplicate variants that genuinely appear differently. The caller removes the location itself — copying it through keeps that removal consistent across pages.
 - Include ONLY names actually present in the text below. Never infer, complete, or recall galleries you expect to be at this fair. An incomplete list is correct; an invented name is not.
 - Exclude sponsors, partners, media partners, restaurants, and the fair's own sub-brands (e.g. "Armory Live", "Talks") — exhibiting galleries only.
 - section_name: if this page covers one named section of the fair (e.g. "Galleries", "Solo", "Presents", "Platform", "Focus", "Not-For-Profit"), give that section's name. null if the page is the fair's full undivided list.
@@ -286,13 +311,22 @@ export async function scrapeFairExhibitors(inputs: FairPageInput[]): Promise<Fai
     let found = 0
 
     for (const candidate of Array.isArray(raw.exhibitors) ? raw.exhibitors : []) {
-      const name = String(candidate).trim()
-      if (!name || name.length < 2) continue
+      const printed = String(candidate).trim()
+      if (!printed || printed.length < 2) continue
+
+      // Verified as printed — the stricter test, since the page contains the
+      // location too. Stripping first would let a hallucinated "X, Berlin" pass
+      // on the strength of an unrelated "X" elsewhere on the page.
+      const printedKey = normalize(printed)
+      if (!printedKey) continue
+      if (!haystack.includes(printedKey)) { pageRejected.push(printed); continue }
+
+      const name = stripLocation(printed)
+      if (name.length < 2) continue
+      // Dedupe on the stripped form so "BANK, Shanghai, New York" and a bare
+      // "BANK" on another section page collapse to one entry. First section
+      // encountered wins, matching the order the admin supplied.
       const key = normalize(name)
-      if (!key) continue
-      if (!haystack.includes(key)) { pageRejected.push(name); continue }
-      // Dedupe across sections — a gallery can appear in more than one. First
-      // section encountered wins, matching the order the admin supplied.
       if (seen.has(key)) continue
       seen.add(key)
       exhibitors.push({ name, section })
