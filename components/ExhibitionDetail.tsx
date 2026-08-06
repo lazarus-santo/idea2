@@ -91,6 +91,19 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
     }
   }, [exhibition.show_title])
 
+  // Grouped in the order the sections first appear, which is the order the admin
+  // supplied the pages — the fair's own running order, not alphabetical. Fairs
+  // with one flat list produce a single group keyed null and render no heading.
+  const exhibitorSections = useMemo(() => {
+    const groups = new Map<string | null, string[]>()
+    for (const e of exhibition.exhibitors) {
+      const arr = groups.get(e.section) ?? []
+      arr.push(e.name)
+      groups.set(e.section, arr)
+    }
+    return [...groups.entries()]
+  }, [exhibition.exhibitors])
+
   const dateRange = formatDateRange(exhibition.start_date, exhibition.end_date, exhibition.is_ongoing)
   const isMuseum = exhibition.preread_type === 'coverage_only'
   const hasCollapsibles = !!exhibition.press_release || exhibition.prereads.length > 0
@@ -209,7 +222,12 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
                 {/* Plain text, deliberately not linked. These are names as printed on
                     the fair's exhibitor list, not matched institution records —
                     resolving them would need fuzzy name matching that is out of scope. */}
-                <p className="ep-exhibitors">{exhibition.exhibitors.join(' · ')}</p>
+                {exhibitorSections.map(([section, names]) => (
+                  <div key={section ?? '_'} className="ep-exhibitor-group">
+                    {section && <p className="ep-exhibitor-section">{section}</p>}
+                    <p className="ep-exhibitors">{names.join(' · ')}</p>
+                  </div>
+                ))}
               </div>
             </div>
           )}

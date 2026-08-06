@@ -80,8 +80,12 @@ export interface ExhibitionDetailData {
   artists: string[]
   preread_type: 'full' | 'coverage_only'
   venue_type: 'gallery' | 'museum' | 'fair'
-  /** Fairs only — exhibiting gallery names as printed on the fair's own list. */
-  exhibitors: string[]
+  /**
+   * Fairs only — exhibiting galleries as printed on the fair's own list.
+   * `section` is the fair's grouping (Armory: Galleries / Solo / Focus /
+   * Presents / Platform / Not-For-Profit); null for fairs with one flat list.
+   */
+  exhibitors: { name: string; section: string | null }[]
   prereads: {
     id: string
     article_title: string | null

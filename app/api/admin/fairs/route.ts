@@ -58,7 +58,7 @@ interface FairInput {
   end_date: string | null
   fair_location: string | null
   website?: string | null
-  exhibitors?: string[]
+  exhibitors?: { name: string; section: string | null }[]
   image_url?: string | null
   /** Run the Agent 2 coverage search inline. Costs Exa searches; off by default. */
   generate_coverage?: boolean

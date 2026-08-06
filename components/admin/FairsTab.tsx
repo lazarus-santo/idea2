@@ -39,15 +39,18 @@ interface Fair {
   preread_type: string | null
 }
 
+interface Exhibitor { name: string; section: string | null }
+interface PageResult { url: string; section: string | null; status: string; found: number; rejected: string[]; page_chars: number }
 interface Scraped {
   fair_name: string | null
   start_date: string | null
   end_date: string | null
   location: string | null
-  exhibitors: string[]
+  exhibitors: Exhibitor[]
   rejected: string[]
   method: string
   page_chars: number
+  pages: PageResult[]
 }
 
 export default function FairsTab() {
@@ -85,9 +88,13 @@ export default function FairsTab() {
     if (!url.trim()) return
     setScraping(true); setMsg(''); setScraped(null)
     try {
+      // One URL per line. Sectioned fairs (Armory: Galleries, Solo, Focus,
+      // Presents, Platform, Not-For-Profit) list one page each; all of them
+      // render in a single Browserbase session.
+      const urls = url.split('\n').map(u => u.trim()).filter(Boolean)
       const res = await adminFetch('/api/admin/fairs/scrape', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ urls }),
       })
       const data = await res.json()
       if (!res.ok) { setMsg(data.error ?? 'Scrape failed'); return }
@@ -96,7 +103,10 @@ export default function FairsTab() {
       setStart(data.start_date ?? '')
       setEnd(data.end_date ?? '')
       setLocation(data.location ?? '')
-      setMsg(`Found ${data.exhibitors.length} exhibitor(s) via ${data.method}${data.rejected.length ? ` · ${data.rejected.length} dropped (not on page)` : ''}`)
+      const sections = new Set(data.exhibitors.map((e: Exhibitor) => e.section).filter(Boolean))
+      setMsg(`Found ${data.exhibitors.length} exhibitor(s) across ${data.pages.length} page(s) via ${data.method}`
+        + (sections.size ? ` · ${sections.size} section(s)` : '')
+        + (data.rejected.length ? ` · ${data.rejected.length} dropped (not on page)` : ''))
     } catch { setMsg('Scrape failed') }
     finally { setScraping(false) }
   }
@@ -109,7 +119,7 @@ export default function FairsTab() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
-          exhibitions_url: url.trim(),
+          exhibitions_url: url.split('\n').map(u => u.trim()).filter(Boolean)[0] ?? url.trim(),
           start_date: start || null,
           end_date: end || null,
           fair_location: location || null,
@@ -147,8 +157,10 @@ export default function FairsTab() {
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 16 }}>
           <div style={{ flex: 1 }}>
-            <label style={label}>Exhibitor list URL *</label>
-            <input style={input} value={url} onChange={e => setUrl(e.target.value)} placeholder="https://…/exhibitors" />
+            <label style={label}>Exhibitor list URL(s) * — one per line</label>
+            <textarea style={{ ...input, minHeight: 76, fontFamily: 'var(--font-ibm-plex-mono), monospace', fontSize: 12 }}
+              value={url} onChange={e => setUrl(e.target.value)}
+              placeholder={'https://…/exhibitors\nhttps://…/solo-2026   (one line per section, if the fair splits them)'} />
           </div>
           <button style={{ ...btn, opacity: scraping || !url.trim() ? 0.5 : 1 }} onClick={scrape} disabled={scraping || !url.trim()}>
             {scraping ? 'Scraping…' : 'Scrape Exhibitor List'}
@@ -180,8 +192,24 @@ export default function FairsTab() {
               Exhibitors — {scraped.exhibitors.length} verified on page
               {scraped.rejected.length > 0 && `, ${scraped.rejected.length} dropped`}
             </p>
-            <div style={{ maxHeight: 200, overflowY: 'auto', background: '#fff', border: '1px solid rgba(0,0,0,0.12)', padding: '8px 10px', fontFamily: F, fontSize: 12, lineHeight: 1.7, color: 'rgba(0,0,0,0.7)' }}>
-              {scraped.exhibitors.length ? scraped.exhibitors.join(' · ') : 'None found.'}
+            <div style={{ maxHeight: 240, overflowY: 'auto', background: '#fff', border: '1px solid rgba(0,0,0,0.12)', padding: '8px 10px', fontFamily: F, fontSize: 12, lineHeight: 1.7, color: 'rgba(0,0,0,0.7)' }}>
+              {scraped.exhibitors.length === 0 ? 'None found.' : [...new Map(
+                scraped.exhibitors.map(e => [e.section, scraped.exhibitors.filter(x => x.section === e.section).map(x => x.name)])
+              ).entries()].map(([section, names]) => (
+                <div key={section ?? '_'} style={{ marginBottom: 10 }}>
+                  {section && <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(0,0,0,0.4)' }}>{section} ({names.length})</div>}
+                  <div>{names.join(' · ')}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              {scraped.pages.map(pg => (
+                <div key={pg.url} style={{ fontFamily: F, fontSize: 11, color: pg.status === 'ok' ? 'rgba(0,0,0,0.5)' : '#92400e' }}>
+                  {pg.status === 'ok' ? '✓' : '!'} {pg.section ?? '(no section)'} — {pg.found} found
+                  {pg.status !== 'ok' && ` · ${pg.status}`} · {pg.url}
+                </div>
+              ))}
             </div>
             {scraped.rejected.length > 0 && (
               <p style={{ fontFamily: F, fontSize: 11, color: '#92400e', margin: '8px 0 0' }}>

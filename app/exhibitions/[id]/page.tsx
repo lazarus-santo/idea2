@@ -7,6 +7,24 @@ interface PageProps {
   params: Promise<{ id: string }>
 }
 
+// exhibitors is jsonb, so both shapes are readable: the original flat string[]
+// and the current {name, section} form used once fairs gained per-section pages.
+// Normalising on read means no backfill was needed for rows written under the
+// old shape.
+function normalizeExhibitors(raw: unknown): { name: string; section: string | null }[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((e) => {
+      if (typeof e === 'string') return { name: e, section: null }
+      if (e && typeof e === 'object' && typeof (e as { name?: unknown }).name === 'string') {
+        const o = e as { name: string; section?: unknown }
+        return { name: o.name, section: typeof o.section === 'string' ? o.section : null }
+      }
+      return null
+    })
+    .filter((e): e is { name: string; section: string | null } => e !== null)
+}
+
 export default async function ExhibitionPage({ params }: PageProps) {
   const { id } = await params
 
@@ -37,7 +55,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
   if (error || !data) notFound()
 
   const raw = data as typeof data & {
-    venues: { name: string; address: string | null; neighborhood: string | null; institution_id: string | null; latitude: number | null; longitude: number | null; institutions: { name: string; type: string | null; exhibitors: string[] | null } | null }
+    venues: { name: string; address: string | null; neighborhood: string | null; institution_id: string | null; latitude: number | null; longitude: number | null; institutions: { name: string; type: string | null; exhibitors: unknown } | null }
     exhibition_artists: { artists: { name: string } }[]
     prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null; thumbnail_url: string | null }[]
     description: string | null
@@ -151,7 +169,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
     artists: (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
     preread_type: prereadType,
     venue_type: (raw.venues.institutions?.type ?? 'gallery') as 'gallery' | 'museum' | 'fair',
-    exhibitors: Array.isArray(raw.venues.institutions?.exhibitors) ? raw.venues.institutions.exhibitors : [],
+    exhibitors: normalizeExhibitors(raw.venues.institutions?.exhibitors),
     prereads: mergedPrereads,
     coverage: mergedCoverage,
   }

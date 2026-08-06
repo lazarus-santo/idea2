@@ -3371,3 +3371,14 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   margin: 0;
   word-spacing: 0.05em;
 }
+
+.ep-exhibitor-group + .ep-exhibitor-group { margin-top: 14px; }
+.ep-exhibitor-section {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.38);
+  margin: 0 0 4px;
+}
