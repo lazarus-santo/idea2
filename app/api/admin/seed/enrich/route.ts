@@ -25,8 +25,12 @@ function trimToZip(placeName: string): string {
 }
 
 async function geocodeMapbox(address: string): Promise<{ lat: number; lng: number; placeName: string } | null> {
-  const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN
-  if (!token) return null
+  // Server-only token — see lib/geocode.ts.
+  const token = process.env.MAPBOX_SERVER_TOKEN
+  if (!token) {
+    console.warn('MAPBOX_SERVER_TOKEN not set — venue seeding will not geocode')
+    return null
+  }
   try {
     const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${token}&limit=1&country=US`
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) })

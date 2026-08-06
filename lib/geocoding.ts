@@ -1,9 +1,12 @@
 import { getSupabaseAdmin } from './supabase'
 
 async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
-  const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN
+  // Server-only token. NEXT_PUBLIC_MAPBOX_TOKEN is URL-restricted for browser
+  // use and 403s on every request that carries no Referer, which is all of them
+  // from here. See lib/geocode.ts for the full history.
+  const token = process.env.MAPBOX_SERVER_TOKEN
   if (!token) {
-    console.warn('NEXT_PUBLIC_MAPBOX_TOKEN not set — skipping geocoding')
+    console.warn('MAPBOX_SERVER_TOKEN not set — skipping geocoding')
     return null
   }
 

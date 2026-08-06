@@ -10,8 +10,13 @@ async function fetchDurationMinutes(
   destination: [number, number],
   profile: 'walking' | 'driving'
 ): Promise<number | null> {
-  const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN
-  if (!token) return null
+  // Server-only token — see lib/geocode.ts. The Directions API was hitting the
+  // same 403 as geocoding, so walking and driving times were silently absent.
+  const token = process.env.MAPBOX_SERVER_TOKEN
+  if (!token) {
+    console.warn('MAPBOX_SERVER_TOKEN not set — skipping directions lookup')
+    return null
+  }
 
   const coords = `${origin[0]},${origin[1]};${destination[0]},${destination[1]}`
   const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${coords}?access_token=${token}&overview=false`

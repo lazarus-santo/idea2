@@ -1,30 +1,29 @@
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN
+// Server-only Mapbox token, deliberately not the NEXT_PUBLIC_ one.
+//
+// NEXT_PUBLIC_MAPBOX_TOKEN carries URL restrictions so it can be exposed in the
+// browser bundle safely. Those restrictions are enforced by Referer, and a
+// server request sends none, so every server-side call returned 403 — verified
+// 2026-08-05: the identical query returned 200 with `Referer: https://idea2.xyz/`
+// and 403 without, on both the v5 and v6 endpoints. It failed silently because
+// this function returns null on any error, so a venue simply ended up with no
+// coordinates and no pin.
+//
+// MAPBOX_SERVER_TOKEN is unrestricted and never reaches the browser. The public
+// token is still correct for the map components — this file must not use it.
+const MAPBOX_TOKEN = process.env.MAPBOX_SERVER_TOKEN
 
 /**
  * Forward-geocode a street address. Returns null when the address cannot be
  * resolved — callers treat coordinates as optional.
  *
- * KNOWN ISSUE (2026-08-05): NEXT_PUBLIC_MAPBOX_TOKEN has URL restrictions set in
- * the Mapbox account, so it only works from a browser sending a matching
- * Referer. Server-side calls have no Referer and get 403 on every request —
- * verified: the identical query returns 200 with `Referer: https://idea2.xyz/`
- * and 403 without. Map rendering in the browser is unaffected; it is only
- * server-side geocoding that is dead, here and in app/api/admin/seed/enrich.
- *
- * The fix is on the Mapbox side: either drop the URL restriction, or issue a
- * second unrestricted token for server use and read it here. Spoofing a Referer
- * from the server would work but would defeat a control that was set
- * deliberately, so it is not done.
- *
- * Until then every failure is logged rather than silently swallowed — the whole
- * reason this went unnoticed is that the previous version returned null on any
- * error with no output, so a venue simply ended up without a map pin.
+ * Failures are logged rather than swallowed: the silent null is exactly what let
+ * the 403 above go unnoticed for as long as it did.
  */
 export async function geocodeAddress(
   address: string
 ): Promise<{ lat: number; lng: number } | null> {
   if (!MAPBOX_TOKEN) {
-    console.warn('geocodeAddress: NEXT_PUBLIC_MAPBOX_TOKEN is not set — skipping')
+    console.warn('geocodeAddress: MAPBOX_SERVER_TOKEN is not set — skipping')
     return null
   }
   try {
@@ -33,7 +32,7 @@ export async function geocodeAddress(
     if (!res.ok) {
       console.warn(
         `geocodeAddress: Mapbox returned ${res.status} for "${address}"` +
-        (res.status === 403 ? ' — token is URL-restricted and rejects server-side requests' : '')
+        (res.status === 403 ? ' — token rejected; check MAPBOX_SERVER_TOKEN has no URL restrictions' : '')
       )
       return null
     }
