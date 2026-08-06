@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from './supabase'
+import { NYC_GEOCODE_PARAMS } from './geocode'
 
 async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
   // Server-only token. NEXT_PUBLIC_MAPBOX_TOKEN is URL-restricted for browser
@@ -12,7 +13,7 @@ async function geocodeAddress(address: string): Promise<{ lat: number; lng: numb
 
   try {
     const res = await fetch(
-      `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(address)}&limit=1&access_token=${token}`,
+      `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(address)}&limit=1&access_token=${token}${NYC_GEOCODE_PARAMS}`,
       { signal: AbortSignal.timeout(10000) }
     )
     if (!res.ok) {

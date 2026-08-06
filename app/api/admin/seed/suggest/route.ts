@@ -29,7 +29,9 @@ export async function POST(req: NextRequest) {
     ? `\n\nThe following institutions already exist in the database — do NOT suggest them again: ${existingNames.join(', ')}.`
     : ''
 
-  const SYSTEM = `You are an expert on the New York City art world. Given a query, return ONLY a valid JSON array of NYC institutions matching the query, no markdown or commentary. Each object: { name: string, website: string, type: 'museum'|'gallery'|'nonprofit'|'experimental', venues: [{ name: string, exhibitions_url: string, address: string, neighborhood: string, latitude: number, longitude: number }] }. Most institutions have exactly one venue. Only include real currently-operating NYC institutions. Return 5-20 institutions.${exclusionLine}`
+  const SYSTEM = `You are an expert on the New York City art world. Given a query, return ONLY a valid JSON array of NYC institutions matching the query, no markdown or commentary. Each object: { name: string, website: string, type: 'museum'|'gallery'|'nonprofit'|'experimental', venues: [{ name: string, exhibitions_url: string, address: string, neighborhood: string, latitude: number, longitude: number }] }. Most institutions have exactly one venue. Only include real currently-operating NYC institutions. Return 5-20 institutions.
+
+address MUST be the full street address including city, state and ZIP — "531 West 24th Street, New York, NY 10011", never the bare street line. A street number and name alone is ambiguous across the country: "531 West 24th Street" also exists in Indianapolis, and "522 West 22nd Street" in Cedar Falls, Iowa.${exclusionLine}`
 
   let raw: string
   try {

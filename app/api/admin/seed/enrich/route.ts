@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
+import { NYC_GEOCODE_PARAMS } from '@/lib/geocode'
 
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 
@@ -32,7 +33,7 @@ async function geocodeMapbox(address: string): Promise<{ lat: number; lng: numbe
     return null
   }
   try {
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${token}&limit=1&country=US`
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${token}&limit=1${NYC_GEOCODE_PARAMS}`
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
     if (!res.ok) return null
     const data = await res.json()
