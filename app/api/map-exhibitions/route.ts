@@ -38,7 +38,11 @@ export async function GET() {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const candidates = ((data ?? []) as any[])
-    .filter((ex) => !ex.start_date || ex.start_date <= today)
+    // Fairs are exempt from the "already opened" rule, same as in
+    // /api/exhibitions: a fair runs about four days a year, so the map would
+    // otherwise only ever show one during those four. The end_date filter above
+    // still drops it once the fair closes.
+    .filter((ex) => ex.venues?.institutions?.type === 'fair' || !ex.start_date || ex.start_date <= today)
     .filter((ex) => ex.is_ongoing || ex.end_date || (ex.start_date && ex.start_date >= cutoff))
     // Keep if venue has coords OR has an address_override to geocode
     .filter((ex) => (ex.venues?.latitude && ex.venues?.longitude) || ex.address_override)
