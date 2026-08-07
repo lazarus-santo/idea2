@@ -1,0 +1,638 @@
+[
+ {
+  "name": "303 Gallery",
+  "website": "https://www.303gallery.com/",
+  "verified": true,
+  "chars": 1006
+ },
+ {
+  "name": "47 Canal",
+  "website": "https://www.47canal.us/",
+  "verified": true,
+  "chars": 2481
+ },
+ {
+  "name": "Acquavella Galleries",
+  "website": "https://acquavellagalleries.com/",
+  "verified": true,
+  "chars": 2478
+ },
+ {
+  "name": "Alexander and Bonin",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Alexander Berggruen",
+  "website": "https://alexanderberggruen.com/",
+  "verified": true,
+  "chars": 646
+ },
+ {
+  "name": "Alexander Gray Associates",
+  "website": "https://www.alexandergray.com/",
+  "verified": true,
+  "chars": 3522
+ },
+ {
+  "name": "Almine Rech",
+  "website": "https://www.alminerech.com/",
+  "verified": true,
+  "chars": 3241
+ },
+ {
+  "name": "Andrea Rosen Gallery",
+  "website": "https://www.andrearosengallery.com/",
+  "verified": true,
+  "chars": 197
+ },
+ {
+  "name": "Andrew Edlin Gallery",
+  "website": "https://andrewedlin.com/",
+  "verified": true,
+  "chars": 872
+ },
+ {
+  "name": "Andrew Kreps Gallery",
+  "website": "https://www.andrewkreps.com/",
+  "verified": true,
+  "chars": 345
+ },
+ {
+  "name": "Anton Kern Gallery",
+  "website": "https://www.antonkern.com/",
+  "verified": true,
+  "chars": 336
+ },
+ {
+  "name": "Betty Cuningham Gallery",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Bianca DAlessandro",
+  "website": "https://www.biancadalessandro.com/",
+  "verified": true,
+  "chars": 101685
+ },
+ {
+  "name": "Blum",
+  "website": "https://www.blum.com/us/en/",
+  "verified": true,
+  "chars": 16188
+ },
+ {
+  "name": "Bortolami",
+  "website": "https://www.bortolami.com/",
+  "verified": true,
+  "chars": 752
+ },
+ {
+  "name": "Bridget Donahue",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Bureau",
+  "website": "https://bureau-inc.com/",
+  "verified": true,
+  "chars": 280
+ },
+ {
+  "name": "Canada",
+  "website": "https://canadanewyork.com/",
+  "verified": true,
+  "chars": 1730
+ },
+ {
+  "name": "Casey Kaplan",
+  "website": "https://caseykaplangallery.com/",
+  "verified": true,
+  "chars": 1251
+ },
+ {
+  "name": "Chapter NY",
+  "website": "https://chapter-ny.com/",
+  "verified": true,
+  "chars": 334
+ },
+ {
+  "name": "Charles Moffett",
+  "website": "https://charlesmoffett.com/",
+  "verified": true,
+  "chars": 2354
+ },
+ {
+  "name": "Cheim & Read",
+  "website": "https://cheimread.com/",
+  "verified": true,
+  "chars": 816
+ },
+ {
+  "name": "Clearing",
+  "website": "https://clearing.com/",
+  "verified": true,
+  "chars": 5670
+ },
+ {
+  "name": "Company Gallery",
+  "website": "https://www.company.com/",
+  "verified": true,
+  "chars": 192
+ },
+ {
+  "name": "Craig Starr Gallery",
+  "website": "https://www.craigstarr.com/",
+  "verified": true,
+  "chars": 316
+ },
+ {
+  "name": "DC Moore Gallery",
+  "website": "https://www.dcmooregallery.com/",
+  "verified": true,
+  "chars": 461
+ },
+ {
+  "name": "Deli Gallery",
+  "website": "https://deli.gallery/",
+  "verified": true,
+  "chars": 1242
+ },
+ {
+  "name": "Derek Eller Gallery",
+  "website": "https://www.derekeller.com/",
+  "verified": true,
+  "chars": 287
+ },
+ {
+  "name": "Di Donna Galleries",
+  "website": "https://didonna.com/",
+  "verified": true,
+  "chars": 3322
+ },
+ {
+  "name": "Essex Street",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Eva Presenhuber",
+  "website": "https://www.evapresenhuber.com/en/catalogue",
+  "verified": true,
+  "chars": 96600
+ },
+ {
+  "name": "Fierman",
+  "website": "https://fierman.nyc/",
+  "verified": true,
+  "chars": 8351
+ },
+ {
+  "name": "Foxy Production",
+  "website": "https://foxyproduction.com/",
+  "verified": true,
+  "chars": 97
+ },
+ {
+  "name": "Fredericks & Freiser",
+  "website": "https://www.fredericksfreisergallery.com/",
+  "verified": true,
+  "chars": 701
+ },
+ {
+  "name": "Galerie Lelong",
+  "website": "https://galerielelong.com/",
+  "verified": true,
+  "chars": 1439
+ },
+ {
+  "name": "Garth Greenan Gallery",
+  "website": "https://www.garthgreenan.com/",
+  "verified": true,
+  "chars": 2463
+ },
+ {
+  "name": "Gordon Robichaux",
+  "website": "https://www.gordonrobichaux.com/",
+  "verified": true,
+  "chars": 867
+ },
+ {
+  "name": "Greene Naftali",
+  "website": "https://greenenaftaligallery.com/",
+  "verified": true,
+  "chars": 6657
+ },
+ {
+  "name": "Grimm",
+  "website": "https://grimmgallery.com/",
+  "verified": true,
+  "chars": 1665
+ },
+ {
+  "name": "Half Gallery",
+  "website": "https://halfgallery.com/",
+  "verified": true,
+  "chars": 3727
+ },
+ {
+  "name": "Harkawik",
+  "website": "https://www.harkawik.com/",
+  "verified": true,
+  "chars": 560
+ },
+ {
+  "name": "Hirschl & Adler",
+  "website": "https://www.hirschlandadler.com/",
+  "verified": true,
+  "chars": 421
+ },
+ {
+  "name": "Hollis Taggart",
+  "website": "https://www.hollistaggart.com/",
+  "verified": true,
+  "chars": 6550
+ },
+ {
+  "name": "Jack Hanley Gallery",
+  "website": "https://www.jackhanley.com/",
+  "verified": true,
+  "chars": 669
+ },
+ {
+  "name": "Jack Shainman Gallery",
+  "website": "https://jackshainman.com/",
+  "verified": true,
+  "chars": 256
+ },
+ {
+  "name": "James Cohan",
+  "website": "https://www.jamescohan.com/",
+  "verified": true,
+  "chars": 2065
+ },
+ {
+  "name": "James Fuentes",
+  "website": "https://jamesfuentes.com/",
+  "verified": true,
+  "chars": 1057
+ },
+ {
+  "name": "Jeffrey Deitch",
+  "website": "https://jeffreydeitch.com/",
+  "verified": true,
+  "chars": 954
+ },
+ {
+  "name": "JTT",
+  "website": "https://www.jttnyc.com/",
+  "verified": true,
+  "chars": 372
+ },
+ {
+  "name": "Kai Matsumiya",
+  "website": "https://kaimatsumiya.com/",
+  "verified": true,
+  "chars": 4799
+ },
+ {
+  "name": "Kapp Kapp",
+  "website": "https://www.kappkapp.com/",
+  "verified": true,
+  "chars": 92
+ },
+ {
+  "name": "Karma",
+  "website": "https://karmakarma.org/",
+  "verified": true,
+  "chars": 1348
+ },
+ {
+  "name": "Kasmin",
+  "website": "https://www.kasmingallery.com/",
+  "verified": true,
+  "chars": 2180
+ },
+ {
+  "name": "Kate Werble Gallery",
+  "website": "https://www.katewerblegallery.com/",
+  "verified": true,
+  "chars": 1906
+ },
+ {
+  "name": "Kaufmann Repetto",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Kerry Schuss",
+  "website": "https://www.kerryschussgallery.com/pages/index.php",
+  "verified": true,
+  "chars": 361
+ },
+ {
+  "name": "Lehmann Maupin",
+  "website": "https://www.lehmannmaupin.com/",
+  "verified": true,
+  "chars": 3053
+ },
+ {
+  "name": "Magenta Plains",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Marlborough Gallery",
+  "website": "https://www.marlboroughgallery.com/",
+  "verified": true,
+  "chars": 504
+ },
+ {
+  "name": "Menconi + Schoelkopf",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Mendes Wood DM",
+  "website": "https://mendeswooddm.com/",
+  "verified": true,
+  "chars": 4946
+ },
+ {
+  "name": "Metro Pictures",
+  "website": "https://www.metropictures.com/",
+  "verified": true,
+  "chars": 170
+ },
+ {
+  "name": "Michael Rosenfeld Gallery",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Michael Werner Gallery",
+  "website": "https://www.michaelwerner.com/",
+  "verified": true,
+  "chars": 108
+ },
+ {
+  "name": "Miguel Abreu Gallery",
+  "website": "https://miguelabreugallery.com/",
+  "verified": true,
+  "chars": 3230
+ },
+ {
+  "name": "Miles McEnery Gallery",
+  "website": "https://www.milesmcenery.com/",
+  "verified": true,
+  "chars": 841
+ },
+ {
+  "name": "Mnuchin Gallery",
+  "website": "https://www.mnuchingallery.com/",
+  "verified": true,
+  "chars": 293
+ },
+ {
+  "name": "Nahmad Contemporary",
+  "website": "https://www.nahmadcontemporary.com/",
+  "verified": true,
+  "chars": 1885
+ },
+ {
+  "name": "Nicelle Beauchene Gallery",
+  "website": "https://nicellebeauchene.com/",
+  "verified": true,
+  "chars": 682
+ },
+ {
+  "name": "Nicola Vassell Gallery",
+  "website": "https://www.nicolavassell.com/",
+  "verified": true,
+  "chars": 3351
+ },
+ {
+  "name": "Nino Mier Gallery",
+  "website": "https://ninomiergallery.com/",
+  "verified": true,
+  "chars": 772
+ },
+ {
+  "name": "Off Paradise",
+  "website": "https://offparadise.com/",
+  "verified": true,
+  "chars": 331
+ },
+ {
+  "name": "Ortuzar",
+  "website": "https://www.ortuzar.com/",
+  "verified": true,
+  "chars": 176
+ },
+ {
+  "name": "Pace Prints",
+  "website": "https://paceprints.com/home",
+  "verified": true,
+  "chars": 1550
+ },
+ {
+  "name": "Perrotin",
+  "website": "https://www.perrotin.com/en",
+  "verified": true,
+  "chars": 8
+ },
+ {
+  "name": "Peter Blum Gallery",
+  "website": "https://www.peterblumgallery.com/",
+  "verified": true,
+  "chars": 1396
+ },
+ {
+  "name": "Peter Freeman",
+  "website": "https://www.peterfreemaninc.com/",
+  "verified": true,
+  "chars": 1618
+ },
+ {
+  "name": "Postmasters",
+  "website": "https://www.postmastersart.com/",
+  "verified": true,
+  "chars": 50
+ },
+ {
+  "name": "PPOW",
+  "website": "https://www.ppowgallery.com/",
+  "verified": true,
+  "chars": 1613
+ },
+ {
+  "name": "Rachel Uffner Gallery",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Ramiken",
+  "website": "https://ramiken.com.au/",
+  "verified": true,
+  "chars": 3417
+ },
+ {
+  "name": "Ricco/Maresca Gallery",
+  "website": "https://www.riccomaresca.com/",
+  "verified": true,
+  "chars": 3202
+ },
+ {
+  "name": "Ronald Feldman",
+  "website": "https://feldmangallery.com/",
+  "verified": true,
+  "chars": 3708
+ },
+ {
+  "name": "Salon 94",
+  "website": "https://salon94.com/",
+  "verified": true,
+  "chars": 790
+ },
+ {
+  "name": "Sargent's Daughters",
+  "website": "https://www.sargentsdaughters.com/",
+  "verified": true,
+  "chars": 304
+ },
+ {
+  "name": "Sean Kelly",
+  "website": "https://www.skny.com/",
+  "verified": true,
+  "chars": 1182
+ },
+ {
+  "name": "Shrine",
+  "website": "https://www.shrine.com/",
+  "verified": true,
+  "chars": 184
+ },
+ {
+  "name": "Sikkema Jenkins",
+  "website": "https://www.smjny.com/",
+  "verified": true,
+  "chars": 80
+ },
+ {
+  "name": "Simone Subal Gallery",
+  "website": "https://simonesubal.com/",
+  "verified": true,
+  "chars": 4337
+ },
+ {
+  "name": "Situations",
+  "website": "https://www.situations.us/",
+  "verified": true,
+  "chars": 86
+ },
+ {
+  "name": "Skarstedt",
+  "website": "https://www.skarstedt.com/",
+  "verified": true,
+  "chars": 377
+ },
+ {
+  "name": "Sperone Westwater",
+  "website": "https://www.speronewestwater.com/",
+  "verified": true,
+  "chars": 340
+ },
+ {
+  "name": "Sprüth Magers",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Susan Inglett Gallery",
+  "website": "https://www.inglettgallery.com/",
+  "verified": true,
+  "chars": 1665
+ },
+ {
+  "name": "Tanya Bonakdar Gallery",
+  "website": "https://www.tanyabonakdargallery.com/",
+  "verified": true,
+  "chars": 2910
+ },
+ {
+  "name": "Team Gallery",
+  "website": null,
+  "verified": false,
+  "chars": 0
+ },
+ {
+  "name": "Thaddaeus Ropac",
+  "website": "https://ropac.net/",
+  "verified": true,
+  "chars": 18186
+ },
+ {
+  "name": "The Hole",
+  "website": "https://thehole.com/",
+  "verified": true,
+  "chars": 690
+ },
+ {
+  "name": "Tibor de Nagy",
+  "website": "https://www.tibordenagy.com/",
+  "verified": true,
+  "chars": 320
+ },
+ {
+  "name": "Tilton Gallery",
+  "website": "https://www.jacktiltongallery.com/",
+  "verified": true,
+  "chars": 328
+ },
+ {
+  "name": "Tina Kim Gallery",
+  "website": "https://tinakimgallery.com/",
+  "verified": true,
+  "chars": 7478
+ },
+ {
+  "name": "Van Doren Waxter",
+  "website": "https://vandorenwaxter.com/",
+  "verified": true,
+  "chars": 4717
+ },
+ {
+  "name": "White Cube",
+  "website": "https://www.whitecube.com/",
+  "verified": true,
+  "chars": 5103
+ },
+ {
+  "name": "Xavier Hufkens",
+  "website": "https://www.xavierhufkens.com/",
+  "verified": true,
+  "chars": 6575
+ },
+ {
+  "name": "Yancey Richardson Gallery",
+  "website": "https://www.yanceyrichardson.com/",
+  "verified": true,
+  "chars": 262
+ },
+ {
+  "name": "Yossi Milo",
+  "website": "https://yossimilo.com/",
+  "verified": true,
+  "chars": 4388
+ }
+]
