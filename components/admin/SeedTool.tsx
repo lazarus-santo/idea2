@@ -660,7 +660,7 @@ function Toast({ msg, ok }: { msg: string; ok: boolean }) {
 
 // ── Main SeedTool ─────────────────────────────────────────────────────────────
 
-type Mode = 'suggest' | 'manual'
+type Mode = 'suggest' | 'manual' | 'import'
 
 // `adminPw` is only passed by /admin/seed, which renders this tool standalone.
 // Inside the main dashboard it arrives as undefined because AdminPage has
@@ -669,6 +669,13 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   if (adminPw) setAdminSecret(adminPw)
 
   const [mode, setMode] = useState<Mode>('suggest')
+  // CSV import state. The import shares the review table, geocode step and
+  // insert button with AI Suggest — only the source of the drafts differs.
+  const [impStatus, setImpStatus] = useState<string[]>(['open'])
+  const [impSearch, setImpSearch] = useState('')
+  const [impOffset, setImpOffset] = useState(0)
+  const [impLimit, setImpLimit] = useState(25)
+  const [impMeta, setImpMeta] = useState<{ total: number; already_present: number; counts_by_status: Record<string, number> } | null>(null)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -681,6 +688,66 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   function showToast(msg: string, ok: boolean) {
     setToast({ msg, ok })
     setTimeout(() => setToast(null), 4500)
+  }
+
+  // Geocoding every venue in a batch of drafts. Pulled out of handleSuggest so
+  // the CSV import runs the identical step rather than a near-copy that drifts.
+  async function enrichDrafts(mapped: InstitutionDraft[]): Promise<InstitutionDraft[]> {
+    return Promise.all(
+      mapped.map(async inst => ({
+        ...inst,
+        venues: await Promise.all(
+          inst.venues.map(async v => {
+            if (!v.address.trim()) {
+              return { ...v, _addressFallback: true, _hoursFallback: true, _geoStatus: 'failed' as GeoStatus }
+            }
+            try {
+              const er = await adminFetch('/api/admin/seed/enrich', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: `${v.name || inst.name}`, address: v.address }),
+              })
+              if (!er.ok) throw new Error()
+              const data = await er.json()
+              return {
+                ...v,
+                latitude: data.lat != null ? String(data.lat) : v.latitude,
+                longitude: data.lng != null ? String(data.lng) : v.longitude,
+                address: data.address ?? v.address,
+                hours: data.hours ?? v.hours,
+                _addressFallback: Boolean(data.addressFallback),
+                _hoursFallback: Boolean(data.hoursFallback),
+                _geoStatus: (data.lat != null ? 'ok' : 'failed') as GeoStatus,
+              }
+            } catch {
+              return { ...v, _addressFallback: true, _hoursFallback: true, _geoStatus: 'failed' as GeoStatus }
+            }
+          })
+        ),
+      }))
+    )
+  }
+
+  async function handleImport(nextOffset = impOffset) {
+    setLoading(true); setEnriching(false); setError(null); setInstitutions([])
+    try {
+      const res = await adminFetch('/api/admin/seed/import-csv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: impStatus, search: impSearch, offset: nextOffset, limit: impLimit }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.error) { setError(json.error ?? `HTTP ${res.status}`); return }
+      setImpMeta({ total: json.total, already_present: json.already_present, counts_by_status: json.counts_by_status })
+      setImpOffset(nextOffset)
+      const mapped: InstitutionDraft[] = (json.institutions as Record<string, unknown>[]).map(institutionFromRaw)
+      setEnriching(true)
+      setInstitutions(await enrichDrafts(mapped))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error')
+    } finally {
+      setEnriching(false); setLoading(false)
+    }
   }
 
   async function handleSuggest() {
@@ -702,40 +769,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
       }
       const mapped: InstitutionDraft[] = (json.institutions as Record<string, unknown>[]).map(institutionFromRaw)
       setEnriching(true)
-      const enriched = await Promise.all(
-        mapped.map(async inst => ({
-          ...inst,
-          venues: await Promise.all(
-            inst.venues.map(async v => {
-              if (!v.address.trim()) {
-                return { ...v, _addressFallback: true, _hoursFallback: true, _geoStatus: 'failed' as GeoStatus }
-              }
-              try {
-                const er = await adminFetch('/api/admin/seed/enrich', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name: `${v.name || inst.name}`, address: v.address }),
-                })
-                if (!er.ok) throw new Error()
-                const data = await er.json()
-                return {
-                  ...v,
-                  latitude: data.lat != null ? String(data.lat) : v.latitude,
-                  longitude: data.lng != null ? String(data.lng) : v.longitude,
-                  address: data.address ?? v.address,
-                  hours: data.hours ?? v.hours,
-                  _addressFallback: Boolean(data.addressFallback),
-                  _hoursFallback: Boolean(data.hoursFallback),
-                  _geoStatus: (data.lat != null ? 'ok' : 'failed') as GeoStatus,
-                }
-              } catch {
-                return { ...v, _addressFallback: true, _hoursFallback: true, _geoStatus: 'failed' as GeoStatus }
-              }
-            })
-          ),
-        }))
-      )
-      setInstitutions(enriched)
+      setInstitutions(await enrichDrafts(mapped))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error')
     } finally {
@@ -783,7 +817,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
 
   const modeToggle = (
     <div style={{ display: 'flex', gap: 0, border: '1px solid rgba(0,0,0,0.18)', width: 'fit-content', marginBottom: 28 }}>
-      {(['suggest', 'manual'] as Mode[]).map(m => (
+      {(['suggest', 'import', 'manual'] as Mode[]).map(m => (
         <button
           key={m}
           onClick={() => setMode(m)}
@@ -795,59 +829,16 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
             transition: 'all 150ms ease',
           }}
         >
-          {m === 'suggest' ? 'AI Suggest' : 'Manual Entry'}
+          {m === 'suggest' ? 'AI Suggest' : m === 'import' ? 'Import CSV' : 'Manual Entry'}
         </button>
       ))}
     </div>
   )
 
-  const suggestPanel = (
-    <>
-      <div style={{ marginBottom: 28 }}>
-        <label htmlFor={inputId} style={labelStyle}>Query</label>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <input
-            id={inputId}
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !loading && handleSuggest()}
-            placeholder="e.g. Chelsea galleries, Tribeca nonprofits, major NYC museums…"
-            disabled={loading}
-            style={{ ...inputStyle, flex: 1, fontSize: 14, padding: '10px 14px', fontFamily: MONO }}
-          />
-          <button
-            onClick={handleSuggest}
-            disabled={loading || !query.trim()}
-            style={{
-              fontFamily: F, fontSize: 12, fontWeight: 700, letterSpacing: '0.1em',
-              textTransform: 'uppercase' as const, padding: '10px 24px', border: 'none', borderRadius: 999,
-              cursor: loading ? 'wait' : 'pointer', whiteSpace: 'nowrap' as const,
-              background: loading || !query.trim() ? 'rgba(0,0,0,0.12)' : '#000',
-              color: loading || !query.trim() ? 'rgba(0,0,0,0.3)' : '#fff',
-            }}
-          >
-            {loading ? 'Thinking…' : 'Suggest'}
-          </button>
-        </div>
-      </div>
+  // The review table, geocode badges, per-row editing and the insert button.
+  // Shared verbatim by AI Suggest and CSV Import so the two cannot drift apart.
+  const resultsPanel = (
 
-      {error && (
-        <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', padding: '12px 16px', marginBottom: 20, fontFamily: F, fontSize: 13, color: '#dc2626' }}>
-          {error}
-          <button onClick={handleSuggest} style={{ marginLeft: 12, fontFamily: F, fontSize: 12, fontWeight: 700, background: 'transparent', border: '1px solid #dc2626', borderRadius: 999, color: '#dc2626', padding: '2px 10px', cursor: 'pointer' }}>Retry</button>
-        </div>
-      )}
-
-      {loading && (
-        <div style={{ color: 'rgba(0,0,0,0.4)', fontSize: 13, padding: '40px 0', textAlign: 'center', fontFamily: F }}>
-          {enriching
-            ? 'Enriching with Mapbox + Google Places…'
-            : <>Asking Claude about &ldquo;{query}&rdquo;…</>
-          }
-        </div>
-      )}
-
-      {institutions.length > 0 && (
         <>
           <div style={{ overflowX: 'auto', marginBottom: 20 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -901,7 +892,114 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
             </button>
           </div>
         </>
+  )
+
+  const suggestPanel = (
+    <>
+      <div style={{ marginBottom: 28 }}>
+        <label htmlFor={inputId} style={labelStyle}>Query</label>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <input
+            id={inputId}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !loading && handleSuggest()}
+            placeholder="e.g. Chelsea galleries, Tribeca nonprofits, major NYC museums…"
+            disabled={loading}
+            style={{ ...inputStyle, flex: 1, fontSize: 14, padding: '10px 14px', fontFamily: MONO }}
+          />
+          <button
+            onClick={handleSuggest}
+            disabled={loading || !query.trim()}
+            style={{
+              fontFamily: F, fontSize: 12, fontWeight: 700, letterSpacing: '0.1em',
+              textTransform: 'uppercase' as const, padding: '10px 24px', border: 'none', borderRadius: 999,
+              cursor: loading ? 'wait' : 'pointer', whiteSpace: 'nowrap' as const,
+              background: loading || !query.trim() ? 'rgba(0,0,0,0.12)' : '#000',
+              color: loading || !query.trim() ? 'rgba(0,0,0,0.3)' : '#fff',
+            }}
+          >
+            {loading ? 'Thinking…' : 'Suggest'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', padding: '12px 16px', marginBottom: 20, fontFamily: F, fontSize: 13, color: '#dc2626' }}>
+          {error}
+          <button onClick={handleSuggest} style={{ marginLeft: 12, fontFamily: F, fontSize: 12, fontWeight: 700, background: 'transparent', border: '1px solid #dc2626', borderRadius: 999, color: '#dc2626', padding: '2px 10px', cursor: 'pointer' }}>Retry</button>
+        </div>
       )}
+
+      {loading && (
+        <div style={{ color: 'rgba(0,0,0,0.4)', fontSize: 13, padding: '40px 0', textAlign: 'center', fontFamily: F }}>
+          {enriching
+            ? 'Enriching with Mapbox + Google Places…'
+            : <>Asking Claude about &ldquo;{query}&rdquo;…</>
+          }
+        </div>
+      )}
+
+      {institutions.length > 0 && resultsPanel}
+    </>
+  )
+
+  // Reuses resultsPanel — the review table, geocode badges, per-row editing and
+  // the insert button are identical to AI Suggest. Only the source differs.
+  const importPanel = (
+    <>
+      <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.5)', margin: '0 0 14px', lineHeight: 1.6, maxWidth: 760 }}>
+        Loads <code>seed-data/enriched-nyc-galleries.csv</code> in batches. Rows marked <b>closed</b> are excluded
+        unless you ask for them. Every batch still goes through the same review table below — check the addresses and
+        the guessed exhibitions URL before inserting. Nothing is written until you press the button.
+      </p>
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
+        <div>
+          <label style={labelStyle}>Status</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['open', 'unclear', 'closed'] as const).map(st => (
+              <button key={st}
+                onClick={() => setImpStatus(prev => prev.includes(st) ? prev.filter(x => x !== st) : [...prev, st])}
+                style={{
+                  ...btnSecondary,
+                  background: impStatus.includes(st) ? '#000' : 'transparent',
+                  color: impStatus.includes(st) ? '#FFFCEC' : 'rgba(0,0,0,0.6)',
+                  border: impStatus.includes(st) ? 'none' : '1px solid rgba(0,0,0,0.2)',
+                }}>
+                {st}{impMeta?.counts_by_status?.[st] != null ? ` (${impMeta.counts_by_status[st]})` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ minWidth: 200 }}>
+          <label style={labelStyle}>Filter by name</label>
+          <input style={inputStyle} value={impSearch} onChange={e => setImpSearch(e.target.value)} placeholder="e.g. Zwirner" />
+        </div>
+        <div style={{ width: 110 }}>
+          <label style={labelStyle}>Batch size</label>
+          <input style={inputStyle} type="number" min={1} max={100} value={impLimit}
+            onChange={e => setImpLimit(Math.max(1, Math.min(100, Number(e.target.value) || 25)))} />
+        </div>
+        <button onClick={() => handleImport(0)} disabled={loading}
+          style={{ ...btnSecondary, background: '#000', color: '#FFFCEC', border: 'none', opacity: loading ? 0.6 : 1, padding: '6px 16px' }}>
+          {loading ? (enriching ? 'Geocoding…' : 'Loading…') : 'Load batch'}
+        </button>
+      </div>
+
+      {impMeta && (
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 18, fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.55)' }}>
+          <span>
+            Showing {impOffset + 1}–{Math.min(impOffset + impLimit, impMeta.total)} of {impMeta.total} matching institutions
+            {impMeta.already_present > 0 && ` · ${impMeta.already_present} already in your database`}
+          </span>
+          <button onClick={() => handleImport(Math.max(0, impOffset - impLimit))} disabled={loading || impOffset === 0} style={btnSecondary}>← Prev</button>
+          <button onClick={() => handleImport(impOffset + impLimit)} disabled={loading || impOffset + impLimit >= impMeta.total} style={btnSecondary}>Next →</button>
+        </div>
+      )}
+
+      {error && <p style={{ fontFamily: F, fontSize: 13, color: '#dc2626' }}>{error}</p>}
+      {institutions.length > 0 && resultsPanel}
     </>
   )
 
@@ -909,6 +1007,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
     <>
       {modeToggle}
       {mode === 'suggest' && suggestPanel}
+      {mode === 'import' && importPanel}
       {mode === 'manual' && (
         <ManualEntryForm
           onInserted={() => showToast('Institution + venue(s) added successfully.', true)}
