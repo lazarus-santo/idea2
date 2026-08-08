@@ -136,6 +136,10 @@ export async function POST(request: NextRequest) {
     db.from('venues').select('address'),
   ])
   const instKeys = new Set((existingInst ?? []).map((i) => normalizeForDedup(i.name as string)))
+  // Galleries rejected in a previous session. Without this the review table
+  // re-offers them on every load and the list never gets shorter.
+  const { data: exclusions } = await db.from('seed_exclusions').select('dedup_key')
+  const excludedKeys = new Set((exclusions ?? []).map((e) => e.dedup_key as string))
   const addrKeys = new Set((existingVen ?? []).map((v) => (v.address as string ?? '').toLowerCase().replace(/\s+/g, ' ').trim()).filter(Boolean))
 
   const annotated = all.map((g) => ({
@@ -149,7 +153,9 @@ export async function POST(request: NextRequest) {
   // share buildings — 105 Henry Street houses three — so a matching address is
   // not evidence of a duplicate gallery.
   const duplicatesRemoved = annotated.filter((g) => g.already_present).length
-  const visible = excludeDuplicates ? annotated.filter((g) => !g.already_present) : annotated
+  const notExcluded = annotated.filter((g) => !excludedKeys.has(normalizeForDedup(g.name)))
+  const excludedRemoved = annotated.length - notExcluded.length
+  const visible = excludeDuplicates ? notExcluded.filter((g) => !g.already_present) : notExcluded
   const page = visible.slice(offset, offset + limit)
 
   // Same field names institutionFromRaw() expects, so SeedTool can map this with
@@ -180,6 +186,7 @@ export async function POST(request: NextRequest) {
     returned: page.length,
     already_present: duplicatesRemoved,
     duplicates_excluded: excludeDuplicates ? duplicatesRemoved : 0,
+    manually_excluded: excludedRemoved,
     merged_aliases: all.filter((g) => g.aliases.size > 1).map((g) => [...g.aliases]),
     counts_by_status: data.reduce((acc: Record<string, number>, r) => {
       const s = iStatus === -1 ? 'open' : (r[iStatus] ?? '').trim() || 'open'

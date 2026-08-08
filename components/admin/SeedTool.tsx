@@ -675,7 +675,40 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   const [impSearch, setImpSearch] = useState('')
   const [impOffset, setImpOffset] = useState(0)
   const [impLimit, setImpLimit] = useState(25)
-  const [impMeta, setImpMeta] = useState<{ total: number; already_present: number; counts_by_status: Record<string, number> } | null>(null)
+  const [impMeta, setImpMeta] = useState<{ total: number; already_present: number; manually_excluded: number; counts_by_status: Record<string, number> } | null>(null)
+  const [exclusions, setExclusions] = useState<{ dedup_key: string; name: string }[]>([])
+  const [showExclusions, setShowExclusions] = useState(false)
+
+  async function loadExclusions() {
+    try {
+      const r = await adminFetch('/api/admin/seed/exclusions')
+      if (r.ok) setExclusions((await r.json()).exclusions ?? [])
+    } catch { /* the list is informational; a failure here should not block the tool */ }
+  }
+
+  // Optimistic: the row is already gone from the table, so waiting on the round
+  // trip would only add lag to a button pressed hundreds of times.
+  async function excludeInstitution(name: string) {
+    setExclusions(prev => [{ dedup_key: name.toLowerCase(), name }, ...prev])
+    try {
+      await adminFetch('/api/admin/seed/exclusions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, reason: 'dismissed in import review' }),
+      })
+      loadExclusions()
+    } catch { showToast(`Could not remember "${name}" — it may reappear.`, false) }
+  }
+
+  async function restoreInstitution(dedup_key: string) {
+    setExclusions(prev => prev.filter(e => e.dedup_key !== dedup_key))
+    try {
+      await adminFetch('/api/admin/seed/exclusions', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dedup_key }),
+      })
+      loadExclusions()
+    } catch { loadExclusions() }
+  }
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -738,7 +771,8 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
       })
       const json = await res.json()
       if (!res.ok || json.error) { setError(json.error ?? `HTTP ${res.status}`); return }
-      setImpMeta({ total: json.total, already_present: json.already_present, counts_by_status: json.counts_by_status })
+      setImpMeta({ total: json.total, already_present: json.already_present, manually_excluded: json.manually_excluded ?? 0, counts_by_status: json.counts_by_status })
+      loadExclusions()
       setImpOffset(nextOffset)
       const mapped: InstitutionDraft[] = (json.institutions as Record<string, unknown>[]).map(institutionFromRaw)
       setEnriching(true)
@@ -861,7 +895,13 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
                     key={inst._id}
                     inst={inst}
                     onChange={updated => { const next = [...institutions]; next[i] = updated; setInstitutions(next) }}
-                    onDelete={() => setInstitutions(institutions.filter((_, j) => j !== i))}
+                    onDelete={() => {
+                      setInstitutions(institutions.filter((_, j) => j !== i))
+                      // Only the CSV import remembers rejections. Suggest results
+                      // are generated fresh each time, so persisting a dismissal
+                      // there would hide a gallery the model may never offer again.
+                      if (mode === 'import') excludeInstitution(inst.name)
+                    }}
                     onInserted={() => {
                       setInstitutions(prev => prev.filter((_, j) => j !== i))
                       showToast(`"${inst.name}" inserted successfully.`, true)
@@ -995,6 +1035,27 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
           </span>
           <button onClick={() => handleImport(Math.max(0, impOffset - impLimit))} disabled={loading || impOffset === 0} style={btnSecondary}>← Prev</button>
           <button onClick={() => handleImport(impOffset + impLimit)} disabled={loading || impOffset + impLimit >= impMeta.total} style={btnSecondary}>Next →</button>
+          {(impMeta.manually_excluded > 0 || exclusions.length > 0) && (
+            <button onClick={() => setShowExclusions(v => !v)} style={btnSecondary}>
+              {showExclusions ? 'Hide' : 'Show'} {Math.max(impMeta.manually_excluded, exclusions.length)} removed
+            </button>
+          )}
+        </div>
+      )}
+
+      {showExclusions && (
+        <div style={{ background: '#f0ecde', padding: '12px 14px', marginBottom: 18 }}>
+          <p style={{ ...labelStyle, marginBottom: 8 }}>Removed from future batches — click to restore</p>
+          {exclusions.length === 0 && <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.4)', margin: 0 }}>Nothing removed yet.</p>}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {exclusions.map(e => (
+              <button key={e.dedup_key} onClick={() => restoreInstitution(e.dedup_key)}
+                title="Restore to the import list"
+                style={{ ...btnSecondary, fontSize: 11, padding: '3px 9px' }}>
+                {e.name} ↩
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
