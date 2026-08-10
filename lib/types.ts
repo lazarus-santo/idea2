@@ -148,6 +148,12 @@ export interface VenueRecord {
   scrape_failed?: boolean
   manual_entry_required?: boolean
   scrape_failure_reason?: string | null
+  // Free-text hint handed to the extraction prompt, e.g. "current shows are
+  // under the On View tab". Written only by a person.
+  scrape_notes?: string | null
+  // A human decision not to scrape this venue at all. Distinct from
+  // manual_entry_required, which the scraper sets and clears itself.
+  scrapable?: boolean
 }
 
 export interface ExhibitionRaw {

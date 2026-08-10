@@ -65,6 +65,7 @@ export async function GET(request: NextRequest) {
       .update({ check_back_date: null })
       .eq('active', true)
       .eq('manual_entry_required', false)
+      .eq('scrapable', true)
 
     if (error) {
       return NextResponse.json({ error: `Requeue failed: ${error.message}` }, { status: 500 })

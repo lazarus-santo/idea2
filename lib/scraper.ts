@@ -720,7 +720,16 @@ export async function scrapeInstitution(
     return 0
   }
 
-  let allLinks = await extractExhibitionLinks(listingHtml, vn, venue.exhibitions_url)
+  // Logged so a note's effect is legible in the run output: if a venue keeps
+  // failing you need to know whether the hint was actually in play, and if it
+  // starts working you need to know whether the hint is why.
+  if (venue.scrape_notes?.trim()) {
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, event: 'SCRAPE_NOTES_APPLIED', note: venue.scrape_notes.trim(),
+    }))
+  }
+
+  let allLinks = await extractExhibitionLinks(listingHtml, vn, venue.exhibitions_url, venue.scrape_notes)
 
   // Fallback tier 1: if extractExhibitionLinks found nothing, scan full HTML for exhibition hrefs.
   // Recovers venues where content is past the 60K slice window.
@@ -1414,7 +1423,7 @@ function sevenDaysFromNow(): string {
 // ─── Institution queries ──────────────────────────────────────────────────────
 
 const VENUE_SELECT =
-  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, institutions!inner(id, type)'
+  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, institutions!inner(id, type)'
 
 function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1433,6 +1442,8 @@ function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
     scrape_failed: (v.scrape_failed as boolean | null) ?? false,
     manual_entry_required: (v.manual_entry_required as boolean | null) ?? false,
     scrape_failure_reason: (v.scrape_failure_reason as string | null) ?? null,
+    scrape_notes: (v.scrape_notes as string | null) ?? null,
+    scrapable: (v.scrapable as boolean | null) ?? true,
   }
 }
 
@@ -1449,7 +1460,12 @@ export async function getVenueById(id: string): Promise<VenueRecord | null> {
   return data ? normalizeVenueRow(data as Record<string, unknown>) : null
 }
 
-// Venues flagged manual_entry_required are excluded from automated scrape runs
+// Venues flagged manual_entry_required are excluded from automated scrape runs,
+// as are venues a human has marked scrapable=false. Those two flags mean
+// different things and are checked separately on purpose: the scraper clears
+// manual_entry_required on any successful scrape, so a human decision stored
+// there would be undone the first time the venue happened to work.
+//
 // Ordered oldest-checked-first, which is what makes a force run resumable across
 // invocations: scraping a venue pushes its check_back_date a week out, so the
 // ones already done in this pass sort to the back and the next invocation picks
@@ -1461,6 +1477,7 @@ export async function getActiveInstitutions(): Promise<VenueRecord[]> {
     .select(VENUE_SELECT)
     .eq('active', true)
     .eq('manual_entry_required', false)
+    .eq('scrapable', true)
     .order('check_back_date', { ascending: true, nullsFirst: true })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1475,6 +1492,7 @@ export async function getInstitutionsDueForRefresh(): Promise<VenueRecord[]> {
     .select(VENUE_SELECT)
     .eq('active', true)
     .eq('manual_entry_required', false)
+    .eq('scrapable', true)
     .or(`check_back_date.is.null,check_back_date.lte.${today}`)
     .order('check_back_date', { ascending: true, nullsFirst: true })
 
@@ -1482,12 +1500,15 @@ export async function getInstitutionsDueForRefresh(): Promise<VenueRecord[]> {
   return (data ?? []).map((v: any) => normalizeVenueRow(v))
 }
 
+// Also returns venues marked scrapable=false, which have no "issue" as such —
+// but this tab is the only place they can be seen or un-marked, and a venue that
+// silently vanished from every list would be worse than one listed as skipped.
 export async function getScrapeIssueVenues(): Promise<VenueRecord[]> {
   const { data } = await getSupabaseAdmin()
     .from('venues')
     .select(VENUE_SELECT)
     .eq('active', true)
-    .or('scrape_failed.eq.true,manual_entry_required.eq.true')
+    .or('scrape_failed.eq.true,manual_entry_required.eq.true,scrapable.eq.false')
     .order('name')
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

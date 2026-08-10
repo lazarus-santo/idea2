@@ -10,6 +10,10 @@ interface VenueInput {
   latitude: number | string
   longitude: number | string
   hours?: Record<string, [string, string] | null> | null
+  // Optional hint written while reviewing the seed batch — "shows are behind the
+  // On View tab" — captured at the moment you are looking at the site, rather
+  // than a week later when the first scrape has already failed.
+  scrape_notes?: string | null
 }
 
 interface InstitutionInput {
@@ -102,6 +106,7 @@ export async function POST(req: NextRequest) {
         latitude: venue.latitude !== '' ? Number(venue.latitude) : null,
         longitude: venue.longitude !== '' ? Number(venue.longitude) : null,
         hours: venue.hours ?? null,
+        scrape_notes: venue.scrape_notes?.trim() || null,
         active: true,
       })
 

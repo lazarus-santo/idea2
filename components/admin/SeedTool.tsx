@@ -42,7 +42,13 @@ interface VenueDraft {
   latitude: string
   longitude: string
   hours: HoursMap
+  // Scraping hint written while reviewing the batch, when you have the gallery's
+  // site open anyway. Stored on the venue and fed to the extractor on every
+  // scrape — the alternative is discovering the same thing next week from a
+  // zero_links failure.
+  scrape_notes: string
   _hoursOpen: boolean
+  _notesOpen: boolean
   _geoStatus: GeoStatus
   _addressFallback: boolean
   _hoursFallback: boolean
@@ -66,7 +72,8 @@ function blankVenue(): VenueDraft {
   return {
     _id: uid(), name: '', exhibitions_url: '', address: '',
     neighborhood: '', latitude: '', longitude: '',
-    hours: { ...DEFAULT_HOURS }, _hoursOpen: false, _geoStatus: 'idle',
+    hours: { ...DEFAULT_HOURS }, scrape_notes: '',
+    _hoursOpen: false, _notesOpen: false, _geoStatus: 'idle',
     _addressFallback: false, _hoursFallback: false,
   }
 }
@@ -81,7 +88,9 @@ function venueFromRaw(v: Record<string, unknown>): VenueDraft {
     latitude: v.latitude != null ? String(v.latitude) : '',
     longitude: v.longitude != null ? String(v.longitude) : '',
     hours: { ...DEFAULT_HOURS },
+    scrape_notes: String(v.scrape_notes ?? ''),
     _hoursOpen: false,
+    _notesOpen: false,
     _geoStatus: 'idle',
     _addressFallback: false,
     _hoursFallback: false,
@@ -245,6 +254,19 @@ function VenueRow({
           >
             {venue._hoursOpen ? '▾' : '▸'} {hoursLabel}{hasHoursFlag ? ' ⚠' : ''}
           </button>
+          <button
+            onClick={() => set('_notesOpen', !venue._notesOpen)}
+            title="Scraping notes — a hint passed to the extractor on every scrape"
+            style={{
+              ...btnSecondary,
+              whiteSpace: 'nowrap' as const,
+              marginLeft: 4,
+              color: venue.scrape_notes.trim() ? '#000' : 'rgba(0,0,0,0.4)',
+              borderColor: venue.scrape_notes.trim() ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.15)',
+            }}
+          >
+            {venue._notesOpen ? '▾' : '▸'} note{venue.scrape_notes.trim() ? ' ✓' : ''}
+          </button>
         </td>
         <td style={cellStyle}>
           <button onClick={onDelete} title="Remove" style={{ background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
@@ -257,6 +279,22 @@ function VenueRow({
               value={venue.hours}
               onChange={hours => onChange({ ...venue, hours })}
             />
+          </td>
+        </tr>
+      )}
+      {venue._notesOpen && (
+        <tr>
+          <td colSpan={9} style={{ padding: '8px 12px 12px 28px', background: 'rgba(52,50,168,0.025)' }}>
+            <textarea
+              value={venue.scrape_notes}
+              onChange={e => set('scrape_notes', e.target.value)}
+              placeholder='Scraping hint, e.g. "current shows are under the On View tab" or "ignore the Programs section"'
+              rows={2}
+              style={{ ...inputStyle, width: '100%', resize: 'vertical' }}
+            />
+            <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)', marginTop: 4 }}>
+              Passed to the extractor as context on every scrape of this venue. Editable later under Scrape Issues.
+            </div>
           </td>
         </tr>
       )}
@@ -300,6 +338,7 @@ function InstitutionGroup({
               address: v.address, neighborhood: v.neighborhood,
               latitude: v.latitude, longitude: v.longitude,
               hours: v.hours,
+              scrape_notes: v.scrape_notes,
             })),
           }],
         }),
@@ -556,6 +595,7 @@ function ManualEntryForm({ onInserted }: { onInserted: () => void }) {
               address: v.address, neighborhood: v.neighborhood,
               latitude: v.latitude, longitude: v.longitude,
               hours: v.hours,
+              scrape_notes: v.scrape_notes,
             })),
           }],
         }),
@@ -822,6 +862,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
         address: v.address, neighborhood: v.neighborhood,
         latitude: v.latitude, longitude: v.longitude,
         hours: v.hours,
+        scrape_notes: v.scrape_notes,
       })),
     }))
     try {

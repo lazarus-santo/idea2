@@ -1163,10 +1163,20 @@ function extractAnchorContext(html: string, baseUrl: string, contextChars = 600)
 export async function extractExhibitionLinks(
   html: string,
   venueName: string,
-  venueUrl: string
+  venueUrl: string,
+  // Operator note from venues.scrape_notes. Free text rather than a selector on
+  // purpose: a stale selector fails silently and misdirects, whereas a stale
+  // note is weighed as one piece of evidence among several and degrades into
+  // noise. Framed below as a hint, not an override, so it cannot on its own
+  // reclassify a Program as an exhibition.
+  scrapeNotes?: string | null
 ): Promise<ExhibitionLink[]> {
   const today = new Date().toISOString().split('T')[0]
   const stripped = extractAnchorContext(extractMainContent(html), venueUrl).slice(0, 100000)
+
+  const notesBlock = scrapeNotes?.trim()
+    ? `\nNote from the site's operator about this page — treat as a hint about where to look, not as a rule that overrides the classification below:\n${scrapeNotes.trim()}\n`
+    : ''
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -1177,7 +1187,7 @@ export async function extractExhibitionLinks(
         content: `Extract all exhibition links from this ${venueName} listing page (${venueUrl}).
 
 Today: ${today}
-
+${notesBlock}
 For each exhibition link found, return:
 - title: the exhibition or show title
 - url: full absolute URL to the exhibition detail page (resolve relative URLs against base ${venueUrl})
