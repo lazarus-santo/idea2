@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
 import type { ExhibitionDetailData, CoverageItem, CoverageDisplayItem } from '@/lib/types'
+import type { InstitutionType } from '@/lib/institution-types'
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -168,7 +169,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     artists: (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
     preread_type: prereadType,
-    venue_type: (raw.venues.institutions?.type ?? 'gallery') as 'gallery' | 'museum' | 'fair',
+    venue_type: (raw.venues.institutions?.type ?? 'gallery') as InstitutionType,
     exhibitors: normalizeExhibitors(raw.venues.institutions?.exhibitors),
     prereads: mergedPrereads,
     coverage: mergedCoverage,

@@ -9,6 +9,7 @@ import type { MapExhibition, VenueHours, ItineraryStop, DirectionLeg } from '@/l
 import ExhibitionFilters from './ExhibitionFilters'
 import { createPrimaryMarkerEl } from '@/lib/mapMarkers'
 import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
+import { VENUE_TABS, TAB_LABEL, tabMatches, type VenueTab } from '@/lib/institution-types'
 
 // ── Holiday detection ──────────────────────────────────────────────────────────
 
@@ -329,13 +330,11 @@ function TimePicker({ value, onChange, label }: { value: string; onChange: (v: s
 // ── Main component ─────────────────────────────────────────────────────────────
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
-type VenueFilter = 'all' | 'museum' | 'gallery' | 'fair'
+type VenueFilter = 'all' | VenueTab
 type SubFilter = 'closing-soon' | null
 const FILTER_TABS: { label: string; value: VenueFilter }[] = [
   { label: 'All', value: 'all' },
-  { label: 'Museums', value: 'museum' },
-  { label: 'Galleries', value: 'gallery' },
-  { label: 'Fairs', value: 'fair' },
+  ...VENUE_TABS.map(t => ({ label: TAB_LABEL[t], value: t as VenueFilter })),
 ]
 
 function isClosingSoon(ex: MapExhibition): boolean {
@@ -454,7 +453,7 @@ export default function StandaloneMap() {
 
     let visible = venueFilter === 'all'
       ? exhibitions
-      : exhibitions.filter(ex => ex.venue_type === venueFilter)
+      : exhibitions.filter(ex => tabMatches(venueFilter as VenueTab, ex.venue_type))
     if (subFilter === 'closing-soon') visible = visible.filter(isClosingSoon)
 
     // Group by venue only to detect co-located exhibitions for jitter

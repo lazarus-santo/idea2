@@ -1,3 +1,5 @@
+import type { InstitutionType } from './institution-types'
+
 export interface Preread {
   id: string
   exhibition_id: string
@@ -37,7 +39,7 @@ export interface Exhibition {
   institution_name: string
   institution_id: string | null
   venue_name: string
-  venue_type: 'gallery' | 'museum' | 'fair'
+  venue_type: InstitutionType
   venue_url: string
   venue_address: string | null
   resolved_address: string | null
@@ -79,7 +81,7 @@ export interface ExhibitionDetailData {
   lng: number | null
   artists: string[]
   preread_type: 'full' | 'coverage_only'
-  venue_type: 'gallery' | 'museum' | 'fair'
+  venue_type: InstitutionType
   /**
    * Fairs only — exhibiting galleries as printed on the fair's own list.
    * `section` is the fair's grouping (Armory: Galleries / Solo / Focus /
@@ -138,7 +140,7 @@ export interface VenueRecord {
   id: string
   name: string
   exhibitions_url: string
-  type: 'gallery' | 'museum' | 'fair'
+  type: InstitutionType
   active: boolean
   institution_id?: string
   address?: string | null
@@ -203,7 +205,7 @@ export interface MapExhibition {
   artists: string[]
   institution_name: string
   institution_id: string | null
-  venue_type: 'gallery' | 'museum' | 'fair'
+  venue_type: InstitutionType
   image_url: string | null
   start_date: string | null
   end_date: string | null

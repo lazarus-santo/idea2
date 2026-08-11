@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
 import { adminFetch } from '@/lib/admin-fetch'
+import type { InstitutionType } from '@/lib/institution-types'
 
 type ScrapeFailedVenue = {
   id: string
@@ -68,7 +69,7 @@ function daysAgo(n: number) {
 
 type ScrapedFilter = 'today' | 'yesterday' | '7d' | '30d' | null
 type StatusFilter = 'current' | 'upcoming' | null
-type InstType = 'museum' | 'gallery' | 'fair'
+type InstType = InstitutionType
 
 function matchesScrapedDate(createdAt: string, filter: ScrapedFilter) {
   if (!filter) return true
@@ -562,9 +563,14 @@ const STATUS_OPTIONS: { value: Exclude<StatusFilter, null>; label: string }[] = 
   { value: 'current', label: 'Current' },
   { value: 'upcoming', label: 'Upcoming' },
 ]
+// Listed individually rather than grouped as the public "Other Spaces" tab is:
+// in review you want to know whether a show is at a nonprofit or an artist-run
+// experimental space, which is exactly the distinction the public tab hides.
 const TYPE_OPTIONS: { value: InstType; label: string }[] = [
   { value: 'museum', label: 'Museums' },
   { value: 'gallery', label: 'Galleries' },
+  { value: 'nonprofit', label: 'Nonprofits' },
+  { value: 'experimental', label: 'Experimental' },
   { value: 'fair', label: 'Fairs' },
 ]
 

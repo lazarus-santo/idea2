@@ -5,13 +5,11 @@ import Link from 'next/link'
 import type { Exhibition, MapExhibition } from '@/lib/types'
 import ExhibitionsSplitView from './ExhibitionsSplitView'
 import ExhibitionFilters from './ExhibitionFilters'
+import { VENUE_TABS, TAB_LABEL, tabMatches, type VenueTab } from '@/lib/institution-types'
 
-type Tab = 'museums' | 'galleries' | 'fairs'
+type Tab = VenueTab
 type SubFilter = 'closing-soon' | null
 type ViewMode = 'grid' | 'split'
-
-const TAB_LABEL: Record<Tab, string> = { museums: 'Museums', galleries: 'Galleries', fairs: 'Fairs' }
-const TAB_TYPE: Record<Tab, string> = { museums: 'museum', galleries: 'gallery', fairs: 'fair' }
 
 function isClosingSoon(ex: { end_date: string | null; start_date: string | null; venue_type: string }): boolean {
   if (!ex.end_date) return false
@@ -73,7 +71,7 @@ export default function ExhibitionsPage() {
   const [exhibitions, setExhibitions] = useState<Exhibition[]>([])
   const [mapExhibitions, setMapExhibitions] = useState<MapExhibition[]>([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState<Tab>('galleries')
+  const [tab, setTab] = useState<Tab>('gallery')
   const [subFilter, setSubFilter] = useState<SubFilter>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
@@ -97,13 +95,13 @@ export default function ExhibitionsPage() {
   }, [viewMode, mapFetched])
 
   // Filtered grid exhibitions
-  let visibleGrid = exhibitions.filter(ex => ex.venue_type === TAB_TYPE[tab])
+  let visibleGrid = exhibitions.filter(ex => tabMatches(tab, ex.venue_type))
   if (subFilter === 'closing-soon') visibleGrid = visibleGrid.filter(isClosingSoon)
 
   // Filtered map exhibitions — memoized so hoveredId changes don't produce a new array
   // reference and re-trigger the markers useEffect in ExhibitionsSplitView
   const visibleMap = useMemo(() => {
-    let result = mapExhibitions.filter(ex => ex.venue_type === TAB_TYPE[tab])
+    let result = mapExhibitions.filter(ex => tabMatches(tab, ex.venue_type))
     if (subFilter === 'closing-soon') result = result.filter(isClosingSoon)
     return result
   }, [mapExhibitions, tab, subFilter])
@@ -134,7 +132,7 @@ export default function ExhibitionsPage() {
       <main className="ei-main">
         <div className="ei-controls">
           <ExhibitionFilters
-            tabs={(Object.keys(TAB_LABEL) as Tab[]).map(t => ({ label: TAB_LABEL[t], value: t }))}
+            tabs={VENUE_TABS.map(t => ({ label: TAB_LABEL[t], value: t }))}
             activeTab={tab}
             subFilter={subFilter}
             onTabChange={t => switchTab(t as Tab)}
