@@ -752,6 +752,9 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Non-fatal notice from the suggest route, e.g. the model's answer was cut
+  // off. Distinct from `error`: results still rendered.
+  const [warning, setWarning] = useState<string | null>(null)
   const [institutions, setInstitutions] = useState<InstitutionDraft[]>([])
   const [inserting, setInserting] = useState(false)
   const [enriching, setEnriching] = useState(false)
@@ -802,7 +805,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   }
 
   async function handleImport(nextOffset = impOffset) {
-    setLoading(true); setEnriching(false); setError(null); setInstitutions([])
+    setLoading(true); setEnriching(false); setError(null); setWarning(null); setInstitutions([])
     try {
       const res = await adminFetch('/api/admin/seed/import-csv', {
         method: 'POST',
@@ -841,6 +844,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
         setError(json.error ?? `HTTP ${res.status}`)
         return
       }
+      if (typeof json.warning === 'string') setWarning(json.warning)
       const mapped: InstitutionDraft[] = (json.institutions as Record<string, unknown>[]).map(institutionFromRaw)
       setEnriching(true)
       setInstitutions(await enrichDrafts(mapped))
@@ -1009,6 +1013,13 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
         <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', padding: '12px 16px', marginBottom: 20, fontFamily: F, fontSize: 13, color: '#dc2626' }}>
           {error}
           <button onClick={handleSuggest} style={{ marginLeft: 12, fontFamily: F, fontSize: 12, fontWeight: 700, background: 'transparent', border: '1px solid #dc2626', borderRadius: 999, color: '#dc2626', padding: '2px 10px', cursor: 'pointer' }}>Retry</button>
+        </div>
+      )}
+
+      {warning && !error && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', padding: '12px 16px', marginBottom: 20, fontFamily: F, fontSize: 13, color: '#92400e' }}>
+          {warning}
+          <button onClick={handleSuggest} style={{ marginLeft: 12, fontFamily: F, fontSize: 12, fontWeight: 700, background: 'transparent', border: '1px solid #92400e', borderRadius: 999, color: '#92400e', padding: '2px 10px', cursor: 'pointer' }}>Ask again</button>
         </div>
       )}
 
