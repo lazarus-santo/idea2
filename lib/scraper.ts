@@ -635,6 +635,24 @@ export async function scrapeInstitution(
   const db = getSupabaseAdmin()
   const isMuseum = venue.type === 'museum'
 
+  // A venue can reach the database with no exhibitions_url: Manual Entry allows
+  // it, and the CSV import leaves it blank on the second venue of a
+  // multi-location gallery rather than repeating a guess that the insert would
+  // dedup away. Fetching an empty URL fails as a network error, which reads as
+  // the gallery's site being down rather than as missing data — so it gets its
+  // own reason. manual_entry_required takes it out of the scrape rotation until
+  // a URL is filled in, exactly as a fetch failure does.
+  if (!venue.exhibitions_url?.trim()) {
+    console.warn(`[${vn}] No exhibitions_url set — nothing to scrape`)
+    errors.push({ item: vn, step: 'fetch', message: 'Venue has no exhibitions URL' })
+    await db.from('venues').update({
+      scrape_failed: true,
+      manual_entry_required: true,
+      scrape_failure_reason: 'no_exhibitions_url',
+    }).eq('id', venue.id)
+    return 0
+  }
+
   // Diagnostic counters for SCRAPE_COMPLETE summary
   const diag = {
     shows_found_on_listing: 0,

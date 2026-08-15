@@ -29,6 +29,7 @@ const REASON_LABELS: Record<string, string> = {
   fetch_failed:          'Fetch failed (both Browserbase and HTTP)',
   bot_protected:         'Bot protection / CAPTCHA wall',
   zero_links_after_retry:'Zero exhibition links after retry',
+  no_exhibitions_url:    'No exhibitions URL set for this venue',
 }
 
 function reasonLabel(venue: IssueVenue): string {

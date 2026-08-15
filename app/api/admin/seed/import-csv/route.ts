@@ -43,6 +43,12 @@ function parseCsv(t: string): string[][] {
 
 // Mirrors the dedup rule in ../insert/route.ts so the preview reports the same
 // collisions the insert would hit, rather than showing rows that will be skipped.
+// "28 Warren Street, New York, NY 10007" → "28 Warren Street". Used to tell two
+// venues of the same gallery apart when the CSV carries no location label.
+function streetLine(address: string): string {
+  return address.split(',')[0].trim() || address.trim()
+}
+
 function normalizeForDedup(name: string): string {
   return name
     .toLowerCase()
@@ -160,23 +166,41 @@ export async function POST(request: NextRequest) {
 
   // Same field names institutionFromRaw() expects, so SeedTool can map this with
   // the code it already uses for suggest results.
-  const institutions = page.map((g) => ({
-    name: g.name,
-    website: g.website,
-    type: 'gallery',
-    _dupWarning: g.already_present ? 'An institution with this name already exists' : undefined,
-    venues: (g.venues.length ? g.venues : [{ label: '', address: '', city: '' }]).map((v) => ({
-      name: v.label ? `${g.name} — ${v.label}` : g.name,
-      // A guess, and marked as one in the UI: most gallery sites use /exhibitions,
-      // but Agent 1 will scrape whatever ends up here on a schedule, so a wrong
-      // value is a recurring 404 rather than a one-off. Meant to be checked.
-      exhibitions_url: g.website ? `${g.website.replace(/\/$/, '')}/exhibitions` : '',
-      address: v.address,
-      neighborhood: '',
-      latitude: '',
-      longitude: '',
-    })),
-  }))
+  const institutions = page.map((g) => {
+    const site = g.website.replace(/\/$/, '')
+    const venues = g.venues.length ? g.venues : [{ label: '', address: '', city: '' }]
+    const multiVenue = venues.length > 1
+    return {
+      name: g.name,
+      website: g.website,
+      type: 'gallery',
+      _dupWarning: g.already_present ? 'An institution with this name already exists' : undefined,
+      venues: venues.map((v, i) => ({
+        // Two locations of one gallery arrive with the same institution name and
+        // no label, which made both venues identically named and impossible to
+        // tell apart in review. Fall back to the street line.
+        name: v.label
+          ? `${g.name} — ${v.label}`
+          : multiVenue
+            ? `${g.name} — ${streetLine(v.address)}`
+            : g.name,
+        // A guess, and marked as one in the UI: most gallery sites use /exhibitions,
+        // but Agent 1 will scrape whatever ends up here on a schedule, so a wrong
+        // value is a recurring 404 rather than a one-off. Meant to be checked.
+        //
+        // Only the first venue gets it. exhibitions_url is unique per venue —
+        // both in the database and in seed/insert's dedup — so repeating the
+        // same guess across a multi-location gallery made the insert silently
+        // skip every venue after the first. A blank the reviewer has to fill in
+        // is better than a duplicate that drops the row.
+        exhibitions_url: i === 0 && site ? `${site}/exhibitions` : '',
+        address: v.address,
+        neighborhood: '',
+        latitude: '',
+        longitude: '',
+      })),
+    }
+  })
 
   return NextResponse.json({
     institutions,
