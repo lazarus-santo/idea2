@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useId, useCallback } from 'react'
+import { useState, useId, useEffect } from 'react'
 import { adminFetch, setAdminSecret } from '@/lib/admin-fetch'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -109,6 +109,26 @@ function institutionFromRaw(inst: Record<string, unknown>): InstitutionDraft {
   }
 }
 
+// Draft → insert-route payload. Single definition so a per-row insert, a batch
+// insert and Manual Entry can never send subtly different shapes.
+function toPayload(inst: InstitutionDraft) {
+  return {
+    name: inst.name.trim(),
+    website: inst.website.trim(),
+    type: inst.type,
+    venues: inst.venues.map(v => ({
+      name: v.name.trim(),
+      exhibitions_url: v.exhibitions_url.trim(),
+      address: v.address.trim(),
+      neighborhood: v.neighborhood.trim(),
+      latitude: v.latitude.trim(),
+      longitude: v.longitude.trim(),
+      hours: v.hours,
+      scrape_notes: v.scrape_notes,
+    })),
+  }
+}
+
 // ── Shared style objects ──────────────────────────────────────────────────────
 
 const inputStyle: React.CSSProperties = {
@@ -117,14 +137,25 @@ const inputStyle: React.CSSProperties = {
   padding: '6px 8px', outline: 'none', width: '100%', boxSizing: 'border-box',
 }
 
-const cellStyle: React.CSSProperties = { padding: '4px 6px', verticalAlign: 'middle' }
-
-const thStyle: React.CSSProperties = {
-  fontFamily: F, fontSize: 10, fontWeight: 700,
-  letterSpacing: '0.12em', textTransform: 'uppercase' as const,
-  color: 'rgba(0,0,0,0.4)', padding: '4px 6px', textAlign: 'left' as const,
-  whiteSpace: 'nowrap' as const,
+// Field and button styling mirrors the pending-exhibition editor in PendingTab —
+// the two review surfaces do the same job (check a scraped/generated draft, fix
+// it, commit it) and should not look like two different tools.
+function pillInput(flagged = false): React.CSSProperties {
+  return {
+    width: '100%', fontFamily: F, fontSize: 13, color: '#000',
+    background: '#FFFCEC', padding: '9px 14px', outline: 'none', boxSizing: 'border-box',
+    border: flagged ? '1px solid #f59e0b' : '1px solid #000', borderRadius: 999,
+  }
 }
+
+const pillBtn: React.CSSProperties = {
+  fontFamily: F, fontSize: 11, fontWeight: 700,
+  letterSpacing: '0.1em', textTransform: 'uppercase' as const,
+  minWidth: 130, height: 42, padding: '0 18px',
+  border: '1px solid #000', borderRadius: 999, cursor: 'pointer', color: '#000',
+}
+
+const AMBER = '#C95712'
 
 const labelStyle: React.CSSProperties = {
   display: 'block', fontFamily: F, fontSize: 10, fontWeight: 700,
@@ -197,299 +228,127 @@ function HoursInput({ value, onChange }: { value: HoursMap; onChange: (v: HoursM
   )
 }
 
-// ── Preview table: VenueRow ───────────────────────────────────────────────────
+// ── Draft issue flags ────────────────────────────────────────────────────────
 
-function VenueRow({
-  venue, onChange, onDelete,
-}: {
-  venue: VenueDraft
-  onChange: (v: VenueDraft) => void
-  onDelete: () => void
-}) {
-  function set(key: keyof VenueDraft, val: string | boolean | HoursMap) {
-    onChange({ ...venue, [key]: val })
-  }
-
-  const openCount = DAYS.filter(d => venue.hours[d] !== null).length
-  const hoursLabel = openCount === 0 ? 'all closed' : `${openCount}d open`
-  const hasAddressFlag = venue._addressFallback
-  const hasGeoFlag = !venue.latitude || !venue.longitude
-  const hasHoursFlag = venue._hoursFallback
-
-  return (
-    <>
-      <tr style={{ background: 'rgba(0,0,0,0.015)' }}>
-        <td style={{ ...cellStyle, paddingLeft: 24, color: 'rgba(0,0,0,0.3)', fontSize: 11, whiteSpace: 'nowrap' as const }}>↳ venue</td>
-        <td style={cellStyle}><input style={inputStyle} value={venue.name} onChange={e => set('name', e.target.value)} /></td>
-        <td style={cellStyle}><input style={inputStyle} value={venue.exhibitions_url} onChange={e => set('exhibitions_url', e.target.value)} placeholder="https://…" /></td>
-        <td style={cellStyle}>
-          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            <input style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={venue.address} onChange={e => set('address', e.target.value)} />
-            {hasAddressFlag && <span title="Address resolution failed — verify manually" style={warnBadge}>⚠</span>}
-          </div>
-        </td>
-        <td style={cellStyle}><input style={inputStyle} value={venue.neighborhood} onChange={e => set('neighborhood', e.target.value)} /></td>
-        <td style={cellStyle}>
-          <input
-            style={{ ...inputStyle, width: 90, background: hasGeoFlag ? '#fef2f2' : undefined }}
-            value={venue.latitude} onChange={e => set('latitude', e.target.value)} placeholder="40.72…"
-          />
-        </td>
-        <td style={cellStyle}>
-          <input
-            style={{ ...inputStyle, width: 90, background: hasGeoFlag ? '#fef2f2' : undefined }}
-            value={venue.longitude} onChange={e => set('longitude', e.target.value)} placeholder="-73.99…"
-          />
-        </td>
-        <td style={cellStyle}>
-          <button
-            onClick={() => set('_hoursOpen', !venue._hoursOpen)}
-            style={{
-              ...btnSecondary,
-              whiteSpace: 'nowrap' as const,
-              color: hasHoursFlag ? '#92400e' : venue._hoursOpen ? '#000' : 'rgba(0,0,0,0.5)',
-              borderColor: hasHoursFlag ? '#fcd34d' : venue._hoursOpen ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.15)',
-              background: hasHoursFlag ? '#fef3c7' : 'transparent',
-            }}
-          >
-            {venue._hoursOpen ? '▾' : '▸'} {hoursLabel}{hasHoursFlag ? ' ⚠' : ''}
-          </button>
-          <button
-            onClick={() => set('_notesOpen', !venue._notesOpen)}
-            title="Scraping notes — a hint passed to the extractor on every scrape"
-            style={{
-              ...btnSecondary,
-              whiteSpace: 'nowrap' as const,
-              marginLeft: 4,
-              color: venue.scrape_notes.trim() ? '#000' : 'rgba(0,0,0,0.4)',
-              borderColor: venue.scrape_notes.trim() ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.15)',
-            }}
-          >
-            {venue._notesOpen ? '▾' : '▸'} note{venue.scrape_notes.trim() ? ' ✓' : ''}
-          </button>
-        </td>
-        <td style={cellStyle}>
-          <button onClick={onDelete} title="Remove" style={{ background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
-        </td>
-      </tr>
-      {venue._hoursOpen && (
-        <tr>
-          <td colSpan={9} style={{ padding: '8px 12px 12px 28px', background: 'rgba(52,50,168,0.025)' }}>
-            <HoursInput
-              value={venue.hours}
-              onChange={hours => onChange({ ...venue, hours })}
-            />
-          </td>
-        </tr>
-      )}
-      {venue._notesOpen && (
-        <tr>
-          <td colSpan={9} style={{ padding: '8px 12px 12px 28px', background: 'rgba(52,50,168,0.025)' }}>
-            <textarea
-              value={venue.scrape_notes}
-              onChange={e => set('scrape_notes', e.target.value)}
-              placeholder='Scraping hint, e.g. "current shows are under the On View tab" or "ignore the Programs section"'
-              rows={2}
-              style={{ ...inputStyle, width: '100%', resize: 'vertical' }}
-            />
-            <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)', marginTop: 4 }}>
-              Passed to the extractor as context on every scrape of this venue. Editable later under Scrape Issues.
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
-  )
+// A venue nobody has typed into yet — the blank row Manual Entry starts with.
+// Flagging every one of its fields as missing before the first keystroke is
+// noise, so an untouched venue reports nothing. Drafts from AI Suggest or the
+// CSV always arrive with at least a name, so they are never silenced by this.
+function isUntouchedVenue(v: VenueDraft): boolean {
+  return !v.name.trim() && !v.exhibitions_url.trim() && !v.address.trim()
+    && !v.neighborhood.trim() && !v.latitude.trim() && !v.longitude.trim()
 }
 
-// ── Preview table: InstitutionGroup ──────────────────────────────────────────
+// What still needs a human eye on this venue. Surfaced on the collapsed row so
+// a batch can be triaged without opening every card.
+function venueIssues(v: VenueDraft): string[] {
+  if (isUntouchedVenue(v)) return []
+  const out: string[] = []
+  if (!v.name.trim()) out.push('no venue name')
+  if (!v.exhibitions_url.trim()) out.push('no exhibitions URL')
+  if (!v.address.trim()) out.push('no address')
+  else if (v._addressFallback) out.push('address unverified')
+  if (!v.latitude || !v.longitude) out.push('no coordinates')
+  if (v._hoursFallback) out.push('hours guessed')
+  return out
+}
 
-function InstitutionGroup({
-  inst, onChange, onDelete, onInserted,
-}: {
-  inst: InstitutionDraft
-  onChange: (v: InstitutionDraft) => void
-  onDelete: () => void
-  onInserted?: () => void
-}) {
-  const [instInserting, setInstInserting] = useState(false)
-  const [instInsertError, setInstInsertError] = useState<string | null>(null)
-
-  function setInst(key: keyof InstitutionDraft, val: string) {
-    onChange({ ...inst, [key]: val })
-  }
-
-  function updateVenue(idx: number, v: VenueDraft) {
-    const venues = [...inst.venues]; venues[idx] = v; onChange({ ...inst, venues })
-  }
-
-  const handleInstInsert = useCallback(async () => {
-    setInstInserting(true)
-    setInstInsertError(null)
-    try {
-      const res = await adminFetch('/api/admin/seed/insert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          institutions: [{
-            name: inst.name, website: inst.website, type: inst.type,
-            venues: inst.venues.map(v => ({
-              name: v.name, exhibitions_url: v.exhibitions_url,
-              address: v.address, neighborhood: v.neighborhood,
-              latitude: v.latitude, longitude: v.longitude,
-              hours: v.hours,
-              scrape_notes: v.scrape_notes,
-            })),
-          }],
-        }),
-      })
-      const json = await res.json()
-      if (!res.ok || json.error) {
-        setInstInsertError(json.error ?? `HTTP ${res.status}`)
-      } else {
-        onInserted?.()
-      }
-    } catch (e) {
-      setInstInsertError(e instanceof Error ? e.message : 'Network error')
-    } finally {
-      setInstInserting(false)
+function institutionIssues(inst: InstitutionDraft): string[] {
+  const out: string[] = []
+  if (!inst.name.trim()) out.push('no name')
+  if (inst._dupWarning) out.push('possible duplicate')
+  if (inst.venues.length === 0) out.push('no venues')
+  if (inst.venues.length > 1) out.push(`${inst.venues.length} venues — verify each`)
+  // Collapse per-venue issues to one mention each; on a multi-venue institution
+  // the row would otherwise repeat "no coordinates" three times.
+  const seen = new Set<string>()
+  for (const v of inst.venues) {
+    for (const issue of venueIssues(v)) {
+      if (!seen.has(issue)) { seen.add(issue); out.push(issue) }
     }
-  }, [inst, onInserted])
+  }
+  return out
+}
 
-  const isMultiVenue = inst.venues.length > 1
-  const allReady = inst.venues.length > 0 && inst.venues.every(
-    v => !v._addressFallback && !v._hoursFallback && !!v.latitude && !!v.longitude
-  )
+// ── Collapsible section toggle (matches the pending editor) ──────────────────
 
+function SectionToggle({
+  open, onToggle, label, flagged,
+}: {
+  open: boolean
+  onToggle: () => void
+  label: string
+  flagged?: boolean
+}) {
   return (
-    <>
-      <tr style={{ borderTop: '2px solid rgba(0,0,0,0.1)', background: '#fffcec' }}>
-        <td style={{ ...cellStyle, fontFamily: F, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' as const, color: '#000' }}>
-          institution
-          {isMultiVenue && (
-            <span title="Multiple venues — verify each location individually" style={{ ...warnBadge, marginLeft: 6 }}>
-              ⚠ multi
-            </span>
-          )}
-          {!isMultiVenue && allReady && (
-            <span style={{ marginLeft: 6, color: '#16a34a', fontSize: 12, fontWeight: 400 }}>✓</span>
-          )}
-        </td>
-        <td style={cellStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input style={inputStyle} value={inst.name} onChange={e => setInst('name', e.target.value)} />
-            {inst._dupWarning && (
-              <span title={inst._dupWarning} style={{ ...warnBadge }}>⚠ dup?</span>
-            )}
-          </div>
-        </td>
-        <td style={cellStyle}>
-          <input style={inputStyle} value={inst.website} onChange={e => setInst('website', e.target.value)} placeholder="https://…" />
-        </td>
-        <td style={cellStyle}>
-          <select value={inst.type} onChange={e => setInst('type', e.target.value)} style={{ ...inputStyle, width: 'auto', paddingRight: 20 }}>
-            {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </td>
-        <td colSpan={4} style={{ ...cellStyle }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const }}>
-            <button
-              onClick={() => onChange({ ...inst, venues: [...inst.venues, blankVenue()] })}
-              style={{ fontFamily: F, fontSize: 11, color: '#3432A8', background: 'transparent', border: '1px solid #3432A8', borderRadius: 999, padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap' as const }}
-            >
-              + add venue
-            </button>
-            {onInserted && (
-              <button
-                onClick={handleInstInsert}
-                disabled={instInserting}
-                title="Insert only this institution into the database"
-                style={{
-                  fontFamily: F, fontSize: 11, fontWeight: 700,
-                  background: instInserting ? 'rgba(0,0,0,0.08)' : '#3432A8',
-                  color: instInserting ? 'rgba(0,0,0,0.3)' : '#fff',
-                  border: 'none', borderRadius: 999, padding: '3px 10px',
-                  cursor: instInserting ? 'wait' : 'pointer',
-                  whiteSpace: 'nowrap' as const,
-                }}
-              >
-                {instInserting ? '…' : '↑ Insert'}
-              </button>
-            )}
-            {instInsertError && (
-              <span style={{ fontFamily: F, fontSize: 11, color: '#dc2626', flexShrink: 0 }}>
-                {instInsertError}
-              </span>
-            )}
-          </div>
-        </td>
-        <td style={cellStyle}>
-          <button onClick={onDelete} title="Remove institution" style={{ background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 16, lineHeight: 1, padding: '0 4px' }}>×</button>
-        </td>
-      </tr>
-      {inst.venues.map((v, i) => (
-        <VenueRow
-          key={v._id}
-          venue={v}
-          onChange={updated => updateVenue(i, updated)}
-          onDelete={() => onChange({ ...inst, venues: inst.venues.filter((_, j) => j !== i) })}
-        />
-      ))}
-    </>
+    <button
+      onClick={onToggle}
+      style={{
+        fontFamily: F, fontSize: 13, background: 'transparent', border: 'none',
+        cursor: 'pointer', color: flagged ? '#92400e' : '#000', padding: 0,
+        display: 'flex', alignItems: 'center', gap: 6,
+      }}
+    >
+      <span style={{ display: 'inline-block', transition: 'transform 200ms ease', transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}>›</span>
+      {label}
+    </button>
   )
 }
 
-// ── Manual Entry: GeoField ────────────────────────────────────────────────────
+// ── GeoField ─────────────────────────────────────────────────────────────────
 
 function GeoField({ venue, onUpdate }: {
   venue: VenueDraft
   onUpdate: (partial: Partial<VenueDraft>) => void
 }) {
-  const bg = venue._geoStatus === 'ok' ? '#f0fdf4' : venue._geoStatus === 'failed' ? '#fef2f2' : '#f8f8f4'
+  const missing = !isUntouchedVenue(venue) && (!venue.latitude || !venue.longitude)
 
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' as const }}>
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' as const }}>
       <div style={{ flex: '2 1 200px', minWidth: 180, position: 'relative' as const }}>
         <label style={labelStyle}>Lat</label>
         <input
-          style={{ ...inputStyle, background: bg, color: 'rgba(0,0,0,0.5)' }}
+          style={pillInput(missing)}
           value={venue.latitude}
           onChange={e => onUpdate({ latitude: e.target.value, _geoStatus: 'idle' })}
           placeholder="auto from address"
         />
         {venue._geoStatus === 'loading' && (
-          <span style={{ position: 'absolute' as const, right: 8, top: '65%', transform: 'translateY(-50%)', fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>…</span>
+          <span style={{ position: 'absolute' as const, right: 14, top: '68%', transform: 'translateY(-50%)', fontSize: 11, color: 'rgba(0,0,0,0.4)' }}>…</span>
         )}
       </div>
       <div style={{ flex: '2 1 200px', minWidth: 180 }}>
         <label style={labelStyle}>Lng</label>
         <input
-          style={{ ...inputStyle, background: bg, color: 'rgba(0,0,0,0.5)' }}
+          style={pillInput(missing)}
           value={venue.longitude}
           onChange={e => onUpdate({ longitude: e.target.value, _geoStatus: 'idle' })}
           placeholder="auto from address"
         />
       </div>
-      <div style={{ flex: '0 0 auto', paddingTop: 22 }}>
-        {venue._geoStatus === 'ok' && <span style={{ fontFamily: F, fontSize: 11, color: '#16a34a' }}>✓ geocoded</span>}
+      <div style={{ flex: '0 0 auto', paddingTop: 28 }}>
+        {venue._geoStatus === 'ok' && <span style={{ fontFamily: F, fontSize: 11, color: '#1a5c2a' }}>✓ geocoded</span>}
         {venue._geoStatus === 'failed' && <span style={{ fontFamily: F, fontSize: 11, color: '#dc2626' }}>geocode failed</span>}
       </div>
     </div>
   )
 }
 
-// ── Manual Entry: single venue form ──────────────────────────────────────────
+// ── VenueEditor ──────────────────────────────────────────────────────────────
+// One venue's fields. Shared by the review card and Manual Entry so a venue is
+// edited the same way regardless of where the draft came from.
 
-function ManualVenueForm({
-  venue, onChange, onDelete, canDelete, institutionName,
+function VenueEditor({
+  venue, onChange, onDelete, canDelete, institutionName, index,
 }: {
   venue: VenueDraft
   onChange: (v: VenueDraft) => void
   onDelete: () => void
   canDelete: boolean
   institutionName?: string
+  index: number
 }) {
-  function set(key: keyof VenueDraft, val: string | HoursMap) {
+  function set(key: keyof VenueDraft, val: string | boolean | HoursMap) {
     onChange({ ...venue, [key]: val })
   }
 
@@ -520,27 +379,45 @@ function ManualVenueForm({
     }
   }
 
+  const openCount = DAYS.filter(d => venue.hours[d] !== null).length
+  const issues = venueIssues(venue)
+  const untouched = isUntouchedVenue(venue)
+
   return (
-    <div style={{ border: '1px solid rgba(0,0,0,0.1)', padding: 16, marginBottom: 12, position: 'relative' as const }}>
+    <div style={{ border: '1px solid rgba(0,0,0,0.12)', borderRadius: 18, padding: 20, marginBottom: 14, position: 'relative' as const }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, paddingRight: canDelete ? 24 : 0 }}>
+        <span style={{ fontFamily: F, fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: 'rgba(0,0,0,0.4)' }}>
+          Venue {index + 1}
+        </span>
+        {issues.length > 0 && (
+          <span style={{ fontFamily: F, fontSize: 12, color: AMBER }}>{issues.join(' · ')}</span>
+        )}
+        {issues.length === 0 && !untouched && <span style={{ fontSize: 12, color: '#1a5c2a' }}>✓</span>}
+      </div>
+
       {canDelete && (
         <button
           onClick={onDelete}
-          style={{ position: 'absolute' as const, top: 10, right: 10, background: 'transparent', border: 'none', borderRadius: 999, fontSize: 16, cursor: 'pointer', color: 'rgba(0,0,0,0.3)' }}
+          title="Remove venue"
+          style={{ position: 'absolute' as const, top: 14, right: 16, background: 'transparent', border: 'none', borderRadius: 999, fontSize: 16, cursor: 'pointer', color: 'rgba(0,0,0,0.3)' }}
         >×</button>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 14 }}>
         <div>
           <label style={labelStyle}>Venue Name</label>
-          <input style={inputStyle} value={venue.name} onChange={e => set('name', e.target.value)} placeholder="Gallery 23rd Street" />
+          <input style={pillInput(!untouched && !venue.name.trim())} value={venue.name} onChange={e => set('name', e.target.value)} placeholder="Gallery 23rd Street" />
         </div>
         <div>
           <label style={labelStyle}>Exhibitions URL</label>
-          <input style={inputStyle} value={venue.exhibitions_url} onChange={e => set('exhibitions_url', e.target.value)} placeholder="https://…/exhibitions" />
+          <input style={pillInput(!untouched && !venue.exhibitions_url.trim())} value={venue.exhibitions_url} onChange={e => set('exhibitions_url', e.target.value)} placeholder="https://…/exhibitions" />
         </div>
         <div>
-          <label style={labelStyle}>Address</label>
+          <label style={{ ...labelStyle, color: venue._addressFallback ? '#92400e' : 'rgba(0,0,0,0.4)' }}>
+            Address{venue._addressFallback ? ' — unverified' : ''}
+          </label>
           <input
-            style={inputStyle}
+            style={pillInput((!untouched && !venue.address.trim()) || venue._addressFallback)}
             value={venue.address}
             onChange={e => set('address', e.target.value)}
             onBlur={handleAddressBlur}
@@ -549,15 +426,274 @@ function ManualVenueForm({
         </div>
         <div>
           <label style={labelStyle}>Neighborhood</label>
-          <input style={inputStyle} value={venue.neighborhood} onChange={e => set('neighborhood', e.target.value)} placeholder="Chelsea" />
+          <input style={pillInput(false)} value={venue.neighborhood} onChange={e => set('neighborhood', e.target.value)} placeholder="Chelsea" />
         </div>
       </div>
 
       <GeoField venue={venue} onUpdate={partial => onChange({ ...venue, ...partial })} />
 
-      <div style={{ marginTop: 16 }}>
-        <label style={{ ...labelStyle, marginBottom: 10 }}>Hours</label>
-        <HoursInput value={venue.hours} onChange={hours => set('hours', hours)} />
+      <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10, marginTop: 18 }}>
+        <SectionToggle
+          open={venue._hoursOpen}
+          onToggle={() => set('_hoursOpen', !venue._hoursOpen)}
+          flagged={venue._hoursFallback}
+          label={`Hours — ${openCount === 0 ? 'all closed' : `${openCount} days open`}${venue._hoursFallback ? ' (guessed)' : ''}`}
+        />
+        {venue._hoursOpen && (
+          <div style={{ paddingBottom: 4 }}>
+            <HoursInput value={venue.hours} onChange={hours => set('hours', hours)} />
+          </div>
+        )}
+
+        <SectionToggle
+          open={venue._notesOpen}
+          onToggle={() => set('_notesOpen', !venue._notesOpen)}
+          label={`Scraping Notes${venue.scrape_notes.trim() ? ' ✓' : ''}`}
+        />
+        {venue._notesOpen && (
+          <div>
+            <textarea
+              value={venue.scrape_notes}
+              onChange={e => set('scrape_notes', e.target.value)}
+              placeholder='Scraping hint, e.g. "current shows are under the On View tab" or "ignore the Programs section"'
+              rows={3}
+              style={{
+                display: 'block', width: '100%', fontFamily: F, fontSize: 12, lineHeight: 1.6,
+                color: '#000', background: '#FFFCEC', border: '1px solid rgba(0,0,0,0.25)',
+                borderRadius: 12, padding: '8px 12px', outline: 'none', resize: 'vertical',
+                boxSizing: 'border-box',
+              }}
+            />
+            <div style={{ fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.4)', marginTop: 4 }}>
+              Passed to the extractor as context on every scrape of this venue. Editable later under Scrape Issues.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Draft row ────────────────────────────────────────────────────────────────
+// Collapsed summary of one institution draft. Opens the card; the quick Insert
+// and dismiss actions stay on the row because a CSV batch is triaged by
+// dismissing dozens of rows without ever opening them.
+
+function DraftRow({
+  inst, onOpen, onInsert, onDelete, inserting, error,
+}: {
+  inst: InstitutionDraft
+  onOpen: () => void
+  onInsert: () => void
+  onDelete: () => void
+  inserting: boolean
+  error?: string
+}) {
+  const issues = institutionIssues(inst)
+  const venueCount = inst.venues.length
+  // On a single-venue draft the exhibitions URL is the field most likely to be
+  // wrong — the CSV import guesses it as website + "/exhibitions" — so it stays
+  // on the collapsed row, as a link, rather than only inside the card.
+  const single = venueCount === 1 ? inst.venues[0] : null
+  const rowUrl = single?.exhibitions_url.trim() || inst.website.trim()
+
+  return (
+    <div
+      onClick={onOpen}
+      className="seed-row"
+      style={{ cursor: 'pointer', fontFamily: F, borderBottom: '1px solid rgba(0,0,0,0.1)', padding: '14px 4px' }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 15, color: '#000', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+          {inst.name || <span style={{ color: 'rgba(0,0,0,0.35)' }}>Untitled institution</span>}
+          {inst._dupWarning && <span title={inst._dupWarning} style={{ ...warnBadge, marginLeft: 8 }}>⚠ dup?</span>}
+        </div>
+        <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+          {rowUrl ? (
+            <a
+              href={rowUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              style={{ color: 'rgba(0,0,0,0.45)', textDecoration: 'none', borderBottom: '1px solid rgba(0,0,0,0.2)' }}
+            >
+              {rowUrl}
+            </a>
+          ) : '—'}
+        </div>
+        {single?.address.trim() && (
+          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.35)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+            {single.address}{single.neighborhood ? ` · ${single.neighborhood}` : ''}
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.6)' }}>{inst.type}</div>
+
+      <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.6)' }}>
+        {venueCount} venue{venueCount !== 1 ? 's' : ''}
+      </div>
+
+      <div style={{ fontSize: 13, minWidth: 0 }}>
+        {issues.length > 0
+          ? <span style={{ color: AMBER }}>{issues.join(', ')}</span>
+          : <span style={{ color: '#1a5c2a' }}>✓ ready</span>}
+        {error && <div style={{ color: '#dc2626', fontSize: 12, marginTop: 2 }}>{error}</div>}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifySelf: 'end' }}>
+        <button
+          onClick={e => { e.stopPropagation(); onOpen() }}
+          style={{ ...btnSecondary, color: '#000', borderColor: 'rgba(0,0,0,0.4)' }}
+        >
+          Edit
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); onInsert() }}
+          disabled={inserting}
+          title="Insert only this institution into the database"
+          style={{
+            ...btnSecondary, fontWeight: 700,
+            background: inserting ? 'rgba(0,0,0,0.08)' : '#58914480',
+            borderColor: 'rgba(0,0,0,0.4)', color: inserting ? 'rgba(0,0,0,0.3)' : '#000',
+            cursor: inserting ? 'wait' : 'pointer',
+          }}
+        >
+          {inserting ? '…' : 'Insert'}
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          title="Remove from this batch"
+          style={{ background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.3)', fontSize: 18, lineHeight: 1, padding: '0 4px' }}
+        >×</button>
+      </div>
+    </div>
+  )
+}
+
+// ── Draft card ───────────────────────────────────────────────────────────────
+// The expanded editor, built to match the pending-exhibition modal in
+// PendingTab. Edits are applied to the draft as you type — nothing is written
+// to the database until Insert.
+
+function DraftCard({
+  inst, onChange, onClose, onInsert, onDelete, inserting, error,
+}: {
+  inst: InstitutionDraft
+  onChange: (v: InstitutionDraft) => void
+  onClose: () => void
+  onInsert: () => void
+  onDelete: () => void
+  inserting: boolean
+  error?: string
+}) {
+  const [confirmDel, setConfirmDel] = useState(false)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  function setField(key: 'name' | 'website' | 'type', val: string) {
+    onChange({ ...inst, [key]: val })
+  }
+
+  function updateVenue(idx: number, v: VenueDraft) {
+    const venues = [...inst.venues]; venues[idx] = v; onChange({ ...inst, venues })
+  }
+
+  const issues = institutionIssues(inst)
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 24, zIndex: 100,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#FFFCEC', width: '100%', maxWidth: 900, maxHeight: '90vh',
+          overflowY: 'auto', position: 'relative' as const, fontFamily: F,
+          padding: '44px 40px 32px',
+        }}
+      >
+        <button
+          onClick={onClose}
+          style={{ position: 'absolute' as const, top: 16, right: 20, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 20, color: '#000', fontFamily: F }}
+        >
+          ✕
+        </button>
+
+        <div style={{ marginBottom: 8, fontSize: 20, color: '#000' }}>
+          {inst.name || 'Untitled institution'}
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 28, color: issues.length ? AMBER : '#1a5c2a' }}>
+          {issues.length ? issues.join(' · ') : '✓ ready to insert'}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 28 }}>
+          <div>
+            <label style={labelStyle}>Institution Name</label>
+            <input style={pillInput(!inst.name.trim())} value={inst.name} onChange={e => setField('name', e.target.value)} placeholder="Gallery Name" />
+          </div>
+          <div>
+            <label style={labelStyle}>Website</label>
+            <input style={pillInput(false)} value={inst.website} onChange={e => setField('website', e.target.value)} placeholder="https://…" />
+          </div>
+          <div>
+            <label style={labelStyle}>Type</label>
+            <select value={inst.type} onChange={e => setField('type', e.target.value)} style={{ ...pillInput(false), appearance: 'none' as const, cursor: 'pointer' }}>
+              {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ ...labelStyle, marginBottom: 12 }}>Venues</div>
+        {inst.venues.map((v, i) => (
+          <VenueEditor
+            key={v._id}
+            venue={v}
+            index={i}
+            institutionName={inst.name.trim()}
+            canDelete
+            onChange={updated => updateVenue(i, updated)}
+            onDelete={() => onChange({ ...inst, venues: inst.venues.filter((_, j) => j !== i) })}
+          />
+        ))}
+        <button
+          onClick={() => onChange({ ...inst, venues: [...inst.venues, blankVenue()] })}
+          style={{ ...btnSecondary, color: '#3432A8', borderColor: '#3432A8', marginBottom: 24 }}
+        >
+          + Add venue
+        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' as const, borderTop: '1px solid rgba(0,0,0,0.12)', paddingTop: 22 }}>
+          <button onClick={onClose} style={{ ...pillBtn, background: '#FFFCEC' }}>Done</button>
+
+          <button
+            onClick={onInsert}
+            disabled={inserting}
+            style={{ ...pillBtn, background: '#58914480', opacity: inserting ? 0.6 : 1, cursor: inserting ? 'wait' : 'pointer' }}
+          >
+            {inserting ? 'Inserting…' : 'Insert'}
+          </button>
+
+          {confirmDel ? (
+            <>
+              <button onClick={onDelete} style={{ ...pillBtn, background: '#E62F2E80' }}>Confirm?</button>
+              <button onClick={() => setConfirmDel(false)} style={{ ...pillBtn, background: '#FFFCEC' }}>Cancel</button>
+            </>
+          ) : (
+            <button onClick={() => setConfirmDel(true)} style={{ ...pillBtn, background: '#E62F2E80' }}>Remove</button>
+          )}
+
+          {error && <span style={{ fontSize: 12, color: '#dc2626' }}>{error}</span>}
+        </div>
       </div>
     </div>
   )
@@ -586,18 +722,7 @@ function ManualEntryForm({ onInserted }: { onInserted: () => void }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          institutions: [{
-            name: name.trim(),
-            website: website.trim(),
-            type,
-            venues: venues.map(v => ({
-              name: v.name, exhibitions_url: v.exhibitions_url,
-              address: v.address, neighborhood: v.neighborhood,
-              latitude: v.latitude, longitude: v.longitude,
-              hours: v.hours,
-              scrape_notes: v.scrape_notes,
-            })),
-          }],
+          institutions: [toPayload({ _id: 'manual', name, website, type, venues })],
         }),
       })
       const json = await res.json()
@@ -617,18 +742,18 @@ function ManualEntryForm({ onInserted }: { onInserted: () => void }) {
         <p style={{ fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: 'rgba(0,0,0,0.4)', marginBottom: 12 }}>
           Institution
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 12, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 12 }}>
           <div>
             <label style={labelStyle}>Name</label>
-            <input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="Gallery Name" />
+            <input style={pillInput(false)} value={name} onChange={e => setName(e.target.value)} placeholder="Gallery Name" />
           </div>
           <div>
             <label style={labelStyle}>Website</label>
-            <input style={inputStyle} value={website} onChange={e => setWebsite(e.target.value)} placeholder="https://…" />
+            <input style={pillInput(false)} value={website} onChange={e => setWebsite(e.target.value)} placeholder="https://…" />
           </div>
           <div>
             <label style={labelStyle}>Type</label>
-            <select value={type} onChange={e => setType(e.target.value as InstType)} style={{ ...inputStyle, paddingRight: 20, width: 'auto' }}>
+            <select value={type} onChange={e => setType(e.target.value as InstType)} style={{ ...pillInput(false), appearance: 'none' as const, cursor: 'pointer' }}>
               {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
@@ -641,9 +766,10 @@ function ManualEntryForm({ onInserted }: { onInserted: () => void }) {
           Venues
         </p>
         {venues.map((v, i) => (
-          <ManualVenueForm
+          <VenueEditor
             key={v._id}
             venue={v}
+            index={i}
             onChange={updated => updateVenue(i, updated)}
             onDelete={() => setVenues(prev => prev.filter((_, j) => j !== i))}
             canDelete={venues.length > 1}
@@ -709,7 +835,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   if (adminPw) setAdminSecret(adminPw)
 
   const [mode, setMode] = useState<Mode>('suggest')
-  // CSV import state. The import shares the review table, geocode step and
+  // CSV import state. The import shares the review list, geocode step and
   // insert button with AI Suggest — only the source of the drafts differs.
   const [impStatus, setImpStatus] = useState<string[]>(['open'])
   const [impSearch, setImpSearch] = useState('')
@@ -758,12 +884,65 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   const [institutions, setInstitutions] = useState<InstitutionDraft[]>([])
   const [inserting, setInserting] = useState(false)
   const [enriching, setEnriching] = useState(false)
+  // Which draft's card is expanded, and per-draft insert state. Keyed by draft
+  // id rather than index so a dismissal elsewhere in the list cannot shift the
+  // spinner or an error message onto a different institution.
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [insertingId, setInsertingId] = useState<string | null>(null)
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
   const inputId = useId()
 
   function showToast(msg: string, ok: boolean) {
     setToast({ msg, ok })
     setTimeout(() => setToast(null), 4500)
+  }
+
+  // Clearing the drafts has to clear what hangs off them — an open card or a
+  // stale per-row error would otherwise survive into the next batch.
+  function resetDrafts() {
+    setInstitutions([])
+    setOpenId(null)
+    setRowErrors({})
+  }
+
+  function updateInstitution(id: string, next: InstitutionDraft) {
+    setInstitutions(prev => prev.map(i => (i._id === id ? next : i)))
+  }
+
+  function dropInstitution(inst: InstitutionDraft) {
+    setInstitutions(prev => prev.filter(i => i._id !== inst._id))
+    setOpenId(cur => (cur === inst._id ? null : cur))
+    // Only the CSV import remembers rejections. Suggest results are generated
+    // fresh each time, so persisting a dismissal there would hide a gallery the
+    // model may never offer again.
+    if (mode === 'import') excludeInstitution(inst.name)
+  }
+
+  // Insert a single institution. Shared by the row's quick action and the card,
+  // so both report failures the same way.
+  async function insertOne(inst: InstitutionDraft) {
+    setInsertingId(inst._id)
+    setRowErrors(prev => { const next = { ...prev }; delete next[inst._id]; return next })
+    try {
+      const res = await adminFetch('/api/admin/seed/insert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ institutions: [toPayload(inst)] }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.error) {
+        setRowErrors(prev => ({ ...prev, [inst._id]: json.error ?? `HTTP ${res.status}` }))
+        return
+      }
+      setInstitutions(prev => prev.filter(i => i._id !== inst._id))
+      setOpenId(cur => (cur === inst._id ? null : cur))
+      showToast(`"${inst.name}" inserted successfully.`, true)
+    } catch (e) {
+      setRowErrors(prev => ({ ...prev, [inst._id]: e instanceof Error ? e.message : 'Network error' }))
+    } finally {
+      setInsertingId(null)
+    }
   }
 
   // Geocoding every venue in a batch of drafts. Pulled out of handleSuggest so
@@ -805,7 +984,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   }
 
   async function handleImport(nextOffset = impOffset) {
-    setLoading(true); setEnriching(false); setError(null); setWarning(null); setInstitutions([])
+    setLoading(true); setEnriching(false); setError(null); setWarning(null); resetDrafts()
     try {
       const res = await adminFetch('/api/admin/seed/import-csv', {
         method: 'POST',
@@ -832,7 +1011,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
     setLoading(true)
     setEnriching(false)
     setError(null)
-    setInstitutions([])
+    resetDrafts()
     try {
       const res = await adminFetch('/api/admin/seed/suggest', {
         method: 'POST',
@@ -859,16 +1038,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   async function handleInsert() {
     if (institutions.length === 0) return
     setInserting(true)
-    const payload = institutions.map(inst => ({
-      name: inst.name, website: inst.website, type: inst.type,
-      venues: inst.venues.map(v => ({
-        name: v.name, exhibitions_url: v.exhibitions_url,
-        address: v.address, neighborhood: v.neighborhood,
-        latitude: v.latitude, longitude: v.longitude,
-        hours: v.hours,
-        scrape_notes: v.scrape_notes,
-      })),
-    }))
+    const payload = institutions.map(toPayload)
     try {
       const res = await adminFetch('/api/admin/seed/insert', {
         method: 'POST',
@@ -882,7 +1052,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
         const { institutionsInserted, venuesInserted, warnings } = json
         const base = `Inserted ${institutionsInserted} institution${institutionsInserted !== 1 ? 's' : ''} + ${venuesInserted} venue${venuesInserted !== 1 ? 's' : ''}.`
         showToast(warnings ? `${base} Warnings: ${warnings.join('; ')}` : base, true)
-        setInstitutions([])
+        resetDrafts()
         setQuery('')
       }
     } catch (e) {
@@ -893,6 +1063,7 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
   }
 
   const venueCount = institutions.reduce((s, i) => s + i.venues.length, 0)
+  const openDraft = openId ? institutions.find(i => i._id === openId) ?? null : null
 
   const modeToggle = (
     <div style={{ display: 'flex', gap: 0, border: '1px solid rgba(0,0,0,0.18)', width: 'fit-content', marginBottom: 28 }}>
@@ -914,48 +1085,43 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
     </div>
   )
 
-  // The review table, geocode badges, per-row editing and the insert button.
+  // The review list: one row per institution, expanding into the editable card.
   // Shared verbatim by AI Suggest and CSV Import so the two cannot drift apart.
   const resultsPanel = (
 
         <>
-          <div style={{ overflowX: 'auto', marginBottom: 20 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Kind</th>
-                  <th style={thStyle}>Name</th>
-                  <th style={thStyle}>Website / Exhibitions URL</th>
-                  <th style={thStyle}>Type / Address</th>
-                  <th style={thStyle}>Neighborhood</th>
-                  <th style={thStyle}>Lat</th>
-                  <th style={thStyle}>Lng</th>
-                  <th style={thStyle}>Hours</th>
-                  <th style={thStyle}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {institutions.map((inst, i) => (
-                  <InstitutionGroup
-                    key={inst._id}
-                    inst={inst}
-                    onChange={updated => { const next = [...institutions]; next[i] = updated; setInstitutions(next) }}
-                    onDelete={() => {
-                      setInstitutions(institutions.filter((_, j) => j !== i))
-                      // Only the CSV import remembers rejections. Suggest results
-                      // are generated fresh each time, so persisting a dismissal
-                      // there would hide a gallery the model may never offer again.
-                      if (mode === 'import') excludeInstitution(inst.name)
-                    }}
-                    onInserted={() => {
-                      setInstitutions(prev => prev.filter((_, j) => j !== i))
-                      showToast(`"${inst.name}" inserted successfully.`, true)
-                    }}
-                  />
-                ))}
-              </tbody>
-            </table>
+          <div style={{ marginBottom: 20 }}>
+            <div className="seed-row seed-row-head">
+              <div>Institution</div>
+              <div>Type</div>
+              <div>Venues</div>
+              <div>Status</div>
+              <div />
+            </div>
+            {institutions.map(inst => (
+              <DraftRow
+                key={inst._id}
+                inst={inst}
+                inserting={insertingId === inst._id}
+                error={rowErrors[inst._id]}
+                onOpen={() => setOpenId(inst._id)}
+                onInsert={() => insertOne(inst)}
+                onDelete={() => dropInstitution(inst)}
+              />
+            ))}
           </div>
+
+          {openDraft && (
+            <DraftCard
+              inst={openDraft}
+              inserting={insertingId === openDraft._id}
+              error={rowErrors[openDraft._id]}
+              onChange={updated => updateInstitution(openDraft._id, updated)}
+              onClose={() => setOpenId(null)}
+              onInsert={() => insertOne(openDraft)}
+              onDelete={() => dropInstitution(openDraft)}
+            />
+          )}
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 20, borderTop: '1px solid rgba(0,0,0,0.12)' }}>
             <span style={{ fontFamily: F, fontSize: 13, color: 'rgba(0,0,0,0.5)' }}>
@@ -1036,14 +1202,14 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
     </>
   )
 
-  // Reuses resultsPanel — the review table, geocode badges, per-row editing and
-  // the insert button are identical to AI Suggest. Only the source differs.
+  // Reuses resultsPanel — the review list, the expanding card and the insert
+  // button are identical to AI Suggest. Only the source differs.
   const importPanel = (
     <>
       <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.5)', margin: '0 0 14px', lineHeight: 1.6, maxWidth: 760 }}>
         Loads <code>seed-data/enriched-nyc-galleries.csv</code> in batches. Rows marked <b>closed</b> are excluded
-        unless you ask for them. Every batch still goes through the same review table below — check the addresses and
-        the guessed exhibitions URL before inserting. Nothing is written until you press the button.
+        unless you ask for them. Every batch still goes through the same review list below — open a row to check the
+        address and the guessed exhibitions URL before inserting. Nothing is written until you press the button.
       </p>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1127,6 +1293,29 @@ export default function SeedTool({ inline, adminPw }: { inline?: boolean; adminP
         />
       )}
       {toast && <Toast msg={toast.msg} ok={toast.ok} />}
+      <style>{`
+        .seed-row {
+          display: grid;
+          grid-template-columns: minmax(0, 2.2fr) 110px 100px minmax(0, 1.6fr) auto;
+          gap: 16px;
+          align-items: center;
+        }
+        .seed-row:not(.seed-row-head):hover { background: rgba(52,50,168,0.04); }
+        .seed-row-head {
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(0,0,0,0.4);
+          padding: 0 4px 8px;
+          border-bottom: 1px solid rgba(0,0,0,0.18);
+        }
+        @media (max-width: 820px) {
+          .seed-row { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
+          .seed-row > div:last-child { justify-self: start; }
+          .seed-row-head { display: none; }
+        }
+      `}</style>
     </>
   )
 
