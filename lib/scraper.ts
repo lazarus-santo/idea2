@@ -1213,10 +1213,19 @@ export async function scrapeInstitution(
       // except end_date: galleries commonly extend a show's run, and a re-scrape
       // should be able to pick that up. start_date never changes once published,
       // and only a real extracted date (never a blank) may replace end_date.
+      //
+      // is_ongoing rides along with it. "Ongoing" is a separate flag set at
+      // publish time when no closing date was known, and every date formatter
+      // reads it BEFORE the dates — so leaving it set means the real end_date
+      // lands in the row and is then ignored on screen. Worse, "Closing Soon"
+      // reads end_date and ignores the flag, so the same show can sit in that
+      // filter while its own card still says Ongoing.
       if ((existing as { id: string; status: string }).status !== 'published') {
         await db.from('exhibitions').update(payload).eq('id', existing.id)
       } else if (detail.end_date) {
-        await db.from('exhibitions').update({ end_date: detail.end_date }).eq('id', existing.id)
+        await db.from('exhibitions')
+          .update({ end_date: detail.end_date, is_ongoing: false })
+          .eq('id', existing.id)
       }
       exhibitionId = existing.id
     } else {
@@ -1252,7 +1261,10 @@ export async function scrapeInstitution(
           if ((raced as { id: string; status: string }).status !== 'published') {
             await db.from('exhibitions').update(payload).eq('id', raced.id)
           } else if (detail.end_date) {
-            await db.from('exhibitions').update({ end_date: detail.end_date }).eq('id', raced.id)
+            // Same end_date + is_ongoing pairing as the non-raced path above.
+            await db.from('exhibitions')
+              .update({ end_date: detail.end_date, is_ongoing: false })
+              .eq('id', raced.id)
           }
           exhibitionId = raced.id
         } else {
