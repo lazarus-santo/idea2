@@ -1114,7 +1114,60 @@ function extractMainContent(html: string): string {
 // a window of surrounding text (title/date/label context usually lives right
 // next to the link in the DOM). Cost then scales with the number of links on
 // the page, not the page's total size.
-function extractAnchorContext(html: string, baseUrl: string, contextChars = 600): string {
+// srcset and its lazy-loading cousins carry long repeating URL lists that crowd
+// out the text the anchor window exists to capture. Measured share of a real
+// Tier 1 input: 49% at Aicon Art, 26% Friedman Benda, 24% Bortolami, 18% Zwirner.
+//
+// The spelling varies by how the page reached us: a Browserbase-rendered DOM
+// serialises lowercase `srcset`, while React SSR emits `srcSet`, so matching is
+// case-insensitive. Casey Kaplan uses `data-src` instead.
+//
+// Only attributes whose value actually looks like image URLs are dropped, so a
+// data-src holding something else is left intact. This lives here rather than in
+// extractMainContent because that helper is shared with detail-page extraction,
+// which still needs image URLs to populate image_url.
+const IMAGE_URL_ATTRS =
+  /\s(?:imagesrcset|data-srcset|data-lazy-src|data-original|srcset|data-src)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
+
+// Plain `src` needs a stricter test than the multi-URL attributes above: a bare
+// "is this a URL" check would also match <script src> and <iframe src>, which are
+// structural. Requiring an image file extension (query string allowed, as CDNs
+// append resize params) keeps it to images only. Worth doing because these sit
+// immediately after the anchor — Bortolami's cards are <a><figure><img src=…>,
+// putting ~29KB of CDN URLs in the highest-value position in the window.
+const IMAGE_SRC_ATTR = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
+const IMAGE_FILE_URL = /\.(?:jpe?g|png|webp|avif|gif)(?:[?&#]|$)/i
+
+// Inline styles carrying a data: URI — base64 or percent-encoded SVG used as a
+// blur-up placeholder behind a lazy-loaded image. On Zwirner these are the single
+// largest thing between a card's anchor and its own title/location text (1,303 of
+// a 2,259-character gap). Only styles containing a data: URI are removed, and only
+// the style attribute itself: class attributes are deliberately left alone, since
+// class names can carry state Tier 1's classification may be reading.
+
+const DATA_URI_STYLE_ATTR = /\sstyle\s*=\s*(?:"[^"]*data:[^"]*"|'[^']*data:[^']*')/gi
+
+function stripImageUrlNoise(html: string): string {
+  return html
+    .replace(IMAGE_URL_ATTRS, (match, dq: string | undefined, sq: string | undefined) => {
+      const value = dq ?? sq ?? ''
+      const looksLikeImageUrls =
+        /https?:\/\/|\.(?:jpe?g|png|webp|avif|gif|svg)|\d+w(?:,|\s*$)/i.test(value)
+      return looksLikeImageUrls ? ' ' : match
+    })
+    .replace(IMAGE_SRC_ATTR, (match, dq: string | undefined, sq: string | undefined) => {
+      const value = dq ?? sq ?? ''
+      return IMAGE_FILE_URL.test(value) ? ' ' : match
+    })
+    .replace(DATA_URI_STYLE_ATTR, ' ')
+}
+
+function extractAnchorContext(rawHtml: string, baseUrl: string, contextChars = 600): string {
+  // Strip before windowing, not after: the point is for more real text to fall
+  // inside the window, not to clean it up once the boilerplate has already
+  // displaced that text.
+  const html = stripImageUrlNoise(rawHtml)
+
   const baseHost = (() => {
     try { return new URL(baseUrl).hostname.replace(/^www\./, '') } catch { return null }
   })()
@@ -1169,10 +1222,14 @@ export async function extractExhibitionLinks(
   // note is weighed as one piece of evidence among several and degrades into
   // noise. Framed below as a hint, not an override, so it cannot on its own
   // reclassify a Program as an exhibition.
-  scrapeNotes?: string | null
+  scrapeNotes?: string | null,
+  // Anchor-context half-width. The caller widens this via the retry ladder when a
+  // multi-city institution's links come back with no location_hint — on some
+  // layouts a card's own location sits ~1,000 characters past its anchor.
+  contextChars = 600
 ): Promise<ExhibitionLink[]> {
   const today = new Date().toISOString().split('T')[0]
-  const stripped = extractAnchorContext(extractMainContent(html), venueUrl).slice(0, 100000)
+  const stripped = extractAnchorContext(extractMainContent(html), venueUrl, contextChars).slice(0, 100000)
 
   const notesBlock = scrapeNotes?.trim()
     ? `\nNote from the site's operator about this page — treat as a hint about where to look, not as a rule that overrides the classification below:\n${scrapeNotes.trim()}\n`
@@ -1194,6 +1251,7 @@ For each exhibition link found, return:
 - classification_reason: work through the evidence first (section heading, labels, explicit dates compared to today) — brief note (e.g. "labeled On View", "end date passed", "section heading: Past")
 - classification: exactly one of 'current' | 'past' | 'permanent' | 'upcoming', consistent with the reasoning above
 - content_type: exactly one of 'exhibition' | 'event' | 'online_only' | 'unclear'
+- location_hint: place text shown next to this link on the listing page — a city, a neighbourhood, a branch label, an address, or "on view at ..." phrasing. Copy it verbatim. Use null when no place text appears near the link. Do NOT infer a place from the gallery's name, from the artist, or from words inside the exhibition title (a show called "London Calling" at an unstated location is null, not "London")
 
 Classification rules:
 - "On View", "Current", "Now On View" → 'current'
@@ -1214,7 +1272,7 @@ Content type rules:
 - Trust the site's own labeling/section headings over the presence of exhibition-like details (artist name, dates, image) — a card labeled "Project" with a real artist and real dates is still not an exhibition
 
 Return ONLY a JSON array (no markdown, no commentary):
-[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition"}]
+[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition","location_hint":"New York: 19th Street"}]
 
 Return [] if no exhibition links are found.
 
@@ -1229,7 +1287,7 @@ ${stripped}`,
     const raw = extractJsonArray<{
       title?: string; url?: string
       classification?: string; classification_reason?: string
-      content_type?: string
+      content_type?: string; location_hint?: string | null
     }>(text)
     if (!raw) return []
     return raw
@@ -1244,6 +1302,9 @@ ${stripped}`,
         content_type: (['exhibition','event','online_only','unclear'].includes(item.content_type ?? '')
           ? item.content_type
           : 'unclear') as ExhibitionLink['content_type'],
+        location_hint: typeof item.location_hint === 'string' && item.location_hint.trim()
+          ? item.location_hint.trim()
+          : null,
       }))
   } catch {
     console.error(`Failed to parse exhibition links JSON for ${venueName}:`, text.slice(0, 200))
@@ -1307,6 +1368,8 @@ ${urls.join('\n')}`,
         // No page content available in this URL-only fallback — can't judge content type, so
         // give benefit of the doubt rather than risk silently discarding a real exhibition.
         content_type: 'unclear' as ExhibitionLink['content_type'],
+        // URL-only fallback: no page text, so no place text to quote.
+        location_hint: null,
       }))
   } catch (err) {
     console.warn(`[classifyExhibitionUrls] Exception parsing response for ${venueName} (${urls.length} URLs, stop_reason: ${response.stop_reason}):`, err instanceof Error ? err.message : err)
@@ -1520,4 +1583,178 @@ export async function extractExhibitionDetail(
   }
 
   return result
+}
+
+// ─── Detail-stage location verification ───────────────────────────────────────
+// The link-stage filter (filterLinksByLocation, above) only ever sees a show's
+// title and URL, and is told to assume NYC when neither names a city. That is
+// the right default at that stage — most galleries never put a city in either —
+// but it means a show is admitted before the page that states its location has
+// even been downloaded. This runs after that download, on the page itself.
+//
+// It exists because the evidence lives somewhere different on every site:
+//   • David Zwirner puts it in the page title  — "Nocturnal | Hong Kong | ..."
+//   • The Campus buries a postal address in the press release body
+//   • Lisson states it in prose — "Finch's first exhibition in Los Angeles"
+// so neither the title nor the body alone is sufficient; both are checked.
+
+export type LocationVerdict = 'nyc' | 'non_nyc' | 'unknown'
+
+export interface LocationCheck {
+  verdict: LocationVerdict
+  city: string | null
+  evidence: string | null
+  source: 'title' | 'model' | 'error'
+  /** Whether the page shows this gallery operating in more than one city.
+   *  Decides how much a 'unknown' verdict should worry us: a one-address New
+   *  York gallery that says nothing about location is at its own address, while
+   *  a gallery with branches saying nothing is genuinely ambiguous. */
+  galleryMultiCity: boolean
+}
+
+const NYC_PLACE = /\b(new york|nyc|n\.y\.c|manhattan|brooklyn|queens|the bronx|bronx|staten island|harlem|tribeca|chelsea|soho|long island city|astoria|bushwick|greenpoint|williamsburg)\b/i
+
+// Cities that appear as a bare segment in a page title mean the show is there.
+// Deliberately limited to places a gallery actually operates a space in — a
+// broad gazetteer would fire on artist biographies and exhibition histories.
+// One list, two shapes: anchored for whole title segments, unanchored for place
+// text found next to a link. The trailing (?![a-z]) rather than \b keeps entries
+// ending in a period (l.a., st. moritz) matchable while still rejecting
+// "Londonderry" for "london".
+const NON_NYC_CITIES = 'london|paris|hong kong|seoul|tokyo|los angeles|l\\.a\\.|geneva|zurich|zürich|basel|berlin|brussels|milan|rome|madrid|vienna|athens|amsterdam|copenhagen|stockholm|lisbon|dublin|glasgow|munich|monaco|gstaad|st\\. moritz|shanghai|beijing|guangzhou|taipei|singapore|dubai|tokyo|osaka|mexico city|s(a|ã)o paulo|buenos aires|toronto|montreal|vancouver|chicago|san francisco|miami|palm beach|houston|dallas|boston|philadelphia|seattle|denver|detroit|atlanta|aspen|marfa|bentonville|west hollywood|beverly hills|somerset|menorca|ibiza|east hampton|bridgehampton|southampton|water mill|sag harbor|montauk|amagansett|hudson|kinderhook|beacon|catskill|rockport|princeton|greenwich|new canaan|ridgefield|venice|salzburg|oslo'
+
+const KNOWN_NON_NYC = new RegExp(`^(${NON_NYC_CITIES})$`, 'i')
+
+const NON_NYC_CITY_IN_TEXT = new RegExp(`\\b(${NON_NYC_CITIES})(?![a-z])`, 'i')
+
+/** Returns the non-NYC city named in a Tier 1 location_hint, or null.
+ *  Deliberately one-directional: it can say "this is elsewhere", never "this is
+ *  NYC". A hint that also mentions a NYC place, or that is long enough to be prose
+ *  rather than a place label, returns null so the authoritative detail-stage check
+ *  decides instead. */
+export function hintNamesNonNycCity(
+  hint: string | null | undefined,
+  showTitle?: string | null
+): string | null {
+  if (!hint) return null
+  const h = hint.trim()
+  if (!h || h.length > 120) return null
+  if (NYC_PLACE.test(h)) return null
+  const m = h.match(NON_NYC_CITY_IN_TEXT)
+  if (!m) return null
+  // A place word that is really part of the show's name is not a location. The
+  // prompt already asks for null in that case ("London Calling" → null), but this
+  // discard is unrecoverable — the link never reaches the detail-stage check — so
+  // the guard is enforced here rather than left to the model's compliance.
+  if (showTitle && showTitle.toLowerCase().includes(m[1].toLowerCase())) return null
+  return m[1]
+}
+
+// Pulls the <title>, which is where multi-city galleries most reliably state
+// the branch. Split on the separators sites actually use between title parts.
+function titleLocationSignal(html: string): LocationCheck | null {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+  if (!m) return null
+  const title = m[1].replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim()
+  if (!title) return null
+
+  const segments = title.split(/\s*[|·•–—]\s*/).map((s) => s.trim()).filter(Boolean)
+  for (const seg of segments) {
+    if (KNOWN_NON_NYC.test(seg)) {
+      return { verdict: 'non_nyc', city: seg, evidence: title.slice(0, 160), source: 'title', galleryMultiCity: true }
+    }
+  }
+  // Deliberately no NYC short-circuit here. Plenty of galleries use one site-wide
+  // title on every page — Salon 94's every page is titled "Art Gallery &
+  // Exhibitions in New York City", including its Paris shows. Reading that as
+  // proof a given show is in New York is precisely the false confirmation this
+  // whole check exists to prevent, so a NYC-looking title earns nothing and the
+  // page itself still gets read.
+  return null
+}
+
+function pageTextForLocation(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+export async function verifyExhibitionLocation(
+  html: string,
+  showTitle: string,
+  venueName: string,
+  venueAddress: string | null
+): Promise<LocationCheck> {
+  // Free, deterministic, and catches the whole multi-branch class before we
+  // spend a token. Only a positive signal short-circuits — a title with no
+  // city tells us nothing and falls through to the model.
+  const fromTitle = titleLocationSignal(html)
+  if (fromTitle) return fromTitle
+
+  const pageTitle = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
+    .replace(/\s+/g, ' ').trim().slice(0, 200)
+  const body = pageTextForLocation(html).slice(0, 7000)
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      messages: [
+        {
+          role: 'user',
+          content: `Decide where this exhibition PHYSICALLY TAKES PLACE.
+
+Gallery on file: ${venueName}${venueAddress ? ` (${venueAddress})` : ''}
+Exhibition: ${showTitle}
+Page title: ${pageTitle}
+
+Rules:
+- The gallery's own address is NOT evidence. Galleries list shows held at other branches, at seasonal or pop-up spaces, at off-site projects, and shows their artists are in at other institutions.
+- Ignore cities that appear in artist biographies, birthplaces, collection histories, past exhibitions, or gallery footers listing every branch.
+- Evidence counts only if it describes THIS exhibition's venue: "first exhibition in X", "at our X space", "at its X location", "presented at <address>", or a postal address for the show.
+- If the page gives no evidence about this show's own location, answer "unknown". Do not infer from the gallery's address.
+
+Also say whether this GALLERY operates spaces in more than one city (look for a footer or contact block listing several addresses, or a location switcher).
+
+Return ONLY JSON, no markdown:
+{"city":"<city or unknown>","evidence":"<=15 words quoted from the page, or empty>","gallery_multi_city":true|false}
+
+Page text:
+${body}`,
+        },
+      ],
+    })
+
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+    const parsed = extractJsonObject<{ city?: string; evidence?: string; gallery_multi_city?: boolean }>(text)
+    const city = (parsed?.city ?? '').trim()
+    const galleryMultiCity = parsed?.gallery_multi_city === true
+
+    if (!city || /^unknown$/i.test(city)) {
+      return {
+        verdict: 'unknown', city: null,
+        evidence: parsed?.evidence?.slice(0, 160) ?? null,
+        source: 'model', galleryMultiCity,
+      }
+    }
+    return {
+      verdict: NYC_PLACE.test(city) ? 'nyc' : 'non_nyc',
+      city,
+      evidence: parsed?.evidence?.slice(0, 160) ?? null,
+      source: 'model',
+      galleryMultiCity,
+    }
+  } catch (err) {
+    // Deliberately fails to 'unknown', not 'nyc'. An unverified show goes to the
+    // pending queue for review; it must never auto-publish on the strength of an
+    // API error. Wrong-city shows on the live site are the failure being fixed.
+    console.error(`verifyExhibitionLocation failed for "${showTitle}":`, err)
+    // Multi-city assumed on error so the record is held rather than published.
+    return { verdict: 'unknown', city: null, evidence: null, source: 'error', galleryMultiCity: true }
+  }
 }

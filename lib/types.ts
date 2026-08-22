@@ -156,6 +156,12 @@ export interface VenueRecord {
   // A human decision not to scrape this venue at all. Distinct from
   // manual_entry_required, which the scraper sets and clears itself.
   scrapable?: boolean
+  /** From the parent institution. Set by hand — true when the institution runs
+   *  exhibition space outside NYC. Gates the location_hint retry ladder. */
+  is_multi_city?: boolean
+  /** Anchor-window size that last yielded location hints here. Null = never
+   *  established, start the ladder at its first rung. */
+  location_window_size?: number | null
 }
 
 export interface ExhibitionRaw {
@@ -174,6 +180,10 @@ export interface ExhibitionLink {
   classification: 'current' | 'past' | 'permanent' | 'upcoming'
   classification_reason: string
   content_type: 'exhibition' | 'event' | 'online_only' | 'unclear'
+  /** Place text seen next to the link on the listing page, verbatim, or null.
+   *  Only ever used to discard clearly non-NYC links early — never to confirm a
+   *  link is in NYC. Tier 2/3 have no page content, so they always emit null. */
+  location_hint: string | null
 }
 
 export interface ExhibitionDetailExtracted {

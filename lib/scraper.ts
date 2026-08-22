@@ -5,6 +5,8 @@ import {
   extractExhibitionLinks,
   extractExhibitionDetail,
   filterLinksByLocation,
+  hintNamesNonNycCity,
+  verifyExhibitionLocation,
   verifyTitleInHtml,
   generatePrereads,
   classifyExhibitionUrls,
@@ -13,7 +15,7 @@ import { geocodeVenueIfNeeded } from './geocoding'
 import { generateMuseumCoverage, crossLinkCoverageToReadings } from './museum-coverage'
 import { auditAndRepairPrereads, repairZeroPrereads } from './audit'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
-import type { VenueRecord, ExhibitionRaw } from './types'
+import type { VenueRecord, ExhibitionRaw, ExhibitionLink } from './types'
 
 // Stable identity key for an exhibition within a venue — used for upsert matching
 // instead of show_title, which is re-extracted by Claude on every scrape and can
@@ -232,7 +234,11 @@ function detectBotWall(html: string): string | null {
 // returned by fetchListingPage — NOT the 60K-sliced version used by extractExhibitionLinks.
 // Slicing only happens inside extractExhibitionLinks (in claude.ts). This scan is
 // therefore unaffected by the slice window and will find links anywhere in the page.
-function scanExhibitionHrefs(html: string, venueUrl: string): string[] {
+// `sectionPagesOut`, when supplied, collects the URLs dropped by the terminal-segment
+// check below so the caller can log and count them. The scan stays pure — it has no
+// access to the run's diagnostics or venue name — following the same accumulator
+// pattern scrapeInstitution already uses for `errors`.
+function scanExhibitionHrefs(html: string, venueUrl: string, sectionPagesOut?: string[]): string[] {
   const base = (() => { try { return new URL(venueUrl).origin } catch { return '' } })()
   const selfPathname = (() => { try { return new URL(venueUrl).pathname.replace(/\/$/, '') } catch { return '' } })()
 
@@ -261,7 +267,10 @@ function scanExhibitionHrefs(html: string, venueUrl: string): string[] {
 
     // Skip terminal section segments
     const lastSegment = pathname.split('/').pop()?.toLowerCase() ?? ''
-    if (SECTION_TERMINAL_SEGMENTS.has(lastSegment)) continue
+    if (SECTION_TERMINAL_SEGMENTS.has(lastSegment)) {
+      sectionPagesOut?.push(absolute)
+      continue
+    }
 
     // Must be at least two path segments deep (not just the homepage)
     if (pathname.split('/').filter(Boolean).length < 2) continue
@@ -590,6 +599,13 @@ async function upsertArtist(name: string): Promise<string | null> {
 
 // ─── Main scrape function ─────────────────────────────────────────────────────
 
+// Anchor-window rungs for the location_hint retry ladder. Only climbs, never
+// shrinks: a venue that needed 3,000 once will need it again, and re-narrowing
+// would just re-lose the hints. Capped at three rungs because past ~3,000 the
+// window starts pulling in the *neighbouring* card's location, which is worse
+// than no hint at all — the detail-stage verifier is the real safety net.
+const LOCATION_WINDOW_LADDER = [600, 1500, 3000] as const
+
 const DETAIL_SESSION_CAP = 15
 
 // Persists what console logs previously lost on serverless exit: which method
@@ -662,12 +678,29 @@ export async function scrapeInstitution(
     shows_extracted: 0,
     shows_passed_hallucination: 0,
     shows_passed_temporal: 0,
+    // Stale-pending wipe outcome. Tracked because this silently failed for months.
+    pending_wipe: { deleted: 0, failed: false, error_code: null as string | null },
+    // Retry-ladder telemetry. Separate from discard_reasons because nothing here
+    // is a discard — it records how hard we had to work to see a location.
+    location_ladder: {
+      eligible: false,        // institution.is_multi_city
+      triggered: false,       // did it climb at all
+      started_at: 0,          // window size the run began with
+      resolved_at: 0,         // window size that produced hints (0 = never)
+      extra_tier1_calls: 0,
+      hints_found: 0,
+      links_missing_hint: 0,
+    },
     discard_reasons: {
       guard_failed: 0,
       fetch_failed: 0,
       extraction_failed: 0,
       hallucination_rejected: 0,
       temporal_discarded: 0,
+      location_rejected: 0,
+      section_page_tier1: 0,
+      section_page_tier2: 0,
+      non_nyc_tier1: 0,
       upsert_failed: 0,
     },
   }
@@ -747,13 +780,112 @@ export async function scrapeInstitution(
     }))
   }
 
-  let allLinks = await extractExhibitionLinks(listingHtml, vn, venue.exhibitions_url, venue.scrape_notes)
+  // ─── Tier 1, with the location_hint retry ladder ──────────────────────────
+  // Gated purely on the institution's manually-set is_multi_city. A single-address
+  // NYC gallery has nothing to disambiguate, so no amount of extra context earns
+  // its cost there. Multi-city institutions climb until every link carries a
+  // location_hint, or until the ladder runs out.
+  const ladderEligible = venue.is_multi_city === true
+  const startIdx = (() => {
+    const stored = venue.location_window_size
+    if (!stored) return 0
+    const i = LOCATION_WINDOW_LADDER.findIndex((w) => w >= stored)
+    return i === -1 ? LOCATION_WINDOW_LADDER.length - 1 : i
+  })()
+
+  let windowIdx = startIdx
+  let allLinks = await extractExhibitionLinks(
+    listingHtml, vn, venue.exhibitions_url, venue.scrape_notes, LOCATION_WINDOW_LADDER[windowIdx]
+  )
+
+  diag.location_ladder.eligible = ladderEligible
+  diag.location_ladder.started_at = LOCATION_WINDOW_LADDER[startIdx]
+
+  const missingHint = (links: ExhibitionLink[]) =>
+    links.filter((l) => !l.location_hint).length
+
+  if (ladderEligible) {
+    while (windowIdx < LOCATION_WINDOW_LADDER.length - 1 && allLinks.length > 0 && missingHint(allLinks) > 0) {
+      const from = LOCATION_WINDOW_LADDER[windowIdx]
+      windowIdx++
+      const to = LOCATION_WINDOW_LADDER[windowIdx]
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, event: 'LOCATION_LADDER_RETRY',
+        from_window: from, to_window: to,
+        links: allLinks.length, links_missing_hint: missingHint(allLinks),
+      }))
+      diag.location_ladder.triggered = true
+      diag.location_ladder.extra_tier1_calls++
+      allLinks = await extractExhibitionLinks(
+        listingHtml, vn, venue.exhibitions_url, venue.scrape_notes, to
+      )
+    }
+  }
+
+  const hintsFound = allLinks.filter((l) => l.location_hint).length
+  diag.location_ladder.hints_found = hintsFound
+  diag.location_ladder.links_missing_hint = missingHint(allLinks)
+  diag.location_ladder.resolved_at = hintsFound > 0 ? LOCATION_WINDOW_LADDER[windowIdx] : 0
+
+  console.log(JSON.stringify({
+    tag: 'AGENT1', venue: vn, event: 'LOCATION_LADDER',
+    eligible: ladderEligible,
+    started_at: LOCATION_WINDOW_LADDER[startIdx],
+    ended_at: LOCATION_WINDOW_LADDER[windowIdx],
+    extra_tier1_calls: diag.location_ladder.extra_tier1_calls,
+    links: allLinks.length,
+    hints_found: hintsFound,
+    still_missing: missingHint(allLinks),
+    resolved: hintsFound > 0 ? 'yes' : 'no — detail-stage verifier remains the safety net',
+  }))
+
+  // Persist the rung that worked so the next scrape starts here instead of
+  // re-climbing. Only widens: a smaller stored value is never written back.
+  const endedAt = LOCATION_WINDOW_LADDER[windowIdx]
+  if (ladderEligible && hintsFound > 0 && endedAt !== (venue.location_window_size ?? 0)) {
+    await db.from('venues').update({ location_window_size: endedAt }).eq('id', venue.id)
+    console.log(`[${vn}] Stored location window size ${endedAt} for future scrapes`)
+  }
+
+  // Tier 1 is a content extraction rather than a URL scan, so unlike the two href
+  // scans below it has never been filtered against SECTION_TERMINAL_SEGMENTS —
+  // scanExhibitionHrefs and scanAllHrefs both apply it inline as they build their
+  // candidate list. Until now a Tier 1 link ending in /past or /archive was only
+  // stopped in Step 2's per-link loop, after classification, content-type,
+  // location and self-link filtering had already been spent on it. Same function,
+  // same set, just applied where Tier 1's links are produced.
+  //
+  // Runs before the two fallbacks below on purpose: if Tier 1 returned nothing but
+  // section pages, the venue should fall through to the href scans rather than
+  // proceed with an empty list.
+  allLinks = allLinks.filter((link) => {
+    if (!isSectionPageUrl(link.url)) return true
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
+      guard: 'isSectionPageUrl:tier1',
+      reason: 'URL last segment matches section terminal list',
+      title: link.title,
+    }))
+    diag.discard_reasons.section_page_tier1++
+    return false
+  })
 
   // Fallback tier 1: if extractExhibitionLinks found nothing, scan full HTML for exhibition hrefs.
   // Recovers venues where content is past the 60K slice window.
   if (allLinks.length === 0) {
     console.warn(`[${vn}] extractExhibitionLinks returned 0 — trying exhibition href scan`)
-    const candidateUrls = scanExhibitionHrefs(listingHtml, venue.exhibitions_url)
+    const tier2SectionPages: string[] = []
+    const candidateUrls = scanExhibitionHrefs(listingHtml, venue.exhibitions_url, tier2SectionPages)
+    // Previously a bare `continue` inside the scan: section pages were dropped with no
+    // log line and no counter, so this guard was invisible in every run it fired in.
+    for (const dropped of tier2SectionPages) {
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, url: dropped, event: 'GUARD_FAILED',
+        guard: 'isSectionPageUrl:tier2',
+        reason: 'URL last segment matches section terminal list',
+      }))
+      diag.discard_reasons.section_page_tier2++
+    }
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'HREF_SCAN_FALLBACK',
       candidates_found: candidateUrls.length,
@@ -806,6 +938,28 @@ export async function scrapeInstitution(
   }
   allLinks = dedupedLinks
 
+  // Early non-NYC discard using the place text Tier 1 read off the listing page.
+  // Purely a cost saving: every link removed here would otherwise have paid for a
+  // detail-page fetch and a Sonnet extraction before the detail-stage verifier
+  // caught it. Deliberately one-directional — hintNamesNonNycCity only ever
+  // reports "this names somewhere else", and returns null for a hint that is
+  // absent, ambiguous, prose-length, or that also mentions a NYC place. Anything
+  // it lets through is unchanged and still faces the authoritative check after
+  // its detail page is downloaded; nothing here marks a link as confirmed-NYC.
+  allLinks = allLinks.filter((link) => {
+    const city = hintNamesNonNycCity(link.location_hint, link.title)
+    if (!city) return true
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
+      guard: 'locationHint:tier1',
+      reason: `location_hint names ${city}, not NYC`,
+      title: link.title,
+      location_hint: link.location_hint,
+    }))
+    diag.discard_reasons.non_nyc_tier1++
+    return false
+  })
+
   const currentLinks = allLinks.filter(
     (l) => l.classification === 'current' || l.classification === 'upcoming'
   )
@@ -836,6 +990,8 @@ export async function scrapeInstitution(
       shows_passed_hallucination: 0, shows_passed_temporal: 0, shows_upserted: 0,
       shows_discarded: diag.shows_found_on_listing,
       discard_reasons: diag.discard_reasons,
+      location_ladder: diag.location_ladder,
+      pending_wipe: diag.pending_wipe,
     }))
     return 0
   }
@@ -935,6 +1091,8 @@ export async function scrapeInstitution(
       shows_passed_hallucination: 0, shows_passed_temporal: 0, shows_upserted: 0,
       shows_discarded: totalDiscarded,
       discard_reasons: diag.discard_reasons,
+      location_ladder: diag.location_ladder,
+      pending_wipe: diag.pending_wipe,
     }))
     return 0
   }
@@ -946,7 +1104,40 @@ export async function scrapeInstitution(
 
   // Wipe stale pending entries for this venue before inserting fresh ones.
   // Published and upcoming exhibitions are intentionally left untouched.
-  await db.from('exhibitions').delete().eq('venue_id', venue.id).eq('status', 'pending')
+  //
+  // The result is checked rather than discarded. This call used to fail silently:
+  // agent1_fetch_logs.exhibition_id referenced exhibitions with no ON DELETE
+  // action, so any pending row that had ever been fetch-logged rejected the
+  // delete with 23503 and the run carried on as though the wipe had worked.
+  // migration_v34 changes that FK to ON DELETE SET NULL; this logging is what
+  // makes a future regression visible instead of silent.
+  const { error: wipeError, count: wipedCount } = await db
+    .from('exhibitions')
+    .delete({ count: 'exact' })
+    .eq('venue_id', venue.id)
+    .eq('status', 'pending')
+
+  if (wipeError) {
+    console.error(`[${vn}] Stale-pending wipe FAILED — stale rows will survive this run:`, wipeError.message)
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE_FAILED',
+      error_code: wipeError.code, error_message: wipeError.message,
+      details: wipeError.details ?? null,
+    }))
+    errors.push({
+      item: vn,
+      step: 'upsert',
+      message: `Stale-pending wipe failed (${wipeError.code}): ${wipeError.message}`,
+    })
+    diag.pending_wipe.failed = true
+    diag.pending_wipe.error_code = wipeError.code ?? null
+  } else {
+    diag.pending_wipe.deleted = wipedCount ?? 0
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE',
+      deleted: wipedCount ?? 0,
+    }))
+  }
 
   // ─── Step 2: detail pages ─────────────────────────────────────────────────
   let upsertedCount = 0
@@ -1133,6 +1324,51 @@ export async function scrapeInstitution(
 
     diag.shows_passed_temporal++
 
+    // Location re-check against the detail page we just downloaded.
+    // filterLinksByLocation ran back at Step 1 on the link's title and URL alone
+    // and defaults to NYC when neither names a city — which is how shows at a
+    // gallery's London/LA/Paris branch, at its seasonal or off-site space, or at
+    // another institution entirely reach this point. This is the first moment the
+    // page that actually states the location is in hand, so it is the last honest
+    // chance to check. No extra fetch: it reads the HTML already in memory.
+    const location = await verifyExhibitionLocation(
+      detailHtml,
+      cleanTitle,
+      vn,
+      venue.address ?? null
+    )
+
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, url: link.url, event: 'LOCATION_CHECK',
+      title: cleanTitle,
+      verdict: location.verdict,
+      city: location.city,
+      source: location.source,
+      evidence: location.evidence,
+    }))
+
+    if (location.verdict === 'non_nyc') {
+      console.warn(`[${vn}] non_nyc_rejected: "${cleanTitle}" is in ${location.city} — discarding`)
+      errors.push({
+        item: cleanTitle,
+        step: 'location',
+        message: `Show is in ${location.city ?? 'a non-NYC location'}, not New York`,
+      })
+      diag.discard_reasons.location_rejected++
+      await db.from('agent1_discarded_items').insert({
+        institution_id: venue.institution_id ?? null,
+        title: cleanTitle,
+        url: link.url,
+        content_type: `non_nyc:${location.city ?? 'unknown'}`,
+      })
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
+        method: detailMethod, htmlLength: detailHtml.length,
+        outcome: `location_rejected:${location.city ?? 'non_nyc'}`,
+      })
+      continue
+    }
+
     // Req #5: Image URL validation — discard placeholders, logos, relative URLs
     const validatedImage = validateImageUrl(detail.image_url, link.url)
 
@@ -1145,6 +1381,15 @@ export async function scrapeInstitution(
     const isOngoing = isInstallation && !!detail.start_date && !detail.end_date
 
     const missingFields: string[] = []
+    // 'unknown' means the page said nothing either way about where the show is.
+    // That is only worth worrying about when the gallery has somewhere else to
+    // be: a single-address New York gallery saying nothing is at its own
+    // address, and when it isn't it says so — which is how the Hudson, East
+    // Hampton and Rockport shows are caught. Holding those too would bury real
+    // shows in the queue for no gain. For a gallery with branches, silence is
+    // genuinely ambiguous, and treating that as a pass is exactly how the
+    // wrong-city shows reached the site, so it goes to pending for review.
+    if (location.verdict === 'unknown' && location.galleryMultiCity) missingFields.push('location_unverified')
     if (dateClass === 'upcoming') missingFields.push('upcoming')
     if (!detail.start_date) missingFields.push('start_date')
     if (!detail.end_date && !isOngoing) missingFields.push('end_date')
@@ -1435,6 +1680,8 @@ export async function scrapeInstitution(
     shows_upserted: upsertedCount,
     shows_discarded: totalDiscarded,
     discard_reasons: diag.discard_reasons,
+    location_ladder: diag.location_ladder,
+    pending_wipe: diag.pending_wipe,
   }
 
   console.log(JSON.stringify(completeEntry))
@@ -1453,7 +1700,7 @@ function sevenDaysFromNow(): string {
 // ─── Institution queries ──────────────────────────────────────────────────────
 
 const VENUE_SELECT =
-  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, institutions!inner(id, type)'
+  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, location_window_size, institutions!inner(id, type, is_multi_city)'
 
 function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1474,6 +1721,8 @@ function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
     scrape_failure_reason: (v.scrape_failure_reason as string | null) ?? null,
     scrape_notes: (v.scrape_notes as string | null) ?? null,
     scrapable: (v.scrapable as boolean | null) ?? true,
+    is_multi_city: institution?.is_multi_city === true,
+    location_window_size: (v.location_window_size as number | null) ?? null,
   }
 }
 
