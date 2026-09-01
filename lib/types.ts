@@ -1,5 +1,7 @@
 import type { InstitutionType } from './institution-types'
 
+export type CoverageType = 'show_coverage' | 'artist_profile' | 'artist_interview' | 'past_show' | 'general'
+
 export interface Preread {
   id: string
   exhibition_id: string
@@ -9,9 +11,19 @@ export interface Preread {
   thumbnail_url: string | null
   summary: string | null
   created_at: string
+  // Museum/fair-coverage-only fields (migration_v35) — null/omitted on every
+  // gallery row generatePrereads() writes. Optional, not just nullable: gallery
+  // inserts never set these keys at all, rather than setting them to null
+  // explicitly.
+  artist_name?: string | null
+  // Named item_coverage_type, not coverage_type — exhibitions.coverage_type is
+  // the unrelated Type A/B/C-small/C-large/D classification tier.
+  item_coverage_type?: CoverageType | null
+  author?: string | null
+  // ISO-8601 datetime string (Exa's native publishedDate format), not a bare
+  // date — see migration_v35 for why the column is timestamptz.
+  published_date?: string | null
 }
-
-export type CoverageType = 'show_coverage' | 'artist_profile' | 'artist_interview' | 'past_show' | 'general'
 
 export interface CoverageItem {
   url: string

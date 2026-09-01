@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
-import { generateFairCoverage, crossLinkCoverageToReadings } from '@/lib/museum-coverage'
+import { generateFairCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from '@/lib/museum-coverage'
 
 // POST /api/admin/fairs/[id]/coverage — run the fair coverage search for one fair.
 // [id] is the institution id. Spends Exa searches, so it is an explicit action
 // rather than something the create path always does.
+//
+// No gate of any kind, by design — unlike the museum trigger in scraper.ts,
+// this route is meant to be re-run on demand and always overwrites. Coverage
+// now lives as prereads rows rather than one overwritable jsonb value
+// (migration_v35), so "overwrite" here means delete this fair's existing
+// prereads rows first, then insert the fresh set — the same delete-then-
+// regenerate shape /api/debug-prereads already uses for galleries.
 
 export const maxDuration = 300
 
@@ -37,10 +44,20 @@ export async function POST(
   // Agent 2's gallery preread path away from this row.
   const { error } = await db
     .from('exhibitions')
-    .update({ coverage, preread_type: 'coverage_only' })
+    .update({ preread_type: 'coverage_only' })
     .eq('id', exhibitionId)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  const { error: deleteError } = await db.from('prereads').delete().eq('exhibition_id', exhibitionId)
+  if (deleteError) return NextResponse.json({ error: deleteError.message }, { status: 500 })
+
+  if (coverage.length > 0) {
+    const { error: insertError } = await db
+      .from('prereads')
+      .insert(coverage.map((c) => coverageItemToPrereadRow(exhibitionId, c)))
+    if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 })
+  }
 
   await crossLinkCoverageToReadings(exhibitionId, coverage).catch((err) =>
     console.error(`Fair coverage cross-link failed for ${inst.name}:`, err)

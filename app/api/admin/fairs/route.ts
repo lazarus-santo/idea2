@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 import { geocodeAddress } from '@/lib/geocode'
-import { generateFairCoverage } from '@/lib/museum-coverage'
+import { generateFairCoverage, coverageItemToPrereadRow } from '@/lib/museum-coverage'
 
 // GET  /api/admin/fairs — every fair with its exhibitor count, for the admin list
 // POST /api/admin/fairs — create a fair
 //
 // A fair is stored as institution + venue + exactly one exhibitions row. That row
 // is the fair itself: show_title is the fair name, start_date/end_date are its run
-// dates, coverage holds Agent 2's results. Modelling it that way means the Fairs
-// tab, the exhibition card, /exhibitions/[id], and the map all work unchanged.
+// dates. Coverage now lives in prereads (migration_v35), same as museums —
+// exhibitions.coverage is no longer written by this route. Modelling the fair
+// itself this way means the Fairs tab, the exhibition card, /exhibitions/[id],
+// and the map all work unchanged.
 
 export const maxDuration = 300
 
@@ -20,7 +22,7 @@ export async function GET(request: NextRequest) {
   const db = getSupabaseAdmin()
   const { data, error } = await db
     .from('institutions')
-    .select('id, name, website, exhibitors, fair_location, active, venues(id, exhibitions_url, address, latitude, longitude, exhibitions(id, show_title, start_date, end_date, status, coverage, preread_type))')
+    .select('id, name, website, exhibitors, fair_location, active, venues(id, exhibitions_url, address, latitude, longitude, exhibitions(id, show_title, start_date, end_date, status, preread_type, prereads(id)))')
     .eq('type', 'fair')
     .order('name')
 
@@ -43,7 +45,10 @@ export async function GET(request: NextRequest) {
       start_date: ex?.start_date ?? null,
       end_date: ex?.end_date ?? null,
       status: ex?.status ?? null,
-      coverage_count: Array.isArray(ex?.coverage) ? ex.coverage.length : 0,
+      // Counts prereads rows now, not exhibitions.coverage.length — the
+      // display field name is unchanged so nothing downstream needs to know
+      // where the count came from.
+      coverage_count: Array.isArray(ex?.prereads) ? ex.prereads.length : 0,
       preread_type: ex?.preread_type ?? null,
     }
   })
@@ -126,15 +131,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: venueErr?.message ?? 'venue insert failed' }, { status: 500 })
   }
 
-  let coverage: unknown[] = []
-  if (body.generate_coverage) {
-    try {
-      coverage = await generateFairCoverage(name)
-    } catch (err) {
-      console.error(`Fair coverage failed for ${name}:`, err)
-    }
-  }
-
+  // Coverage generation moved after the exhibition insert below (it needs a
+  // real exhibition_id to attach prereads rows to — there was no such
+  // requirement back when coverage was a jsonb value on the insert payload
+  // itself). Fair creation still succeeds even if coverage generation fails;
+  // only the order changed, not that guarantee.
   const { data: ex, error: exErr } = await db
     .from('exhibitions')
     .insert({
@@ -146,9 +147,8 @@ export async function POST(request: NextRequest) {
       detail_url: body.exhibitions_url,
       status: 'pending',
       // Same gate museums use — a fair gets searched coverage, never a generated
-      // preread, and the prereads table is never written for it.
+      // preread from generatePrereads().
       preread_type: 'coverage_only',
-      coverage,
     })
     .select('id')
     .single()
@@ -156,6 +156,18 @@ export async function POST(request: NextRequest) {
     await db.from('venues').delete().eq('id', venue.id)
     await db.from('institutions').delete().eq('id', inst.id)
     return NextResponse.json({ error: exErr?.message ?? 'exhibition insert failed' }, { status: 500 })
+  }
+
+  let coverage: Awaited<ReturnType<typeof generateFairCoverage>> = []
+  if (body.generate_coverage) {
+    try {
+      coverage = await generateFairCoverage(name)
+      if (coverage.length > 0) {
+        await db.from('prereads').insert(coverage.map((c) => coverageItemToPrereadRow(ex.id, c)))
+      }
+    } catch (err) {
+      console.error(`Fair coverage failed for ${name}:`, err)
+    }
   }
 
   return NextResponse.json({

@@ -69,6 +69,27 @@ function toCoverageItem(
   }
 }
 
+// Shared by every writer of museum/fair coverage (Agent 1's inline museum
+// trigger, and both fair admin routes) so the three call sites can't drift
+// apart on field mapping the way a copy-pasted object literal in each would
+// risk. CoverageItem has no summary/highlight text of its own — summary stays
+// null rather than folding author into it, now that author has its own column
+// (migration_v35).
+export function coverageItemToPrereadRow(exhibitionId: string, item: CoverageItem) {
+  return {
+    exhibition_id: exhibitionId,
+    article_title: item.title,
+    publication: item.publication,
+    article_url: item.url,
+    thumbnail_url: item.thumbnail_url,
+    summary: null,
+    artist_name: item.artist_name,
+    item_coverage_type: item.coverage_type,
+    author: item.author,
+    published_date: item.published_date,
+  }
+}
+
 // ─── Artist historical classification ──────────────────────────────────────────
 // "Was [artist] deceased by 1990 or earlier?" — batched Haiku call. Only called for
 // Solo/Small Group (1-5 artists); Large Group (6+) skips this entirely.

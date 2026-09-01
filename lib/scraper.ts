@@ -12,7 +12,7 @@ import {
   classifyExhibitionUrls,
 } from './claude'
 import { geocodeVenueIfNeeded } from './geocoding'
-import { generateMuseumCoverage, crossLinkCoverageToReadings } from './museum-coverage'
+import { generateMuseumCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from './museum-coverage'
 import { auditAndRepairPrereads, repairZeroPrereads } from './audit'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import type { VenueRecord, ExhibitionRaw, ExhibitionLink } from './types'
@@ -1613,17 +1613,27 @@ export async function scrapeInstitution(
           }
         }
       } else {
-        const { data: exRow } = await db
-          .from('exhibitions')
-          .select('coverage_type')
-          .eq('id', exhibitionId)
-          .maybeSingle()
+        // Mirrors the gallery gate above exactly: a real row count against
+        // prereads, not a "has this ever been classified" flag. Coverage items
+        // now live in the same table galleries use (migration_v35) instead of
+        // exhibitions.coverage, so this can finally be a count like the gallery
+        // side always had, rather than the weaker coverage_type IS NULL check
+        // that couldn't tell "ran and found nothing" from "never ran."
+        const { count: coverageCount } = await db
+          .from('prereads')
+          .select('id', { count: 'exact', head: true })
+          .eq('exhibition_id', exhibitionId)
 
-        if (!exRow?.coverage_type) {
+        if ((coverageCount ?? 0) === 0) {
           try {
             const { coverage, coverageType } = await generateMuseumCoverage(cleanTitle, venue.name, detail.artists)
-            await db.from('exhibitions').update({ coverage, coverage_type: coverageType }).eq('id', exhibitionId)
+            // coverage_type (the Type A/B/C-small/C-large/D classification tier)
+            // still lives on the exhibition row — only the per-item array moves.
+            await db.from('exhibitions').update({ coverage_type: coverageType }).eq('id', exhibitionId)
             if (coverage.length > 0) {
+              await db.from('prereads').insert(
+                coverage.map((c) => coverageItemToPrereadRow(exhibitionId, c))
+              )
               await crossLinkCoverageToReadings(exhibitionId, coverage)
             }
           } catch (err) {
