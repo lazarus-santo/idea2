@@ -1,4 +1,5 @@
 import Browserbase from '@browserbasehq/sdk'
+import he from 'he'
 import { appendFileSync, writeFileSync } from 'fs'
 import { getSupabaseAdmin } from './supabase'
 import {
@@ -44,16 +45,59 @@ function upgradeImageUrl(url: string | null): string | null {
   return url
 }
 
-const CONTACT_BOILERPLATE = /inquir|please\s+(reach\s+out|contact)|for\s+more\s+information|press\s+(office|contact|release\s+contact)|media\s+contact|rsvp|@[a-z0-9.-]+\.[a-z]{2,}/i
+// A real sign-off carries an actual contact token — an address or a phone
+// number. Phrases alone are weaker evidence: "for more information" turns up
+// mid-sentence in ordinary prose ("…and for more information the essay by Susan
+// Casey is reproduced in full"), and matching on the phrase anywhere in a
+// paragraph deleted substantive text along with it.
+const CONTACT_TOKEN = /@[a-z0-9.-]+\.[a-z]{2,}|\+?\d[\d\s().-]{7,}\d/i
+// The noun forms only. The bare stem also matched "inquiring" and "inquiry",
+// which are ordinary art-writing prose ("an inquiry into materiality"), so a
+// short closing paragraph of real text was still being deleted. A sign-off that
+// says "inquiry" almost always carries an address too, and the token path above
+// catches that case.
+const CONTACT_PHRASE = /inquir(?:ies|e)\b|enquir(?:ies|e)\b|please\s+(reach\s+out|contact)|for\s+more\s+information|press\s+(office|contact|release\s+contact)|media\s+contact|rsvp/i
+
+// The strongest signal is not length but how the paragraph opens. A sign-off
+// announces itself — "For press inquiries…", "Contact…" — whereas a paragraph
+// that merely happens to contain an address opens as ordinary prose. Length is
+// the fallback for sign-offs phrased less conventionally.
+const CONTACT_OPENER =
+  /^\s*(?:for\s+(?:press\s+|more\s+|further\s+)?(?:information|inquiries|enquiries|details)|press\s+(?:inquiries|enquiries|office|contact)|media\s+(?:inquiries|enquiries|contact)|contact\b|inquiries\b|enquiries\b|to\s+request|images?\s+(?:are\s+)?available)/i
+
+// A contact block is a line or two. Anything longer is prose doing other work,
+// so the thresholds are deliberately tight — keeping a stray sign-off costs a
+// sentence, deleting a real paragraph costs the press release.
+const CONTACT_TOKEN_MAX_CHARS = 200
+const CONTACT_PHRASE_MAX_CHARS = 120
+
+function isContactBlock(paragraph: string): boolean {
+  const p = paragraph.trim()
+  if (!p) return true
+  // Opens as a sign-off, and carries contact detail of some kind — remove it
+  // whatever its length.
+  if (CONTACT_OPENER.test(p) && (CONTACT_TOKEN.test(p) || CONTACT_PHRASE.test(p))) return true
+  if (CONTACT_TOKEN.test(p)) return p.length <= CONTACT_TOKEN_MAX_CHARS
+  if (CONTACT_PHRASE.test(p)) return p.length <= CONTACT_PHRASE_MAX_CHARS
+  return false
+}
 
 function cleanPressRelease(text: string | null): string | null {
   if (!text) return null
   const paragraphs = text.split(/\n{2,}/)
-  while (paragraphs.length > 0 && CONTACT_BOILERPLATE.test(paragraphs[paragraphs.length - 1])) {
+  while (paragraphs.length > 0 && isContactBlock(paragraphs[paragraphs.length - 1])) {
     paragraphs.pop()
   }
   const cleaned = paragraphs.join('\n\n').trim()
-  return cleaned || null
+
+  // Guardrail: a cleanup pass must never be the reason a press release
+  // disappears. If every paragraph matched — a single-block release ending in a
+  // contact line, or text separated by single newlines so the split never fired
+  // — keep the original rather than returning nothing. Removing a genuine
+  // trailing contact block is still wanted; wiping the whole release is not.
+  if (!cleaned) return text.trim() || null
+
+  return cleaned
 }
 
 // ─── Validation helpers (Req #1, #3, #4, #5) ─────────────────────────────────
@@ -123,17 +167,27 @@ function isSectionPageHtml(html: string, venueName?: string): boolean {
 // plain-ASCII form before comparing means punctuation style never causes a
 // false mismatch — we only care whether the real words came from the page, not
 // typographic fidelity.
+// Both sides of the hallucination check pass through here before comparison.
+// This used to decode ten hand-picked entities, which meant any other
+// entity-encoded character failed to match: Fredericks & Freiser writes
+// "Anastasya Pe&ntilde;a" in its source, Claude reads "Anastasya Peña", and a
+// perfectly correct extraction was thrown away as invented. he.decode handles
+// the whole entity table, matching what Agent 3 already does on RSS fields.
+//
+// NFKC follows so that a precomposed "ñ" and an "n" plus a combining tilde
+// compare equal — a real encoding difference rather than a semantic one.
+// Accents are deliberately preserved, not folded away: this is a containment
+// check on short samples, and folding would make genuinely different words
+// compare equal for no gain.
 function canonicalizeForMatch(s: string): string {
-  return s
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;|&rdquo;|&ldquo;/g, '"').replace(/&#39;|&apos;|&rsquo;|&lsquo;/g, "'")
-    .replace(/&ndash;|&mdash;/g, '-')
-    .replace(/&hellip;/g, '...')
-    .replace(/&nbsp;/g, ' ')
+  return he
+    .decode(s)
+    .normalize('NFKC')
     .replace(/[‘’]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/[–—]/g, '-')
     .replace(/…/g, '...')
+    .replace(/\u00a0/g, ' ')
 }
 
 // Tag-stripping can insert whitespace at inline-element boundaries that the
