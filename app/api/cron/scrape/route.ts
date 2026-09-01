@@ -3,8 +3,25 @@ import { runAgent1, getInstitutionsDueForRefresh } from '@/lib/scraper'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
-// GET /api/cron/scrape           — drain slice: scrape venues whose check_back_date has passed
-// GET /api/cron/scrape?force=true — weekly: requeue every active venue for the drain
+// GET /api/cron/scrape — drain slice: scrape venues whose check_back_date has passed
+//
+// There used to be a second, Monday-only variant of this cron
+// (?force=true, nulling check_back_date on every active venue at once) meant
+// to guarantee the whole roster got re-checked weekly. Removed entirely — it
+// made Mondays specifically process ~4x the venues of an ordinary tick (69-70
+// vs ~17), which is what pushed Monday runs into the 800s ceiling and drove
+// the 22-31% killed-run rate documented in the Agent 1 timing investigation.
+// It also wasn't fixing a real gap: every venue already gets check_back_date =
+// sevenDaysFromNow() after every scrape attempt (success or failure — see
+// scraper.ts), so each venue re-queues itself on its own 7-day cycle with no
+// help needed. The force pass never even reached the venues that genuinely
+// need attention (manual_entry_required=true ones are excluded from its query
+// the same way they're excluded from the ordinary drain) — its only effect was
+// re-synchronizing every healthy venue onto the same day, which is the
+// opposite of what a spread-out queue wants. Manual full-roster re-scrapes are
+// still available on demand via POST /api/scrape?force=true (the dashboard's
+// "Run Now" button) — that path is untouched, and is not this mechanism: it's
+// human-triggered with its own bounded budget, not an automatic weekly cron.
 //
 // Called by Vercel Cron via Authorization: Bearer CRON_SECRET. Shares the agent
 // gate with the other four trigger routes, which also accepts x-admin-secret.
@@ -44,38 +61,15 @@ async function anotherRunIsActive(): Promise<boolean> {
 export async function GET(request: NextRequest) {
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
-  const force = request.nextUrl.searchParams.get('force') === 'true'
-
   // The drain cron fires every 15 minutes but a slice can run for 13, so
   // invocations would otherwise overlap and scrape the same venues twice.
   if (await anotherRunIsActive()) {
     return NextResponse.json({ message: 'Agent 1 already running — skipping this tick', skipped: true })
   }
 
-  // The weekly force tick requeues rather than scrapes.
-  //
-  // A force pass is ~17 venues at 85–257s each, so it cannot finish in one
-  // invocation, and "ignore check_back_date" is not resumable — every slice
-  // would start from the top of the same list. Clearing the dates instead makes
-  // the whole roster due, and the ordinary 15-minute drain finishes the pass
-  // over the next few hours. One cheap invocation replaces an impossible one.
-  if (force) {
-    const { error } = await getSupabaseAdmin()
-      .from('venues')
-      .update({ check_back_date: null })
-      .eq('active', true)
-      .eq('manual_entry_required', false)
-      .eq('scrapable', true)
-
-    if (error) {
-      return NextResponse.json({ error: `Requeue failed: ${error.message}` }, { status: 500 })
-    }
-    console.log('Weekly force: cleared check_back_date on all active auto-scraped venues.')
-  }
-
-  // FIX 4 CONFIRMED: both getActiveInstitutions and getInstitutionsDueForRefresh
-  // filter .eq('manual_entry_required', false), so Met/MoMA/Brooklyn Museum
-  // are automatically excluded from both daily and force-scrape cron runs.
+  // FIX 4 CONFIRMED: getInstitutionsDueForRefresh filters
+  // .eq('manual_entry_required', false), so Met/MoMA/Brooklyn Museum are
+  // automatically excluded from the cron run.
   const institutions = await getInstitutionsDueForRefresh()
 
   if (institutions.length === 0) {
@@ -84,7 +78,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ message: 'All institutions up to date', scraped: 0 })
   }
 
-  console.log(`Cron scrape (requeued=${force}): ${institutions.length} institution(s) due — ${institutions.map((v) => v.name).join(', ')}`)
+  console.log(`Cron scrape: ${institutions.length} institution(s) due — ${institutions.map((v) => v.name).join(', ')}`)
 
   // Awaited, not fire-and-forget. The previous Promise.resolve().then(...) let
   // the route return in milliseconds and the work continue in the background,
@@ -95,7 +89,6 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     message: `Scraped ${result.itemsSucceeded}/${result.itemsProcessed} institution(s)`,
-    requeued: force,
     processed: result.itemsProcessed,
     succeeded: result.itemsSucceeded,
     failed: result.itemsFailed,
