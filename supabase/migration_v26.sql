@@ -207,8 +207,10 @@ CREATE POLICY "publications_anon_read" ON publications
 
 GRANT SELECT (id, name) ON publications TO anon;
 
--- ARTISTS — only id and name are rendered as exhibition credits. bio, website
--- and instagram exist in the schema but appear nowhere in the public surface.
+-- ARTISTS — only id and name are rendered as exhibition credits. bio and
+-- instagram exist in the schema but appear nowhere in the public surface.
+-- (website also had zero public exposure here; it was dropped entirely in
+-- migration_v36 for having zero writers anywhere in the codebase.)
 CREATE POLICY "artists_anon_read" ON artists
   FOR SELECT TO anon USING (true);
 

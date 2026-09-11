@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     .from('exhibitions')
     .select(`
       id, show_title, start_date, end_date, description, image_url, press_release,
-      venues!inner(name)
+      venues!inner(name, exhibitions_url)
     `)
     .ilike('show_title', `%${filter}%`)
     .neq('preread_type', 'coverage_only')
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
 
   for (const ex of exhibitions) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const venueRaw = (ex.venues as any) as { name: string }
+    const venueRaw = (ex.venues as any) as { name: string; exhibitions_url: string }
 
     const artistRows = await db
       .from('exhibition_artists')
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
       .map((r: { artists: { name: string } | null }) => r.artists?.name)
       .filter(Boolean) as string[]
 
-    const raw: ExhibitionRaw & { venue_name: string } = {
+    const raw: ExhibitionRaw & { venue_name: string; venue_url: string } = {
       show_title: ex.show_title,
       artists,
       start_date: ex.start_date,
@@ -53,6 +53,7 @@ export async function POST(request: NextRequest) {
       press_release: ex.press_release,
       image_url: ex.image_url,
       venue_name: venueRaw.name,
+      venue_url: venueRaw.exhibitions_url,
     }
 
     await db.from('prereads').delete().eq('exhibition_id', ex.id)

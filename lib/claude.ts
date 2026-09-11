@@ -190,6 +190,49 @@ function isAboutArtist(result: PoolResult, artistName: string): boolean {
   return parts.every((p) => containsWholeWord(text, p))
 }
 
+// ─── Mechanical self-sourced rejection ─────────────────────────────────────────
+// Runs on the raw candidate pool, before verifySubstantiallyAbout ever gets called —
+// a venue's own page or an artist's own site should never cost a Claude verification
+// call, and should never reach the quality-gate machinery that call feeds. A rejected
+// candidate is just removed from the pool here, same as isValid/isAboutArtist already
+// do above — no flag is written anywhere for this.
+
+// (a) Exact hostname match against this exhibition's own venue site. Same comparison
+// audit.ts's per-exhibition cleanup pass already uses (there: extractDomain(article_url)
+// === extractDomain(venue.exhibitions_url)) — getResultDomain here is the identical
+// hostname-minus-www normalization, reused rather than re-derived. Deliberately an exact
+// hostname match, not the registrable-domain reduction isBlockedUrl/buildGalleryBlocklist
+// use elsewhere in this file: that existing mechanism already blocks every known venue's
+// registrable domain (a global, coarser check, and a superset of this one for the
+// registrable-domain case). This is the narrower, exhibition-specific check the audit
+// route uses, added here as its own explicit step per this exhibition's own venue.
+function isSelfSourcedByVenue(url: string, venueDomain: string | null): boolean {
+  if (!venueDomain) return false
+  return getResultDomain(url) === venueDomain
+}
+
+// (b) The artist's own name appearing as a component of the candidate domain itself —
+// catches a personal site like benkvoss.com for artist "Ben K. Voss". Reuses
+// significantNameParts — the exact same >2-char, no-particle-list significance filter
+// isAboutArtist uses above — then requires EVERY significant part to appear in the
+// domain, mirroring isAboutArtist's own "every part, not just one shared fragment"
+// discipline (parts.every(...), same as line 190). That "every part" requirement is
+// deliberate here for the same reason it's deliberate there: a bare single-part
+// substring check would be a "loose substring" match exactly like the kind isAboutArtist
+// already avoids — e.g. an artist named "Art Young" would otherwise flag artforum.com
+// itself, since "art" alone is a substring of it. Requiring every significant part
+// keeps a short, common name fragment from false-positiving on its own; the residual
+// risk (two unrelated significant parts both happening to be substrings of the same
+// unrelated domain) is the same class of known, accepted gap isAboutArtist documents
+// above for mononyms — not eliminated, just made very unlikely.
+function isSelfSourcedByArtistDomain(url: string, artistName: string): boolean {
+  const parts = significantNameParts(artistName)
+  if (parts.length === 0) return false
+  const domain = registrableDomain(url).toLowerCase()
+  if (!domain) return false
+  return parts.every((p) => domain.includes(p.toLowerCase()))
+}
+
 type CandidateContentType = 'interview' | 'profile' | 'review' | 'news' | 'other'
 type CandidateSourceType = 'editorial' | 'venue' | 'self' | 'listing' | 'other'
 
@@ -463,9 +506,16 @@ async function searchShowReview(
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   wantCount: number,
   minDomainFilteredResults: number,
-  pressRelease: string | null
+  pressRelease: string | null,
+  venueDomain: string | null
 ): Promise<(PoolResult & { title: string })[]> {
   const query = `${showTitle} ${venueName} review exhibition 2025 OR 2026`
+
+  // Self-sourced check (a) folded into the same validity predicate as isValid — a
+  // candidate on the exhibition's own venue domain is rejected here, before either
+  // the retry-count check below or verifySubstantiallyAbout ever sees it.
+  const isValidCandidate = (r: PoolResult): r is PoolResult & { title: string } =>
+    isValid(r) && !isSelfSourcedByVenue(r.url, venueDomain)
 
   const filtered = await exa.search(query, {
     type: 'auto',
@@ -474,7 +524,7 @@ async function searchShowReview(
     contents: { highlights: true },
   }).catch(() => ({ results: [] as unknown[] }))
 
-  let candidates = sortByTierAndRecency((filtered.results as unknown as PoolResult[]).filter(isValid))
+  let candidates = sortByTierAndRecency((filtered.results as unknown as PoolResult[]).filter(isValidCandidate))
 
   if (candidates.length < minDomainFilteredResults) {
     console.log(`Exa show-review [${showTitle}]: only ${candidates.length} domain-filtered result(s) (need ${minDomainFilteredResults}) — retrying without domain filter`)
@@ -485,7 +535,7 @@ async function searchShowReview(
     }).catch(() => ({ results: [] as unknown[] }))
 
     const seen = new Set(candidates.map((r) => r.url))
-    const extra = (unfiltered.results as unknown as PoolResult[]).filter(isValid).filter((r) => !seen.has(r.url))
+    const extra = (unfiltered.results as unknown as PoolResult[]).filter(isValidCandidate).filter((r) => !seen.has(r.url))
     candidates = sortByTierAndRecency([...candidates, ...extra])
   } else {
     console.log(`Exa show-review [${showTitle}]: ${candidates.length} domain-filtered result(s) — no retry needed`)
@@ -511,7 +561,8 @@ async function searchArtistProfile(
   artistName: string,
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   disambiguator?: string,
-  sourceText?: string | null
+  sourceText?: string | null,
+  venueDomain?: string | null
 ): Promise<(PoolResult & { title: string }) | null> {
   const query = disambiguator
     ? `${artistName} ${disambiguator} artist interview profile`
@@ -523,7 +574,13 @@ async function searchArtistProfile(
     contents: { highlights: true },
   }).catch(() => ({ results: [] as unknown[] }))
 
-  let candidates = (results.results as unknown as PoolResult[]).filter(isValid).filter((r) => isAboutArtist(r, artistName))
+  // Self-sourced checks (a) and (b) — same "reject before any Claude call" placement
+  // as isValid/isAboutArtist right next to them, not a separate pass afterward.
+  let candidates = (results.results as unknown as PoolResult[])
+    .filter(isValid)
+    .filter((r) => isAboutArtist(r, artistName))
+    .filter((r) => !isSelfSourcedByVenue(r.url, venueDomain ?? null))
+    .filter((r) => !isSelfSourcedByArtistDomain(r.url, artistName))
 
   let verified = new Map<string, VerifiedCandidate>()
   if (candidates.length > 0) {
@@ -682,13 +739,14 @@ async function generateSmallGroupPrereads(
   exhibition: ExhibitionRaw & { venue_name: string },
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   context: Map<string, string>,
-  bios: Map<string, string>
+  bios: Map<string, string>,
+  venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release)
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain)
 
   const perArtistResults = await Promise.all(
     exhibition.artists.map((artist) =>
-      searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release)
+      searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain)
     )
   )
 
@@ -719,9 +777,10 @@ async function generateLargeGroupPrereads(
   exhibition: ExhibitionRaw & { venue_name: string },
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   context: Map<string, string>,
-  bios: Map<string, string>
+  bios: Map<string, string>,
+  venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release)
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release, venueDomain)
 
   const seenUrls = new Set(showReview.map((r) => r.url))
   const rows: (PoolResult & { title: string })[] = [...showReview]
@@ -733,7 +792,7 @@ async function generateLargeGroupPrereads(
         console.log(`Exa per-artist [Large Group]: cap reached, skipping remaining artists (${orderedArtists.slice(orderedArtists.indexOf(artist)).join(', ')})`)
         break
       }
-      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release)
+      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain)
       console.log(`Exa per-artist [Large Group / ${artist}]:`, result ? { title: result.title, url: result.url } : 'no valid result')
       if (result && !seenUrls.has(result.url)) {
         seenUrls.add(result.url)
@@ -747,11 +806,18 @@ async function generateLargeGroupPrereads(
 }
 
 export async function generatePrereads(
-  exhibition: ExhibitionRaw & { venue_name: string }
+  exhibition: ExhibitionRaw & { venue_name: string; venue_url?: string | null }
 ): Promise<GeneratePrereadsResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
   const showTitle = exhibition.show_title
   const showType = classifyGalleryShow(exhibition.artists.length)
+
+  // This exhibition's own venue domain — computed once, threaded down to
+  // searchShowReview/searchArtistProfile for the mechanical self-sourced check (a).
+  // Optional/nullable because not every caller has plumbed venue_url through yet;
+  // absent just means that specific check is skipped (isBlockedUrl's global,
+  // registrable-domain blocklist below still applies regardless).
+  const venueDomain = exhibition.venue_url ? getResultDomain(exhibition.venue_url) || null : null
 
   // Build blocklist once — shared across all search paths
   const galleryDomains = await buildGalleryBlocklist()
@@ -772,11 +838,11 @@ export async function generatePrereads(
   const searchContext = await extractArtistSearchContext(exhibition.press_release, exhibition.artists, bios)
 
   if (showType === 'small_group') {
-    return generateSmallGroupPrereads(exa, exhibition, isValid, searchContext, bios)
+    return generateSmallGroupPrereads(exa, exhibition, isValid, searchContext, bios, venueDomain)
   }
 
   if (showType === 'large_group') {
-    return generateLargeGroupPrereads(exa, exhibition, isValid, searchContext, bios)
+    return generateLargeGroupPrereads(exa, exhibition, isValid, searchContext, bios, venueDomain)
   }
 
   // ─── Solo path (1 artist) ─────────────────────────────────────────────────

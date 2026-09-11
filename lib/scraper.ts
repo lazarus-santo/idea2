@@ -1647,6 +1647,7 @@ export async function scrapeInstitution(
             const { prereads, hasShowCoverage } = await generatePrereads({
               ...exhibitionRaw,
               venue_name: venue.name,
+              venue_url: venue.exhibitions_url,
             })
             if (prereads.length > 0) {
               await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: exhibitionId })))
