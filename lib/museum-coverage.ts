@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
 import { extractJsonObject, getResultDomain, publicationFromUrl } from './claude'
+import { loggedExaSearch } from './exa-log'
 import type { CoverageItem, CoverageType } from './types'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
@@ -42,13 +43,24 @@ function isValidResult(r: MuseumSearchResult): r is MuseumSearchResult & { title
   return !!r.title?.trim()
 }
 
-async function museumSearch(query: string, numResults: number): Promise<MuseumSearchResult[]> {
-  const res = await exa.search(query, {
+// functionName identifies the actual caller (generateTypeA, generateTypeCSmall,
+// generateTypeCLarge, generateSingleSearchCoverage, generateFairCoverage) rather than
+// always logging 'museumSearch' — this is the one function that issues the real Exa
+// call for all of museum and fair coverage, but which classification tier or fair
+// path triggered it is the useful signal for exa_search_log, same as gallery's
+// distinct S1-S5/searchShowReview/searchArtistProfile labels.
+async function museumSearch(
+  query: string,
+  numResults: number,
+  exhibitionId: string | null,
+  functionName: string
+): Promise<MuseumSearchResult[]> {
+  const res = await loggedExaSearch(exa, query, {
     type: 'auto',
     numResults,
     includeDomains: EXA_QUERYABLE_MUSEUM_DOMAINS,
     contents: { highlights: true },
-  }).catch(() => ({ results: [] as unknown[] }))
+  }, { exhibitionId, functionName })
   return res.results as unknown as MuseumSearchResult[]
 }
 
@@ -156,11 +168,11 @@ async function classifyMuseumShow(artistNames: string[]): Promise<MuseumClassifi
 }
 
 // ─── Type A — Solo, contemporary ───────────────────────────────────────────────
-async function generateTypeA(exhibitionTitle: string, institutionName: string, artistName: string): Promise<CoverageItem[]> {
+async function generateTypeA(exhibitionTitle: string, institutionName: string, artistName: string, exhibitionId: string | null): Promise<CoverageItem[]> {
   const [s1, s2, s3] = await Promise.all([
-    museumSearch(`${exhibitionTitle} ${artistName} ${institutionName} review`, 3),
-    museumSearch(`${artistName} interview profile studio practice`, 3),
-    museumSearch(`${artistName} exhibition review -${exhibitionTitle}`, 3),
+    museumSearch(`${exhibitionTitle} ${artistName} ${institutionName} review`, 3, exhibitionId, 'generateTypeA'),
+    museumSearch(`${artistName} interview profile studio practice`, 3, exhibitionId, 'generateTypeA'),
+    museumSearch(`${artistName} exhibition review -${exhibitionTitle}`, 3, exhibitionId, 'generateTypeA'),
   ])
 
   const seenUrls = new Set<string>()
@@ -181,8 +193,8 @@ async function generateTypeA(exhibitionTitle: string, institutionName: string, a
 }
 
 // ─── Type B (show coverage only) / Type D (fallback) share this shape ─────────
-async function generateSingleSearchCoverage(query: string, cap: number, coverageType: CoverageType): Promise<CoverageItem[]> {
-  const results = await museumSearch(query, 5)
+async function generateSingleSearchCoverage(query: string, cap: number, coverageType: CoverageType, exhibitionId: string | null): Promise<CoverageItem[]> {
+  const results = await museumSearch(query, 5, exhibitionId, 'generateSingleSearchCoverage')
   const seenUrls = new Set<string>()
   const items: CoverageItem[] = []
   for (const r of results.filter(isValidResult)) {
@@ -198,9 +210,10 @@ async function generateSingleSearchCoverage(query: string, cap: number, coverage
 async function generateTypeCSmall(
   exhibitionTitle: string,
   institutionName: string,
-  artistNames: string[]
+  artistNames: string[],
+  exhibitionId: string | null
 ): Promise<CoverageItem[]> {
-  const showResults = await museumSearch(`${exhibitionTitle} ${institutionName} review`, 5)
+  const showResults = await museumSearch(`${exhibitionTitle} ${institutionName} review`, 5, exhibitionId, 'generateTypeCSmall')
   const seenUrls = new Set<string>()
   const showItems: CoverageItem[] = []
 
@@ -212,7 +225,7 @@ async function generateTypeCSmall(
 
   const artistsToSearch = artistNames.slice(0, 4)
   const perArtistResults = await Promise.all(
-    artistsToSearch.map((artist) => museumSearch(`${artist} interview profile`, 5))
+    artistsToSearch.map((artist) => museumSearch(`${artist} interview profile`, 5, exhibitionId, 'generateTypeCSmall'))
   )
 
   const perArtistItems: CoverageItem[] = []
@@ -240,9 +253,10 @@ async function generateTypeCSmall(
 async function generateTypeCLarge(
   exhibitionTitle: string,
   institutionName: string,
-  artistNames: string[]
+  artistNames: string[],
+  exhibitionId: string | null
 ): Promise<CoverageItem[]> {
-  const showResults = await museumSearch(`${exhibitionTitle} ${institutionName} review`, 5)
+  const showResults = await museumSearch(`${exhibitionTitle} ${institutionName} review`, 5, exhibitionId, 'generateTypeCLarge')
   const sortedShowResults = showResults
     .filter(isValidResult)
     .sort((a, b) => publicationImportanceRank(a.url) - publicationImportanceRank(b.url))
@@ -264,7 +278,7 @@ async function generateTypeCLarge(
         console.log(`Museum Type C-Large: cap reached, skipping remaining artists`)
         break
       }
-      const results = await museumSearch(`${artist} interview profile`, 5)
+      const results = await museumSearch(`${artist} interview profile`, 5, exhibitionId, 'generateTypeCLarge')
       const best = results
         .filter(isValidResult)
         .sort((a, b) => publicationImportanceRank(a.url) - publicationImportanceRank(b.url))
@@ -287,26 +301,27 @@ export interface MuseumCoverageResult {
 export async function generateMuseumCoverage(
   exhibitionTitle: string,
   institutionName: string,
-  artistNames: string[]
+  artistNames: string[],
+  exhibitionId: string | null
 ): Promise<MuseumCoverageResult> {
   const classification = await classifyMuseumShow(artistNames)
   let coverage: CoverageItem[]
 
   switch (classification.type) {
     case 'type_a':
-      coverage = await generateTypeA(exhibitionTitle, institutionName, artistNames[0])
+      coverage = await generateTypeA(exhibitionTitle, institutionName, artistNames[0], exhibitionId)
       break
     case 'type_b':
-      coverage = await generateSingleSearchCoverage(`${exhibitionTitle} ${institutionName}`, 2, 'show_coverage')
+      coverage = await generateSingleSearchCoverage(`${exhibitionTitle} ${institutionName}`, 2, 'show_coverage', exhibitionId)
       break
     case 'type_c_small':
-      coverage = await generateTypeCSmall(exhibitionTitle, institutionName, artistNames)
+      coverage = await generateTypeCSmall(exhibitionTitle, institutionName, artistNames, exhibitionId)
       break
     case 'type_c_large':
-      coverage = await generateTypeCLarge(exhibitionTitle, institutionName, artistNames)
+      coverage = await generateTypeCLarge(exhibitionTitle, institutionName, artistNames, exhibitionId)
       break
     case 'type_d':
-      coverage = await generateSingleSearchCoverage(`${exhibitionTitle} ${institutionName}`, 2, 'general')
+      coverage = await generateSingleSearchCoverage(`${exhibitionTitle} ${institutionName}`, 2, 'general', exhibitionId)
       break
   }
 
@@ -330,10 +345,10 @@ export async function generateMuseumCoverage(
 // then ranked by publication importance so the strongest outlet leads.
 const FAIR_COVERAGE_CAP = 5
 
-export async function generateFairCoverage(fairName: string): Promise<CoverageItem[]> {
+export async function generateFairCoverage(fairName: string, exhibitionId: string | null): Promise<CoverageItem[]> {
   const [reviews, nyc] = await Promise.all([
-    museumSearch(`${fairName} review`, 5),
-    museumSearch(`${fairName} NYC`, 5),
+    museumSearch(`${fairName} review`, 5, exhibitionId, 'generateFairCoverage'),
+    museumSearch(`${fairName} NYC`, 5, exhibitionId, 'generateFairCoverage'),
   ])
 
   const seenUrls = new Set<string>()

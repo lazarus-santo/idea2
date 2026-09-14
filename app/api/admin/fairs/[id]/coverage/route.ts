@@ -38,7 +38,7 @@ export async function POST(
   const exhibitionId = (inst as any).venues?.[0]?.exhibitions?.[0]?.id
   if (!exhibitionId) return NextResponse.json({ error: 'Fair has no exhibition row to attach coverage to' }, { status: 409 })
 
-  const coverage = await generateFairCoverage(inst.name as string)
+  const coverage = await generateFairCoverage(inst.name as string, exhibitionId)
 
   // preread_type is re-asserted rather than assumed: it is the gate that keeps
   // Agent 2's gallery preread path away from this row.

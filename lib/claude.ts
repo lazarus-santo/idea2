@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
+import { loggedExaSearch } from './exa-log'
 import type { ExhibitionRaw, Preread, CoverageItem, ExhibitionLink, ExhibitionDetailExtracted } from './types'
 
 const anthropic = new Anthropic({
@@ -460,6 +461,13 @@ interface PoolResult {
   title: string | null
   url: string
   publishedDate?: string
+  // Exa's own response shape (confirmed live) — present when the source page
+  // exposes byline metadata, absent otherwise. Was never declared here even
+  // though museum-coverage.ts's parallel MuseumSearchResult type already
+  // captures the identical field from the identical API; every construction
+  // site below spreads the raw Exa object (`{ ...r, ... }`), so declaring it
+  // here is sufficient to carry it through — no reshaping needed elsewhere.
+  author?: string
   highlights: string[]
   image?: string
   contentPriority: 0 | 1 | 2
@@ -475,13 +483,19 @@ function sortByTierAndRecency<T extends { url: string; publishedDate?: string }>
   })
 }
 
-function toPrereadRow(r: PoolResult & { title: string }): PrereadRow {
+// `artistName` is optional and absent on show-review results (no single artist is
+// bound to a whole-show search) — mirrors museum-coverage.ts's toCoverageItem, which
+// takes the same null-for-show/set-for-per-artist artistName parameter.
+function toPrereadRow(r: PoolResult & { title: string; artistName?: string | null }): PrereadRow {
   return {
     article_title: r.title,
     publication: publicationFromUrl(r.url),
     article_url: r.url,
     summary: r.highlights?.[0] ?? null,
     thumbnail_url: r.image ?? null,
+    author: r.author ?? null,
+    published_date: r.publishedDate ?? null,
+    artist_name: r.artistName ?? null,
   }
 }
 
@@ -507,7 +521,8 @@ async function searchShowReview(
   wantCount: number,
   minDomainFilteredResults: number,
   pressRelease: string | null,
-  venueDomain: string | null
+  venueDomain: string | null,
+  exhibitionId: string | null
 ): Promise<(PoolResult & { title: string })[]> {
   const query = `${showTitle} ${venueName} review exhibition 2025 OR 2026`
 
@@ -517,22 +532,22 @@ async function searchShowReview(
   const isValidCandidate = (r: PoolResult): r is PoolResult & { title: string } =>
     isValid(r) && !isSelfSourcedByVenue(r.url, venueDomain)
 
-  const filtered = await exa.search(query, {
+  const filtered = await loggedExaSearch(exa, query, {
     type: 'auto',
     numResults: 5,
     includeDomains: EXA_QUERYABLE_TIER_2_DOMAINS,
     contents: { highlights: true },
-  }).catch(() => ({ results: [] as unknown[] }))
+  }, { exhibitionId, functionName: 'searchShowReview' })
 
   let candidates = sortByTierAndRecency((filtered.results as unknown as PoolResult[]).filter(isValidCandidate))
 
   if (candidates.length < minDomainFilteredResults) {
     console.log(`Exa show-review [${showTitle}]: only ${candidates.length} domain-filtered result(s) (need ${minDomainFilteredResults}) — retrying without domain filter`)
-    const unfiltered = await exa.search(query, {
+    const unfiltered = await loggedExaSearch(exa, query, {
       type: 'auto',
       numResults: 5,
       contents: { highlights: true },
-    }).catch(() => ({ results: [] as unknown[] }))
+    }, { exhibitionId, functionName: 'searchShowReview' })
 
     const seen = new Set(candidates.map((r) => r.url))
     const extra = (unfiltered.results as unknown as PoolResult[]).filter(isValidCandidate).filter((r) => !seen.has(r.url))
@@ -562,17 +577,18 @@ async function searchArtistProfile(
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   disambiguator?: string,
   sourceText?: string | null,
-  venueDomain?: string | null
+  venueDomain?: string | null,
+  exhibitionId?: string | null
 ): Promise<(PoolResult & { title: string }) | null> {
   const query = disambiguator
     ? `${artistName} ${disambiguator} artist interview profile`
     : `${artistName} artist interview profile`
 
-  const results = await exa.search(query, {
+  const results = await loggedExaSearch(exa, query, {
     type: 'auto',
     numResults: 5,
     contents: { highlights: true },
-  }).catch(() => ({ results: [] as unknown[] }))
+  }, { exhibitionId: exhibitionId ?? null, functionName: 'searchArtistProfile' })
 
   // Self-sourced checks (a) and (b) — same "reject before any Claude call" placement
   // as isValid/isAboutArtist right next to them, not a separate pass afterward.
@@ -736,22 +752,28 @@ async function orderArtistsBySearchPriority(artistNames: string[]): Promise<stri
 // per-artist results are trimmed worst-tier-first.
 async function generateSmallGroupPrereads(
   exa: Exa,
-  exhibition: ExhibitionRaw & { venue_name: string },
+  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null },
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   context: Map<string, string>,
   bios: Map<string, string>,
   venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain)
+  const exhibitionId = exhibition.exhibition_id ?? null
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId)
 
+  // Zipped with the artist name here, before Promise.all resolves — this is the only
+  // point where "which artist produced this result" and the result itself are both in
+  // scope together; once results flatten into perArtist/combined below, only the
+  // artistName carried on each object survives.
   const perArtistResults = await Promise.all(
-    exhibition.artists.map((artist) =>
-      searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain)
-    )
+    exhibition.artists.map(async (artist) => {
+      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain, exhibitionId)
+      return result ? { ...result, artistName: artist } : null
+    })
   )
 
   const seenUrls = new Set(showReview.map((r) => r.url))
-  const perArtist: (PoolResult & { title: string })[] = []
+  const perArtist: (PoolResult & { title: string; artistName: string })[] = []
   for (const result of perArtistResults) {
     if (!result || seenUrls.has(result.url)) continue
     seenUrls.add(result.url)
@@ -774,16 +796,17 @@ async function generateSmallGroupPrereads(
 // so searches never run for every artist in a large show.
 async function generateLargeGroupPrereads(
   exa: Exa,
-  exhibition: ExhibitionRaw & { venue_name: string },
+  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null },
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   context: Map<string, string>,
   bios: Map<string, string>,
   venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release, venueDomain)
+  const exhibitionId = exhibition.exhibition_id ?? null
+  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release, venueDomain, exhibitionId)
 
   const seenUrls = new Set(showReview.map((r) => r.url))
-  const rows: (PoolResult & { title: string })[] = [...showReview]
+  const rows: (PoolResult & { title: string; artistName?: string })[] = [...showReview]
 
   if (rows.length < 5) {
     const orderedArtists = await orderArtistsBySearchPriority(exhibition.artists)
@@ -792,11 +815,11 @@ async function generateLargeGroupPrereads(
         console.log(`Exa per-artist [Large Group]: cap reached, skipping remaining artists (${orderedArtists.slice(orderedArtists.indexOf(artist)).join(', ')})`)
         break
       }
-      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain)
+      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain, exhibitionId)
       console.log(`Exa per-artist [Large Group / ${artist}]:`, result ? { title: result.title, url: result.url } : 'no valid result')
       if (result && !seenUrls.has(result.url)) {
         seenUrls.add(result.url)
-        rows.push(result)
+        rows.push({ ...result, artistName: artist })
       }
     }
   }
@@ -806,11 +829,12 @@ async function generateLargeGroupPrereads(
 }
 
 export async function generatePrereads(
-  exhibition: ExhibitionRaw & { venue_name: string; venue_url?: string | null }
+  exhibition: ExhibitionRaw & { venue_name: string; venue_url?: string | null; exhibition_id?: string | null }
 ): Promise<GeneratePrereadsResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
   const showTitle = exhibition.show_title
   const showType = classifyGalleryShow(exhibition.artists.length)
+  const exhibitionId = exhibition.exhibition_id ?? null
 
   // This exhibition's own venue domain — computed once, threaded down to
   // searchShowReview/searchArtistProfile for the mechanical self-sourced check (a).
@@ -851,41 +875,41 @@ export async function generatePrereads(
   const artistQueryWithContext = disambiguator ? `${artistQuery} ${disambiguator}` : artistQuery
 
   // S1: broad recent coverage — not limited to interviews so reviews, essays, and features all qualify
-  const search1 = await exa.search(`${artistQueryWithContext} artist`, {
+  const search1 = await loggedExaSearch(exa, `${artistQueryWithContext} artist`, {
     type: 'auto',
     numResults: 5,
     startPublishedDate: '2024-01-01',
     contents: { highlights: true },
-  })
-  console.log(`Exa S1 [${artistQueryWithContext}]:`, search1.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+  }, { exhibitionId, functionName: 'S1' })
+  console.log(`Exa S1 [${artistQueryWithContext}]:`, (search1.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
 
-  const search2 = await exa.search(`${artistQueryWithContext} artwork practice critical essay`, {
+  const search2 = await loggedExaSearch(exa, `${artistQueryWithContext} artwork practice critical essay`, {
     type: 'auto',
     numResults: 5,
     startPublishedDate: '2022-01-01',
     contents: { highlights: true },
-  })
-  console.log(`Exa S2 [body of work / ${artistQueryWithContext}]:`, search2.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+  }, { exhibitionId, functionName: 'S2' })
+  console.log(`Exa S2 [body of work / ${artistQueryWithContext}]:`, (search2.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
 
   // S3: explicitly target Tier 1 art press + major general press — ensures The Art Newspaper,
   // Artforum, Frieze, Hyperallergic etc. are always in the candidate pool
-  const search3 = await exa.search(`${artistQueryWithContext} artist`, {
+  const search3 = await loggedExaSearch(exa, `${artistQueryWithContext} artist`, {
     type: 'auto',
     numResults: 5,
     startPublishedDate: '2024-01-01',
     includeDomains: [...TIER_1_DOMAINS, 'newyorker.com', 'ft.com', 'vulture.com', 'nymag.com'],
     contents: { highlights: true },
-  })
-  console.log(`Exa S3 [art + major press / ${artistQueryWithContext}]:`, search3.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+  }, { exhibitionId, functionName: 'S3' })
+  console.log(`Exa S3 [art + major press / ${artistQueryWithContext}]:`, (search3.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
 
   const seenUrls = new Set<string>()
   const pool: PoolResult[] = []
 
-  const addToPool = (results: typeof search1.results, contentPriority: 0 | 1 | 2) => {
-    for (const r of results) {
+  const addToPool = (results: unknown[], contentPriority: 0 | 1 | 2) => {
+    for (const r of results as unknown as PoolResult[]) {
       if (seenUrls.has(r.url)) continue
       seenUrls.add(r.url)
-      pool.push({ ...(r as unknown as PoolResult), contentPriority })
+      pool.push({ ...r, contentPriority })
     }
   }
 
@@ -900,12 +924,12 @@ export async function generatePrereads(
   // even though a neutrally-worded query surfaces them immediately. Only runs when a real
   // disambiguator was found, so standard single-domain visual artists are unaffected.
   if (disambiguator) {
-    const search5 = await exa.search(`${artistQuery} ${disambiguator} interview profile`, {
+    const search5 = await loggedExaSearch(exa, `${artistQuery} ${disambiguator} interview profile`, {
       type: 'auto',
       numResults: 5,
       contents: { highlights: true },
-    })
-    console.log(`Exa S5 [broader recall / ${artistQuery} ${disambiguator}]:`, search5.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+    }, { exhibitionId, functionName: 'S5' })
+    console.log(`Exa S5 [broader recall / ${artistQuery} ${disambiguator}]:`, (search5.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
     addToPool(search5.results, 1)
   }
 
@@ -915,13 +939,13 @@ export async function generatePrereads(
   let valid = pool.filter(isValidAndRelevant)
 
   if (valid.length < 2) {
-    const search4 = await exa.search(`${artistQueryWithContext} art review profile`, {
+    const search4 = await loggedExaSearch(exa, `${artistQueryWithContext} art review profile`, {
       type: 'auto',
       numResults: 5,
       startPublishedDate: '2023-01-01',
       contents: { highlights: true },
-    })
-    console.log(`Exa S4 [fallback]:`, search4.results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+    }, { exhibitionId, functionName: 'S4' })
+    console.log(`Exa S4 [fallback]:`, (search4.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
     addToPool(search4.results, 2)
     valid = pool.filter(isValidAndRelevant)
   } else {

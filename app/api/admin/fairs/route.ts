@@ -161,7 +161,7 @@ export async function POST(request: NextRequest) {
   let coverage: Awaited<ReturnType<typeof generateFairCoverage>> = []
   if (body.generate_coverage) {
     try {
-      coverage = await generateFairCoverage(name)
+      coverage = await generateFairCoverage(name, ex.id)
       if (coverage.length > 0) {
         await db.from('prereads').insert(coverage.map((c) => coverageItemToPrereadRow(ex.id, c)))
       }

@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
       .map((r: { artists: { name: string } | null }) => r.artists?.name)
       .filter(Boolean) as string[]
 
-    const raw: ExhibitionRaw & { venue_name: string; venue_url: string } = {
+    const raw: ExhibitionRaw & { venue_name: string; venue_url: string; exhibition_id: string } = {
       show_title: ex.show_title,
       artists,
       start_date: ex.start_date,
@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
       image_url: ex.image_url,
       venue_name: venueRaw.name,
       venue_url: venueRaw.exhibitions_url,
+      exhibition_id: ex.id,
     }
 
     await db.from('prereads').delete().eq('exhibition_id', ex.id)

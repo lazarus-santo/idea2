@@ -97,6 +97,7 @@ export async function auditAndRepairPrereads(exhibitionIds?: string[], errors: A
           image_url: raw.image_url ?? null,
           venue_name: raw.venues.name,
           venue_url: raw.venues.exhibitions_url,
+          exhibition_id: raw.id,
         })
 
         // Generation now enforces a quality gate, so an exhibition can legitimately sit
@@ -171,7 +172,7 @@ export async function repairZeroPrereads(errors: AgentRunError[] = []): Promise<
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const artists = (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[]
 
-    const exhibitionRaw: ExhibitionRaw & { venue_name: string; venue_url: string } = {
+    const exhibitionRaw: ExhibitionRaw & { venue_name: string; venue_url: string; exhibition_id: string } = {
       show_title: raw.show_title,
       artists,
       start_date: raw.start_date,
@@ -181,6 +182,7 @@ export async function repairZeroPrereads(errors: AgentRunError[] = []): Promise<
       image_url: raw.image_url ?? null,
       venue_name: raw.venues.name,
       venue_url: raw.venues.exhibitions_url,
+      exhibition_id: raw.id,
     }
 
     try {
