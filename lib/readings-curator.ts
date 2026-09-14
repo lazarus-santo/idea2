@@ -142,112 +142,17 @@ export async function fetchOgImage(url: string): Promise<string | null> {
   }
 }
 
-// ─── Coverage-eligible domains for exhibition cross-linking ──────────────────
-
-const COVERAGE_ELIGIBLE_DOMAINS = new Set([
-  'artforum.com', 'hyperallergic.com', 'nytimes.com', 'artnews.com',
-  'theartnewspaper.com', 'news.artnet.com', 'newyorker.com', 'frieze.com',
-  'brooklynrail.org', 'ft.com',
-])
-
-function articleDomain(url: string): string {
-  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
-}
-
-function isCoverageEligible(url: string): boolean {
-  const host = articleDomain(url)
-  return [...COVERAGE_ELIGIBLE_DOMAINS].some((d) => host === d || host.endsWith(`.${d}`))
-}
-
-// ─── Tag a reading against institutions and artists (zero API cost) ───────────
-
-export async function tagReading(
-  readingId: string,
-  headline: string,
-  summary: string | null,
-  articleUrl: string
-): Promise<number> {
-  const db = getSupabaseAdmin()
-  const text = [headline, summary].filter(Boolean).join(' ').toLowerCase()
-  const today = new Date().toISOString().split('T')[0]
-
-  const [{ data: institutions }, { data: artists }] = await Promise.all([
-    db.from('institutions').select('id, name'),
-    db.from('artists').select('id, name'),
-  ])
-
-  const tags: Array<{ reading_id: string; entity_type: string; entity_id: string; exhibition_id?: string }> = []
-  const matchedArtistIds: string[] = []
-
-  for (const v of institutions ?? []) {
-    if (v.name.length >= 4 && text.includes(v.name.toLowerCase())) {
-      tags.push({ reading_id: readingId, entity_type: 'gallery', entity_id: v.id as string })
-    }
-  }
-
-  for (const a of artists ?? []) {
-    const lower = a.name.toLowerCase()
-    const parts = lower.split(/\s+/)
-    const lastName = parts[parts.length - 1]
-    const matched =
-      text.includes(lower) || (lastName.length >= 5 && text.includes(lastName))
-    if (matched) matchedArtistIds.push(a.id as string)
-  }
-
-  const exhibitionCoverageLinks: string[] = []
-
-  if (matchedArtistIds.length > 0) {
-    const { data: exhibitionLinks } = await db
-      .from('exhibition_artists')
-      .select('artist_id, exhibition_id, exhibitions!inner(start_date, end_date, status)')
-      .in('artist_id', matchedArtistIds)
-
-    const artistExhibitionMap = new Map<string, string>()
-    for (const link of exhibitionLinks ?? []) {
-      const ex = link.exhibitions as unknown as { start_date: string | null; end_date: string | null; status: string } | null
-      if (
-        ex?.status === 'published' &&
-        ex.start_date && ex.end_date &&
-        ex.start_date <= today && ex.end_date >= today &&
-        !artistExhibitionMap.has(link.artist_id as string)
-      ) {
-        artistExhibitionMap.set(link.artist_id as string, link.exhibition_id as string)
-      }
-    }
-
-    for (const artistId of matchedArtistIds) {
-      const exhibitionId = artistExhibitionMap.get(artistId)
-      tags.push({
-        reading_id: readingId,
-        entity_type: 'artist',
-        entity_id: artistId,
-        ...(exhibitionId ? { exhibition_id: exhibitionId } : {}),
-      })
-      if (exhibitionId) exhibitionCoverageLinks.push(exhibitionId)
-    }
-  }
-
-  if (tags.length > 0) {
-    const { error } = await db.from('readings_tags').insert(tags)
-    if (error) {
-      console.error(`readings_tags insert failed for reading ${readingId}:`, error.message)
-      return 0
-    }
-  }
-
-  // Cross-link to exhibition_coverage when the article comes from a coverage-eligible publication
-  if (exhibitionCoverageLinks.length > 0 && isCoverageEligible(articleUrl)) {
-    const dedupedExhibitionIds = [...new Set(exhibitionCoverageLinks)]
-    for (const exhibitionId of dedupedExhibitionIds) {
-      await db.from('exhibition_coverage').upsert(
-        { exhibition_id: exhibitionId, reading_id: readingId, source: 'agent3' },
-        { onConflict: 'exhibition_id,reading_id' }
-      )
-    }
-  }
-
-  return tags.length
-}
+// ─── Entity tagging (removed 2026-09-14) ─────────────────────────────────────
+//
+// tagReading() used to substring-match every reading's headline and summary
+// against the institutions and artists tables, writing readings_tags rows and,
+// for a fixed list of publications, exhibition_coverage rows with
+// source='agent3'. It was removed rather than repaired. A manual audit of all
+// 222 tags it had produced found 77% named the wrong artist or institution:
+// "Various Artists" matched any article containing "artists", and "Jeff Power"
+// matched "powerful". None of its 43 exhibition links pointed to an article
+// about that exhibition. Rows written before the removal are still in the
+// database; nothing in this pipeline writes to either table any more.
 
 // ─── Stage 2: Claude relevance batch check ────────────────────────────────────
 
@@ -495,7 +400,6 @@ const TOP_STORY_MIN_RELEVANCE = 0.8
 
 export interface CurationResult {
   written: number
-  tagged: number
   classified: number
   pruned: number
   topStories: number
@@ -563,7 +467,7 @@ export async function curateReadings(
   if (!publications || publications.length === 0) {
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
     return {
-      written: 0, tagged: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0, staleSkipped: 0,
+      written: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0, staleSkipped: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -611,7 +515,7 @@ export async function curateReadings(
   if (candidates.length === 0) {
     const pruned = await pruneOldReadings()
     return {
-      written: 0, tagged: 0, classified: 0, pruned, topStories: 0, candidatesConsidered: 0, staleSkipped,
+      written: 0, classified: 0, pruned, topStories: 0, candidatesConsidered: 0, staleSkipped,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -638,7 +542,6 @@ export async function curateReadings(
 
   let written = 0
   let topStories = 0
-  let tagged = 0
   let classified = 0
   const byCategory = emptyCategoryBreakdown()
   const byRiverGroup = emptyRiverGroupBreakdown()
@@ -674,7 +577,7 @@ export async function curateReadings(
       pubTier === 't1' &&
       (cls?.art_relevance_score ?? 0) >= TOP_STORY_MIN_RELEVANCE
 
-    const { data: inserted, error } = await db
+    const { error } = await db
       .from('readings')
       .insert({
         publication_id:            pubId,
@@ -720,17 +623,14 @@ export async function curateReadings(
       topStories++
       console.log(`Top Story: ${item.title} (${cls?.category}, relevance ${cls?.art_relevance_score})`)
     }
-
-    const tagCount = await tagReading(inserted.id, item.title, plainSummary, item.link)
-    if (tagCount > 0) tagged++
   }
 
   // Pruning runs last, and now actually removes things: with top_story no longer
   // set on nearly every row, the 7-day retention policy applies again.
   const pruned = await pruneOldReadings()
-  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, tagged: ${tagged}, pruned: ${pruned}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
+  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, pruned: ${pruned}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
-    written, tagged, classified, pruned, topStories, candidatesConsidered: candidates.length, staleSkipped,
+    written, classified, pruned, topStories, candidatesConsidered: candidates.length, staleSkipped,
     byCategory, byRiverGroup, topStoryCandidates, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
@@ -753,7 +653,6 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
       itemsFailed: curation.errors.length,
       errors: curation.errors,
       summary: {
-        tagged: curation.tagged,
         classified: curation.classified,
         pruned: curation.pruned,
         topStories: curation.topStories,
