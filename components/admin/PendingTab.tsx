@@ -506,9 +506,11 @@ function ScrapeFailed({ venues, onRetried }: { venues: ScrapeFailedVenue[]; onRe
   async function retry(id: string) {
     setRetrying((prev) => ({ ...prev, [id]: true }))
     try {
-      const res = await adminFetch(`/api/admin/venues/${id}/retry-scrape`, { method: 'POST' })
+      // Waits for the whole scrape — a few minutes for most venues.
+      const res = await adminFetch(`/api/admin/venues/${id}/scrape`, { method: 'POST' })
       if (!res.ok) throw new Error()
-      setMsgs((prev) => ({ ...prev, [id]: 'Retry started' }))
+      const data = await res.json().catch(() => ({}))
+      setMsgs((prev) => ({ ...prev, [id]: data.failure_reason ? `Failed: ${data.failure_reason}` : 'Scrape finished' }))
       setTimeout(() => {
         setMsgs((prev) => ({ ...prev, [id]: '' }))
         onRetried(id)
@@ -542,7 +544,7 @@ function ScrapeFailed({ venues, onRetried }: { venues: ScrapeFailedVenue[]; onRe
             {retrying[v.id] ? 'Retrying…' : 'Retry Scrape'}
           </button>
           {msgs[v.id] && (
-            <span style={{ fontSize: 11, color: msgs[v.id] === 'Retry started' ? '#1a5c2a' : '#dc2626' }}>
+            <span style={{ fontSize: 11, color: msgs[v.id] === 'Scrape finished' ? '#1a5c2a' : '#dc2626' }}>
               {msgs[v.id]}
             </span>
           )}

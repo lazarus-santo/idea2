@@ -103,13 +103,15 @@ function Agent3Breakdown({ summary }: { summary: Agent3Summary }) {
 
 type AgentRunsMap = Record<AgentName, RunRow[]>
 
-// All four trigger routes require the admin credential; adminFetch attaches it,
-// so there is no longer a per-agent flag for it.
-const AGENT_META: Record<AgentName, { title: string; description: string; triggerPath: string }> = {
+// Every trigger route requires the admin credential; adminFetch attaches it,
+// so there is no longer a per-agent flag for it. A null triggerPath means the
+// agent has no Run Now button: Agent 1 runs only on its 15-minute queue, and a
+// single venue is scraped on demand from Scrape Issues.
+const AGENT_META: Record<AgentName, { title: string; description: string; triggerPath: string | null }> = {
   agent1: {
     title: 'Agent 1 — Exhibition Scraper',
     description: 'Scrapes venue pages, extracts shows, writes to Supabase',
-    triggerPath: '/api/scrape',
+    triggerPath: null,
   },
   agent2: {
     title: 'Agent 2 — Preread & Audit',
@@ -131,7 +133,7 @@ const AGENT_META: Record<AgentName, { title: string; description: string; trigge
 const AGENT_ORDER: AgentName[] = ['agent1', 'agent2', 'agent3_daily', 'agent3_hourly']
 
 const AGENT_LOGIC: Record<AgentName, string> = {
-  agent1: `Once a day, checks which venues are due for a refresh (based on each venue's own check-back schedule) and re-scrapes their exhibition listing pages. It renders each page, pulls out show titles, dates, artists, and images using Claude, then verifies the extracted details actually appear on the page so hallucinated results get thrown out. Shows outside NYC, already closed, or belonging to the venue's own site (not the listing) are filtered out before anything is saved. New gallery shows automatically get 2+ editorial article prereads generated in the same pass; museum shows are skipped for automatic prereads. Venues that repeatedly fail to scrape — bot-blocked, broken pages, or zero exhibitions found after retrying — get flagged for manual entry instead of continuing to retry automatically.`,
+  agent1: `Every 15 minutes, scrapes the venues due that day. Each venue has its own fixed day of the week, so the roster is spread evenly across the week instead of piling up on one day. Venues are scraped one at a time, and a run stops before starting a venue that likely won't finish in the time left. For each venue it renders the exhibitions page, pulls out show titles, dates, artists, and images using Claude, then verifies the extracted details actually appear on the page so hallucinated results get thrown out. Shows outside NYC or already closed are filtered out before anything is saved. New gallery shows get editorial prereads in the same pass; museum and fair shows get press coverage links. A venue that fails to scrape is retried automatically about 6 hours later, up to 3 attempts in a row; after the third failure it stops retrying and appears on the Scrape Issues tab. To scrape one venue right away, use Retry Scrape on that tab.`,
   agent2: `Looks at every published gallery exhibition (museums are not covered by this agent). For each one, it checks the exhibition's editorial prereads: if an article is hosted on the gallery's own website rather than independent press, it's removed, since that doesn't count as real editorial coverage. If fewer than 2 independent articles remain after that cleanup, it asks Claude to search for and generate fresh prereads to fill the gap.`,
   agent3_daily: `Once a day, pulls the RSS feeds for all approved, non-hourly art publications, filters out anything that doesn't mention art/gallery/museum keywords, then asks Claude to judge which remaining articles are genuinely relevant to the NYC art world. Relevant articles get classified into one of seven categories (breaking news, institutional news, art market, interview, opinion, show review, or show roundup), scored for art and NYC relevance, flagged for major-artist/significant-announcement status, and saved to the Readings feed — duplicates are skipped automatically. Show roundups with no NYC angle at all are excluded outright. Articles are also scanned for mentions of known artists or venues so they can be cross-linked to related exhibition pages. Readings older than 7 days are pruned unless they've been marked a Top Story.`,
   agent3_hourly: `Runs the same pipeline as Agent 3 Daily, but every hour and scoped only to Tier 1 publications — the highest-priority art outlets. Any article that meets the Top Stories eligibility rules for its category (e.g. breaking news, a significant institutional announcement, a major-artist interview) is marked as a Top Story immediately, without waiting for the separate cross-source verification step that other articles go through.`,
@@ -142,6 +144,7 @@ const STATUS_COLORS: Record<string, string> = {
   partial: '#FF9800',
   failed: '#F44336',
   running: '#2196F3',
+  timed_out: '#991b1b',
 }
 
 function statusColor(status: string | null): string {
@@ -287,13 +290,13 @@ export default function DashboardTab({ onNavigate }: { onNavigate: (tab: NavTab)
   }, [fetchAll, triggering, status])
 
   const runNow = useCallback(async (agent: AgentName) => {
-    if (triggering.has(agent)) return
+    const { triggerPath } = AGENT_META[agent]
+    if (!triggerPath || triggering.has(agent)) return
     triggeredAtRef.current[agent] = Date.now()
     setTriggering((prev) => new Set(prev).add(agent))
 
-    const meta = AGENT_META[agent]
     try {
-      await adminFetch(meta.triggerPath, { method: 'POST' })
+      await adminFetch(triggerPath, { method: 'POST' })
     } catch (err) {
       console.error(`Failed to trigger ${agent}:`, err)
     }
@@ -402,20 +405,22 @@ export default function DashboardTab({ onNavigate }: { onNavigate: (tab: NavTab)
                 <Agent3Breakdown summary={history[0].summary} />
               )}
 
-              <button
-                onClick={() => runNow(agent)}
-                disabled={isRunning}
-                style={{
-                  fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
-                  textTransform: 'uppercase', padding: '7px 14px',
-                  background: isRunning ? 'rgba(0,0,0,0.15)' : '#000',
-                  color: isRunning ? 'rgba(0,0,0,0.4)' : '#fff',
-                  border: 'none', borderRadius: 999, cursor: isRunning ? 'default' : 'pointer',
-                  alignSelf: 'flex-start',
-                }}
-              >
-                {isRunning ? 'Running…' : 'Run Now'}
-              </button>
+              {meta.triggerPath && (
+                <button
+                  onClick={() => runNow(agent)}
+                  disabled={isRunning}
+                  style={{
+                    fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
+                    textTransform: 'uppercase', padding: '7px 14px',
+                    background: isRunning ? 'rgba(0,0,0,0.15)' : '#000',
+                    color: isRunning ? 'rgba(0,0,0,0.4)' : '#fff',
+                    border: 'none', borderRadius: 999, cursor: isRunning ? 'default' : 'pointer',
+                    alignSelf: 'flex-start',
+                  }}
+                >
+                  {isRunning ? 'Running…' : 'Run Now'}
+                </button>
+              )}
 
               {/* Run history timeline */}
               {history.length > 0 && (

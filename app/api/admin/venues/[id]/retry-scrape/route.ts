@@ -1,32 +1,16 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { scrapeInstitution, getVenueById } from '@/lib/scraper'
+import { NextResponse } from 'next/server'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
-// POST /api/admin/venues/[id]/retry-scrape — manually retry a failed or
-// manual-entry-flagged institution. Looked up directly by id (not filtered
-// through getActiveInstitutions) so manual_entry_required venues are reachable —
-// scrapeInstitution() itself decides whether to re-flag or clear it.
-export async function POST(request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// POST /api/admin/venues/[id]/retry-scrape — retired. It started a scrape in the
+// background and returned immediately, which on Vercel froze the scrape almost
+// as soon as it began, and it bypassed the queue's per-venue lock. Replaced by
+// POST /api/admin/venues/[id]/scrape, which waits for the result and shares
+// the lock. Kept as an explicit 410 so a leftover caller gets a reason.
+export async function POST(request: Request) {
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
-  const { id } = await params
-  const venue = await getVenueById(id)
-
-  if (!venue) {
-    return NextResponse.json({ error: 'Venue not found or inactive' }, { status: 404 })
-  }
-
-  // Fire-and-forget; caller gets immediate confirmation
-  Promise.resolve().then(async () => {
-    try {
-      const count = await scrapeInstitution(venue)
-      console.log(`Retry scrape ${venue.name}: ${count} exhibition(s)`)
-    } catch (err) {
-      console.error(`Retry scrape failed for ${venue.name}:`, err)
-    }
-  })
-
-  return NextResponse.json({ message: `Retry scrape started for ${venue.name}` })
+  return NextResponse.json(
+    { error: 'retry-scrape is retired — use POST /api/admin/venues/[id]/scrape.' },
+    { status: 410 }
+  )
 }

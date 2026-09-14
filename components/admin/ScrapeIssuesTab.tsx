@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, type CSSProperties } from 'react'
 import { adminFetch } from '@/lib/admin-fetch'
+import { ERROR_RETRY_COOLDOWN_MS, MAX_SCRAPE_FAILURES, type ScrapeStatus } from '@/lib/venue-scrape-schedule'
 
 type IssueVenue = {
   id: string
@@ -13,6 +14,8 @@ type IssueVenue = {
   scrape_failure_reason: string | null
   scrape_notes: string | null
   scrapable: boolean
+  scrape_status: ScrapeStatus
+  scrape_failures: number
 }
 
 type Institution = {
@@ -30,16 +33,34 @@ const REASON_LABELS: Record<string, string> = {
   bot_protected:         'Bot protection / CAPTCHA wall',
   zero_links_after_retry:'Zero exhibition links after retry',
   no_exhibitions_url:    'No exhibitions URL set for this venue',
+  timed_out:             'Scrape ran out of time and was stopped',
+  exception:             'Scrape crashed with an unexpected error',
 }
 
 function reasonLabel(venue: IssueVenue): string {
-  if (venue.manual_entry_required && venue.scrape_failure_reason) {
+  if ((venue.manual_entry_required || venue.scrape_failed) && venue.scrape_failure_reason) {
     return REASON_LABELS[venue.scrape_failure_reason] ?? venue.scrape_failure_reason
   }
   if (venue.scrape_failed && !venue.manual_entry_required) return 'Last scrape failed'
   if (venue.manual_entry_required) return 'Marked as manual entry'
   if (!venue.scrapable) return 'Excluded from scraping by you'
   return 'Unknown'
+}
+
+const COOLDOWN_HOURS = ERROR_RETRY_COOLDOWN_MS / 3_600_000
+
+function queueStatusLine(venue: IssueVenue): string | null {
+  switch (venue.scrape_status) {
+    case 'in_progress':
+      return 'Being scraped right now'
+    case 'error1':
+    case 'error2':
+      return `Failed ${venue.scrape_failures} of ${MAX_SCRAPE_FAILURES} times — retrying automatically about ${COOLDOWN_HOURS} hours after the last attempt`
+    case 'error3':
+      return `Failed ${MAX_SCRAPE_FAILURES} times in a row — automatic retries have stopped. Retry Scrape or Clear Issue to start again.`
+    default:
+      return null
+  }
 }
 
 // Most failures are zero_links_after_retry — the page loaded and nothing was
@@ -112,14 +133,22 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
     setMessages((prev) => ({ ...prev, [id]: msg }))
   }
 
+  // Waits for the scrape to finish, which takes a few minutes for most venues.
   async function retryScrape(venue: IssueVenue) {
-    setMsg(venue.id, 'Starting scrape...')
-    const res = await adminFetch(`/api/admin/venues/${venue.id}/retry-scrape`, { method: 'POST' })
-    if (res.ok) {
-      setMsg(venue.id, 'Scrape started in background')
-    } else {
-      setMsg(venue.id, 'Failed to start scrape')
+    setMsg(venue.id, 'Scraping — this can take several minutes...')
+    const res = await adminFetch(`/api/admin/venues/${venue.id}/scrape`, { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      setMsg(venue.id, data.error ?? 'Failed to scrape')
+      return
     }
+    await load()
+    setMsg(
+      venue.id,
+      data.failure_reason
+        ? `Scrape failed: ${REASON_LABELS[data.failure_reason] ?? data.failure_reason}`
+        : `Scrape finished — ${data.exhibitions_upserted ?? 0} exhibition(s) saved`
+    )
   }
 
   async function markManual(venue: IssueVenue) {
@@ -144,7 +173,11 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
       body: JSON.stringify({ manual_entry_required: false, scrape_failed: false, scrape_failure_reason: null }),
     })
     if (res.ok) {
+      const data = await res.json().catch(() => ({}))
       await load()
+      if (data.scrape_state === 'in_progress') {
+        setMsg(venue.id, 'Cleared — a scrape is running right now and will set the status when it finishes')
+      }
     } else {
       setMsg(venue.id, 'Failed to update')
     }
@@ -436,6 +469,11 @@ export default function ScrapeIssuesTab({ onCount }: { onCount?: (n: number) => 
           <p style={{ fontFamily: F, fontSize: 12, color: 'rgba(0,0,0,0.55)', margin: 0 }}>
             {reasonLabel(venue)}
           </p>
+          {queueStatusLine(venue) && (
+            <p style={{ fontFamily: F, fontSize: 12, color: venue.scrape_status === 'error3' ? '#991b1b' : 'rgba(0,0,0,0.55)', margin: 0 }}>
+              {queueStatusLine(venue)}
+            </p>
+          )}
           {venue.manual_entry_required && venue.scrape_failure_reason === 'zero_links_after_retry' && (
             <p style={{ fontFamily: F, fontSize: 12, color: '#b45309', margin: 0 }}>
               Nothing found on the page — often the shows sit behind a tab or on another URL.

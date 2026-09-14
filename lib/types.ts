@@ -1,4 +1,5 @@
 import type { InstitutionType } from './institution-types'
+import type { ScrapeStatus } from './venue-scrape-schedule'
 
 export type CoverageType = 'show_coverage' | 'artist_profile' | 'artist_interview' | 'past_show' | 'general'
 
@@ -11,10 +12,14 @@ export interface Preread {
   thumbnail_url: string | null
   summary: string | null
   created_at: string
-  // Museum/fair-coverage-only fields (migration_v35) — null/omitted on every
-  // gallery row generatePrereads() writes. Optional, not just nullable: gallery
-  // inserts never set these keys at all, rather than setting them to null
-  // explicitly.
+  // Added for museum/fair coverage (migration_v35). item_coverage_type is still
+  // museum/fair-only — gallery has no equivalent classification concept, so it
+  // stays null/omitted on every gallery row. artist_name, author, and
+  // published_date are no longer museum/fair-exclusive: toPrereadRow() now
+  // populates them from the same underlying Exa fields toCoverageItem() always
+  // has (artist_name only on per-artist gallery rows, not show-review rows,
+  // which — like museum/fair's own show-level searches — have no single bound
+  // artist to attach).
   artist_name?: string | null
   // Named item_coverage_type, not coverage_type — exhibitions.coverage_type is
   // the unrelated Type A/B/C-small/C-large/D classification tier.
@@ -174,6 +179,13 @@ export interface VenueRecord {
   /** Anchor-window size that last yielded location hints here. Null = never
    *  established, start the ladder at its first rung. */
   location_window_size?: number | null
+  /** Permanent weekly slot, 0=Sunday..6=Saturday in New York. Null = unassigned,
+   *  never queued. */
+  scrape_day_of_week?: number | null
+  /** Agent 1 queue state — rules in lib/venue-scrape-schedule.ts. */
+  scrape_status?: ScrapeStatus
+  scrape_status_changed_at?: string | null
+  scrape_failures?: number
 }
 
 export interface ExhibitionRaw {

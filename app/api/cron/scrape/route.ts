@@ -1,47 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { runAgent1, getInstitutionsDueForRefresh } from '@/lib/scraper'
+import { runAgent1 } from '@/lib/scraper'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 import { getSupabaseAdmin } from '@/lib/supabase'
 
-// GET /api/cron/scrape — drain slice: scrape venues whose check_back_date has passed
+// GET /api/cron/scrape — Agent 1's venue queue, every 15 minutes (vercel.json).
 //
-// There used to be a second, Monday-only variant of this cron
-// (?force=true, nulling check_back_date on every active venue at once) meant
-// to guarantee the whole roster got re-checked weekly. Removed entirely — it
-// made Mondays specifically process ~4x the venues of an ordinary tick (69-70
-// vs ~17), which is what pushed Monday runs into the 800s ceiling and drove
-// the 22-31% killed-run rate documented in the Agent 1 timing investigation.
-// It also wasn't fixing a real gap: every venue already gets check_back_date =
-// sevenDaysFromNow() after every scrape attempt (success or failure — see
-// scraper.ts), so each venue re-queues itself on its own 7-day cycle with no
-// help needed. The force pass never even reached the venues that genuinely
-// need attention (manual_entry_required=true ones are excluded from its query
-// the same way they're excluded from the ordinary drain) — its only effect was
-// re-synchronizing every healthy venue onto the same day, which is the
-// opposite of what a spread-out queue wants. Manual full-roster re-scrapes are
-// still available on demand via POST /api/scrape?force=true (the dashboard's
-// "Run Now" button) — that path is untouched, and is not this mechanism: it's
-// human-triggered with its own bounded budget, not an automatic weekly cron.
+// Each tick scrapes, one at a time, the venues due right now: those whose
+// weekly scrape_day_of_week is today in New York and whose check_back_date has
+// arrived, plus venues retrying after a failed attempt. It stops before any
+// venue whose estimated duration no longer fits in what is left of the
+// invocation. Rules: lib/venue-scrape-schedule.ts. Per-venue claims (the Run
+// Lock shared with POST /api/admin/venues/[id]/scrape): lib/venue-scrape-queue.ts.
 //
 // Called by Vercel Cron via Authorization: Bearer CRON_SECRET. Shares the agent
-// gate with the other four trigger routes, which also accepts x-admin-secret.
-// That is a deliberate widening: the previous inline check built
-// `Bearer ${process.env.CRON_SECRET}`, so an unset secret would have rejected
-// every legitimate cron call rather than failing loudly.
+// gate with the other trigger routes, which also accepts x-admin-secret.
 
-// Hard ceiling for the function. 800s is the Fluid-compute maximum on Vercel
-// Pro; on Hobby this is silently capped at 300s (and 60s without Fluid), which
-// is why the time budget below is expressed as a fraction rather than a
-// constant — a truncated slice is recoverable, a killed one is not.
+// Hard ceiling for the function: the Fluid-compute maximum on Vercel Pro. On
+// Hobby this is silently capped lower and the budget below would overrun it.
 export const maxDuration = 800
 
-// Stop *starting* venues at 70% of the ceiling. A venue takes 85–257s
-// (agent_runs, three real runs), so the worst case is 560s of budget plus a
-// 257s venue = 817s. That overruns 800s, so the budget is trimmed again below.
-const TIME_BUDGET_MS = 500_000 // 500s in, worst-case venue out = 757s < 800s
+// Venues may start only while their estimate fits in this. The last 60s are
+// held back for recording the final attempt and the run's completion.
+const VENUE_BUDGET_MS = maxDuration * 1000 - 60_000
 
 // A stale 'running' row should not block the queue forever — a function killed
-// by the platform never gets to write its completion.
+// by the platform never gets to write its completion. Same threshold as
+// SCRAPE_STALE_MS for a venue's in_progress claim.
 const LOCK_STALE_MS = maxDuration * 1000 + 60_000
 
 async function anotherRunIsActive(): Promise<boolean> {
@@ -61,37 +45,28 @@ async function anotherRunIsActive(): Promise<boolean> {
 export async function GET(request: NextRequest) {
   if (!isAuthorizedAgentRequest(request)) return unauthorized()
 
-  // The drain cron fires every 15 minutes but a slice can run for 13, so
-  // invocations would otherwise overlap and scrape the same venues twice.
+  // Run-level guard, kept alongside the venue claims: it stops a duplicate cron
+  // delivery from doubling Browserbase concurrency. It reads then acts, so two
+  // simultaneous deliveries can both pass it — the venue claims are what
+  // guarantee neither scrapes a venue the other holds.
   if (await anotherRunIsActive()) {
     return NextResponse.json({ message: 'Agent 1 already running — skipping this tick', skipped: true })
   }
 
-  // FIX 4 CONFIRMED: getInstitutionsDueForRefresh filters
-  // .eq('manual_entry_required', false), so Met/MoMA/Brooklyn Museum are
-  // automatically excluded from the cron run.
-  const institutions = await getInstitutionsDueForRefresh()
+  // Awaited, not fire-and-forget: on Vercel the instance is frozen the moment
+  // the response is sent, so backgrounded work is killed almost immediately.
+  const result = await runAgent1({ budgetMs: VENUE_BUDGET_MS })
 
-  if (institutions.length === 0) {
-    // The common case: the queue drains in a few hours and then every
-    // subsequent tick for the rest of the week costs one Supabase query.
-    return NextResponse.json({ message: 'All institutions up to date', scraped: 0 })
+  if (!result) {
+    return NextResponse.json({ message: 'No venues due', scraped: 0 })
   }
 
-  console.log(`Cron scrape: ${institutions.length} institution(s) due — ${institutions.map((v) => v.name).join(', ')}`)
-
-  // Awaited, not fire-and-forget. The previous Promise.resolve().then(...) let
-  // the route return in milliseconds and the work continue in the background,
-  // which is true of a long-lived dev server and false on Vercel: the instance
-  // is frozen the moment the response is sent, so the scrape was going to be
-  // killed a few hundred milliseconds in, every night, silently.
-  const result = await runAgent1({ timeBudgetMs: TIME_BUDGET_MS })
-
   return NextResponse.json({
-    message: `Scraped ${result.itemsSucceeded}/${result.itemsProcessed} institution(s)`,
+    message: `Scraped ${result.itemsSucceeded}/${result.itemsProcessed} venue(s)`,
     processed: result.itemsProcessed,
     succeeded: result.itemsSucceeded,
     failed: result.itemsFailed,
     remaining: result.summary?.remaining ?? 0,
+    stopped_for_time: result.summary?.stopped_for_time ?? null,
   })
 }

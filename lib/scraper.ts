@@ -14,8 +14,22 @@ import {
 } from './claude'
 import { geocodeVenueIfNeeded } from './geocoding'
 import { generateMuseumCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from './museum-coverage'
-import { auditAndRepairPrereads, repairZeroPrereads } from './audit'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
+import {
+  decideQueueEligibility,
+  estimateVenueScrapeMs,
+  hasTimeFor,
+  nextScheduledScrapeDate,
+  type ScrapeStatus,
+} from './venue-scrape-schedule'
+import {
+  claimVenueScrape,
+  finishVenueScrape,
+  loadAttemptHistory,
+  sweepStaleClaims,
+  type ScrapeClaim,
+  type VenueScrapeOutcome,
+} from './venue-scrape-queue'
 import type { VenueRecord, ExhibitionRaw, ExhibitionLink } from './types'
 
 // Stable identity key for an exhibition within a venue — used for upsert matching
@@ -695,11 +709,18 @@ async function logDetailFetch(
   }
 }
 
+export interface ScrapeInstitutionResult {
+  upserted: number
+  /** Set when the venue as a whole could not be scraped (no URL, unreachable,
+   *  bot-walled, no links found). Individual shows failing does not set it. */
+  failureReason: string | null
+}
+
 export async function scrapeInstitution(
   venue: VenueRecord,
   skipPrereads = false,
   errors: AgentRunError[] = []
-): Promise<number> {
+): Promise<ScrapeInstitutionResult> {
   const vn = venue.name
   console.log(`[${vn}] Starting scrape — ${venue.exhibitions_url}`)
   const db = getSupabaseAdmin()
@@ -710,17 +731,16 @@ export async function scrapeInstitution(
   // multi-location gallery rather than repeating a guess that the insert would
   // dedup away. Fetching an empty URL fails as a network error, which reads as
   // the gallery's site being down rather than as missing data — so it gets its
-  // own reason. manual_entry_required takes it out of the scrape rotation until
-  // a URL is filled in, exactly as a fetch failure does.
+  // own reason. Like every venue-level failure it counts toward error3, after
+  // which the venue leaves the rotation until someone fixes it.
   if (!venue.exhibitions_url?.trim()) {
     console.warn(`[${vn}] No exhibitions_url set — nothing to scrape`)
     errors.push({ item: vn, step: 'fetch', message: 'Venue has no exhibitions URL' })
     await db.from('venues').update({
       scrape_failed: true,
-      manual_entry_required: true,
       scrape_failure_reason: 'no_exhibitions_url',
     }).eq('id', venue.id)
-    return 0
+    return { upserted: 0, failureReason: 'no_exhibitions_url' }
   }
 
   // Diagnostic counters for SCRAPE_COMPLETE summary
@@ -786,14 +806,13 @@ export async function scrapeInstitution(
   }))
 
   if (!listingSuccess) {
-    console.error(`[${vn}] Listing page fetch failed after retry — marking scrape_failed + manual_entry_required`)
+    console.error(`[${vn}] Listing page fetch failed after retry — marking scrape_failed`)
     errors.push({ item: vn, step: 'fetch', message: 'Listing page fetch failed after retry' })
     await db.from('venues').update({
       scrape_failed: true,
-      manual_entry_required: true,
       scrape_failure_reason: 'fetch_failed',
     }).eq('id', venue.id)
-    return 0
+    return { upserted: 0, failureReason: 'fetch_failed' }
   }
 
   // Bot-wall detection: check for known bot-protection signals regardless of HTML size.
@@ -807,10 +826,9 @@ export async function scrapeInstitution(
     errors.push({ item: vn, step: 'fetch', message: `Bot wall detected (${botWallSignal})` })
     await db.from('venues').update({
       scrape_failed: true,
-      manual_entry_required: true,
       scrape_failure_reason: 'bot_protected',
     }).eq('id', venue.id)
-    return 0
+    return { upserted: 0, failureReason: 'bot_protected' }
   }
 
   // Still too small after retry and no specific bot signal → flag anyway
@@ -819,10 +837,9 @@ export async function scrapeInstitution(
     errors.push({ item: vn, step: 'fetch', message: `Listing HTML too small after retry (${listingHtml.length}B) — likely bot protection` })
     await db.from('venues').update({
       scrape_failed: true,
-      manual_entry_required: true,
       scrape_failure_reason: 'bot_protected',
     }).eq('id', venue.id)
-    return 0
+    return { upserted: 0, failureReason: 'bot_protected' }
   }
 
   // Logged so a note's effect is legible in the run output: if a venue keeps
@@ -966,14 +983,13 @@ export async function scrapeInstitution(
 
   // After all attempts: if still 0 links, flag for manual entry
   if (allLinks.length === 0) {
-    console.warn(`[${vn}] No links after href scan — flagging manual_entry_required`)
+    console.warn(`[${vn}] No links after href scan — marking scrape_failed`)
     errors.push({ item: vn, step: 'fetch', message: 'No exhibition links found after href scan' })
     await db.from('venues').update({
       scrape_failed: true,
-      manual_entry_required: true,
       scrape_failure_reason: 'zero_links_after_retry',
     }).eq('id', venue.id)
-    return 0
+    return { upserted: 0, failureReason: 'zero_links_after_retry' }
   }
 
   // Dedup by URL — Claude's Step-1 classification can return the same detail
@@ -1035,7 +1051,7 @@ export async function scrapeInstitution(
 
   if (currentLinks.length === 0) {
     console.log(`[${vn}] No current shows — updating check_back_date`)
-    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
+    await db.from('venues').update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'SCRAPE_COMPLETE',
       shows_found_on_listing: diag.shows_found_on_listing,
@@ -1047,7 +1063,7 @@ export async function scrapeInstitution(
       location_ladder: diag.location_ladder,
       pending_wipe: diag.pending_wipe,
     }))
-    return 0
+    return { upserted: 0, failureReason: null }
   }
 
   // Content-type filter: only exhibitions of physical artwork proceed to Step 2.
@@ -1079,8 +1095,8 @@ export async function scrapeInstitution(
 
   if (exhibitionLinks.length === 0) {
     console.log(`[${vn}] All current/upcoming links were events or online-only — updating check_back_date`)
-    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
-    return 0
+    await db.from('venues').update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
+    return { upserted: 0, failureReason: null }
   }
 
   // Req #2: Location filter — remove shows at fairs, partner venues, other cities
@@ -1135,7 +1151,7 @@ export async function scrapeInstitution(
 
   if (guardedLinks.length === 0) {
     console.warn(`[${vn}] No current links remain after location + self-referential filtering`)
-    await db.from('venues').update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
+    await db.from('venues').update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
     const totalDiscarded = diag.shows_found_on_listing
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'SCRAPE_COMPLETE',
@@ -1148,7 +1164,7 @@ export async function scrapeInstitution(
       location_ladder: diag.location_ladder,
       pending_wipe: diag.pending_wipe,
     }))
-    return 0
+    return { upserted: 0, failureReason: null }
   }
 
   if (guardedLinks.length > DETAIL_SESSION_CAP) {
@@ -1648,6 +1664,7 @@ export async function scrapeInstitution(
               ...exhibitionRaw,
               venue_name: venue.name,
               venue_url: venue.exhibitions_url,
+              exhibition_id: exhibitionId,
             })
             if (prereads.length > 0) {
               await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: exhibitionId })))
@@ -1681,7 +1698,7 @@ export async function scrapeInstitution(
 
         if ((coverageCount ?? 0) === 0) {
           try {
-            const { coverage, coverageType } = await generateMuseumCoverage(cleanTitle, venue.name, detail.artists)
+            const { coverage, coverageType } = await generateMuseumCoverage(cleanTitle, venue.name, detail.artists, exhibitionId)
             // coverage_type (the Type A/B/C-small/C-large/D classification tier)
             // still lives on the exhibition row — only the per-item array moves.
             await db.from('exhibitions').update({ coverage_type: coverageType }).eq('id', exhibitionId)
@@ -1727,7 +1744,7 @@ export async function scrapeInstitution(
 
   await db
     .from('venues')
-    .update({ check_back_date: sevenDaysFromNow(), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null })
+    .update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null })
     .eq('id', venue.id)
 
   const totalDiscarded = (diag.shows_found_on_listing - diag.shows_after_classification)
@@ -1753,19 +1770,13 @@ export async function scrapeInstitution(
   try { appendFileSync('/tmp/scrape-diag.jsonl', JSON.stringify(completeEntry) + '\n') } catch {}
 
   console.log(`[${vn}] Done: ${upsertedCount}/${linksToProcess.length} processed`)
-  return upsertedCount
-}
-
-function sevenDaysFromNow(): string {
-  const d = new Date()
-  d.setDate(d.getDate() + 7)
-  return d.toISOString().split('T')[0]
+  return { upserted: upsertedCount, failureReason: null }
 }
 
 // ─── Institution queries ──────────────────────────────────────────────────────
 
 const VENUE_SELECT =
-  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, location_window_size, institutions!inner(id, type, is_multi_city)'
+  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, location_window_size, scrape_day_of_week, scrape_status, scrape_status_changed_at, scrape_failures, institutions!inner(id, type, is_multi_city)'
 
 function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1788,6 +1799,10 @@ function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
     scrapable: (v.scrapable as boolean | null) ?? true,
     is_multi_city: institution?.is_multi_city === true,
     location_window_size: (v.location_window_size as number | null) ?? null,
+    scrape_day_of_week: (v.scrape_day_of_week as number | null) ?? null,
+    scrape_status: (v.scrape_status as ScrapeStatus | null) ?? 'not_started',
+    scrape_status_changed_at: (v.scrape_status_changed_at as string | null) ?? null,
+    scrape_failures: (v.scrape_failures as number | null) ?? 0,
   }
 }
 
@@ -1809,12 +1824,6 @@ export async function getVenueById(id: string): Promise<VenueRecord | null> {
 // different things and are checked separately on purpose: the scraper clears
 // manual_entry_required on any successful scrape, so a human decision stored
 // there would be undone the first time the venue happened to work.
-//
-// Ordered oldest-checked-first, which is what makes a force run resumable across
-// invocations: scraping a venue pushes its check_back_date a week out, so the
-// ones already done in this pass sort to the back and the next invocation picks
-// up where the last one stopped. Without the order the slice would be arbitrary
-// and a chunked force run could scrape the same venues forever.
 export async function getActiveInstitutions(): Promise<VenueRecord[]> {
   const { data } = await getSupabaseAdmin()
     .from('venues')
@@ -1828,20 +1837,42 @@ export async function getActiveInstitutions(): Promise<VenueRecord[]> {
   return (data ?? []).map((v: any) => normalizeVenueRow(v))
 }
 
-export async function getInstitutionsDueForRefresh(): Promise<VenueRecord[]> {
-  const today = new Date().toISOString().split('T')[0]
-
-  const { data } = await getSupabaseAdmin()
+// The venues the 15-minute queue should scrape right now: today's scheduled
+// venues oldest-checked-first, then retries that have served their cooldown.
+// Rules in decideQueueEligibility. error3 sets manual_entry_required, so those
+// venues drop out at the query along with every other flagged venue.
+export async function getScrapeQueue(now: Date): Promise<{ eligible: VenueRecord[]; unassignedDay: number }> {
+  const { data, error } = await getSupabaseAdmin()
     .from('venues')
     .select(VENUE_SELECT)
     .eq('active', true)
     .eq('manual_entry_required', false)
     .eq('scrapable', true)
-    .or(`check_back_date.is.null,check_back_date.lte.${today}`)
     .order('check_back_date', { ascending: true, nullsFirst: true })
 
+  // Thrown rather than read as an empty queue: a silent empty result is what a
+  // missing migration looks like, and it would stop all scraping unnoticed.
+  if (error) throw new Error(`Scrape queue query failed: ${error.message}`)
+
+  const scheduled: VenueRecord[] = []
+  const retries: VenueRecord[] = []
+  let unassignedDay = 0
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (data ?? []).map((v: any) => normalizeVenueRow(v))
+  for (const venue of (data ?? []).map((v: any) => normalizeVenueRow(v))) {
+    const decision = decideQueueEligibility({
+      scrape_day_of_week: venue.scrape_day_of_week ?? null,
+      check_back_date: venue.check_back_date ?? null,
+      scrape_status: venue.scrape_status ?? 'not_started',
+      scrape_status_changed_at: venue.scrape_status_changed_at ?? null,
+      scrape_failures: venue.scrape_failures ?? 0,
+    }, now)
+
+    if (decision.eligible) (decision.reason === 'retry' ? retries : scheduled).push(venue)
+    else if (decision.reason === 'no_day_assigned') unassignedDay++
+  }
+
+  return { eligible: [...scheduled, ...retries], unassignedDay }
 }
 
 // Also returns venues marked scrapable=false, which have no "issue" as such —
@@ -1871,125 +1902,106 @@ export async function getScrapedFailedInstitutions(): Promise<VenueRecord[]> {
   return (data ?? []).map((v: any) => normalizeVenueRow(v))
 }
 
-// ─── Agent 1 run wrapper ────────────────────────────────────────────────────
-// Records an agent_runs row for the whole scrape batch. "Items" here are
-// venues (one scrapeInstitution() call each) — per-exhibition detail lives
-// in the errors array and the summary block.
+// ─── Single venue attempt ───────────────────────────────────────────────────
+// Scrape one claimed venue, then record its duration and resulting status
+// whatever happened. Shared by the queue and the admin's single-venue trigger.
+export async function runVenueScrapeAttempt(
+  venue: VenueRecord,
+  claim: ScrapeClaim,
+  errors: AgentRunError[]
+): Promise<VenueScrapeOutcome> {
+  let result: ScrapeInstitutionResult
+  try {
+    result = await scrapeInstitution(venue, false, errors)
+  } catch (err) {
+    console.error(`Error scraping ${venue.name}:`, err)
+    errors.push({ item: venue.name, step: 'fetch', message: err instanceof Error ? err.message : String(err) })
+    result = { upserted: 0, failureReason: 'exception' }
+  }
+  return finishVenueScrape(claim, result)
+}
+
+// ─── Agent 1 queue run ──────────────────────────────────────────────────────
 export interface RunAgent1Options {
-  force?: boolean
-  skipPrereads?: boolean
-  venueFilter?: string[] | null
-  /** Stop after this many venues. Omitted means "no cap" (local/manual runs). */
-  limit?: number
   /**
-   * Stop starting new venues once this much wall-clock has elapsed. A venue
-   * already in flight is allowed to finish, so the real ceiling is this plus one
-   * venue — size it against the platform limit accordingly.
+   * Wall-clock this call may spend on venues, from its start. A venue only
+   * starts if its estimated duration still fits (hasTimeFor), so the real
+   * ceiling is this budget plus how far that estimate undershoots.
    */
-  timeBudgetMs?: number
+  budgetMs: number
 }
 
 /**
- * One pass of Agent 1.
+ * One 15-minute tick of Agent 1. Returns null, without recording an agent_runs
+ * row, when nothing is due — which is most ticks of any day.
  *
- * `limit` and `timeBudgetMs` exist because a full pass does not fit in a
- * serverless invocation. Measured against agent_runs, a single venue takes
- * 85–257s, and the queue is 17 venues — a complete run has taken up to 38.6
- * minutes, which no Vercel function duration can cover.
- *
- * The queue drains itself without any new state: a scraped venue gets
- * check_back_date = +7 days, so it drops out of getInstitutionsDueForRefresh()
- * and sorts to the back of getActiveInstitutions(). Each invocation therefore
- * takes the next slice, and summary.remaining says whether another is needed.
+ * "Items" are venue attempts. A venue-level failure (unreachable, blocked, no
+ * links) counts as failed; per-show problems stay in the errors array.
  */
-export async function runAgent1(opts: RunAgent1Options = {}): Promise<AgentRunResult> {
+export async function runAgent1(opts: RunAgent1Options): Promise<AgentRunResult | null> {
+  const startedAt = Date.now()
+
+  // Before building the queue, so a venue a killed invocation left in_progress
+  // moves into its error cooldown instead of staying blocked.
+  const staleRecovered = await sweepStaleClaims()
+  const { eligible, unassignedDay } = await getScrapeQueue(new Date())
+
+  if (unassignedDay > 0) {
+    console.warn(`Agent 1: ${unassignedDay} venue(s) have no scrape_day_of_week and are never queued — run scripts/backfill-scrape-day-of-week.mjs`)
+  }
+  if (eligible.length === 0) return null
+
   const runId = await startAgentRun('agent1')
   const errors: AgentRunError[] = []
-  const startedAt = Date.now()
-  let itemsProcessed = 0
-  let itemsSucceeded = 0
+  let attempted = 0
+  let succeeded = 0
+  let skippedAtClaim = 0
   let totalUpserted = 0
-  let remaining = 0
+  let stoppedForTime: Record<string, unknown> | null = null
 
   try {
-    let institutions = opts.force ? await getActiveInstitutions() : await getInstitutionsDueForRefresh()
+    const history = await loadAttemptHistory(eligible.map((v) => v.id))
 
-    if (opts.venueFilter) {
-      const filter = opts.venueFilter
-      institutions = institutions.filter((v) => filter.some((f) => v.name.toLowerCase().includes(f)))
-    }
+    for (const venue of eligible) {
+      const elapsedMs = Date.now() - startedAt
+      const { estimateMs, basis } = estimateVenueScrapeMs(history.get(venue.id) ?? [])
 
-    const queueSize = institutions.length
-    const scrapedInstitutionIds: string[] = []
-
-    for (const institution of institutions) {
-      if (opts.limit != null && itemsProcessed >= opts.limit) break
-      // Checked before starting a venue, never mid-venue: a half-scraped venue
-      // would leave its check_back_date unadvanced and be retried anyway, so
-      // there is nothing to gain from aborting one in progress.
-      if (opts.timeBudgetMs != null && Date.now() - startedAt >= opts.timeBudgetMs) break
-
-      itemsProcessed++
-      try {
-        const count = await scrapeInstitution(institution, opts.skipPrereads, errors)
-        totalUpserted += count
-        itemsSucceeded++
-        scrapedInstitutionIds.push(institution.id)
-      } catch (err) {
-        console.error(`Error scraping ${institution.name}:`, err)
-        errors.push({
-          item: institution.name,
-          step: 'fetch',
-          message: err instanceof Error ? err.message : String(err),
-        })
-      }
-    }
-
-    remaining = queueSize - itemsProcessed
-    if (remaining > 0) {
-      console.log(`Agent 1 stopped early: ${itemsProcessed}/${queueSize} venues, ${remaining} left for the next invocation.`)
-    }
-
-    if (!opts.skipPrereads && scrapedInstitutionIds.length > 0) {
-      try {
-        const { data: freshExhibitions } = await getSupabaseAdmin()
-          .from('exhibitions')
-          .select('id')
-          .in('venue_id', scrapedInstitutionIds)
-          .eq('status', 'published')
-
-        const ids = (freshExhibitions ?? []).map((e) => e.id)
-        if (ids.length > 0) {
-          const { report } = await auditAndRepairPrereads(ids, errors)
-          if (report.length > 0) console.log('Post-scrape preread repair:', JSON.stringify(report))
-        }
-      } catch (err) {
-        console.error('Post-scrape audit failed:', err)
-        errors.push({ item: '(post-scrape audit)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
+      if (!hasTimeFor(elapsedMs, estimateMs, opts.budgetMs, attempted === 0)) {
+        stoppedForTime = { next_venue: venue.name, elapsed_ms: elapsedMs, estimate_ms: estimateMs, estimate_basis: basis }
+        console.log(`Agent 1 stopping: ${venue.name} needs ~${Math.round(estimateMs / 1000)}s (${basis}), ${Math.round((opts.budgetMs - elapsedMs) / 1000)}s left`)
+        break
       }
 
-      // Deferred while the queue still has venues in it. Unlike the audit above,
-      // this one is global rather than scoped to what was just scraped, so
-      // running it on every slice would repeat the same sweep 9 times over a
-      // chunked pass and spend the time budget on work the last slice redoes.
-      if (remaining === 0) {
-        try {
-          const { attempted, report } = await repairZeroPrereads(errors)
-          if (attempted > 0) console.log(`Zero-preread retry: ${attempted} attempted, ${report.length} repaired`, JSON.stringify(report))
-        } catch (err) {
-          console.error('Zero-preread retry failed:', err)
-          errors.push({ item: '(zero-preread retry)', step: 'preread', message: err instanceof Error ? err.message : String(err) })
-        }
+      // The claim re-checks eligibility on a fresh read; losing it means another
+      // invocation or the admin trigger has this venue.
+      const claimed = await claimVenueScrape(venue.id, { mode: 'queue', trigger: 'cron', agentRunId: runId })
+      if (!claimed.ok) {
+        skippedAtClaim++
+        console.log(`Agent 1 skipping ${venue.name}: ${claimed.reason}${claimed.detail ? ` (${claimed.detail})` : ''}`)
+        continue
       }
+
+      attempted++
+      const outcome = await runVenueScrapeAttempt(venue, claimed.claim, errors)
+      totalUpserted += outcome.upserted
+      if (outcome.failureReason === null) succeeded++
+      console.log(`Agent 1 ${venue.name}: ${outcome.status ?? 'state changed elsewhere'} in ${Math.round(outcome.durationMs / 1000)}s (estimated ${Math.round(estimateMs / 1000)}s, ${basis})`)
     }
 
-    const itemsFailed = itemsProcessed - itemsSucceeded
     const result: AgentRunResult = {
-      itemsProcessed,
-      itemsSucceeded,
-      itemsFailed,
+      itemsProcessed: attempted,
+      itemsSucceeded: succeeded,
+      itemsFailed: attempted - succeeded,
       errors,
-      summary: { venues_scraped: itemsSucceeded, total_exhibitions_upserted: totalUpserted, remaining },
+      summary: {
+        venues_scraped: succeeded,
+        total_exhibitions_upserted: totalUpserted,
+        remaining: eligible.length - attempted - skippedAtClaim,
+        skipped_at_claim: skippedAtClaim,
+        stopped_for_time: stoppedForTime,
+        stale_claims_recovered: staleRecovered,
+        venues_without_day: unassignedDay,
+      },
     }
     await finishAgentRun(runId, result)
     return result

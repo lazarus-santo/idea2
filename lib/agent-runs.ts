@@ -1,7 +1,9 @@
 import { getSupabaseAdmin } from './supabase'
 
 export type AgentName = 'agent1' | 'agent2' | 'agent3_daily' | 'agent3_hourly'
-export type RunStatus = 'running' | 'success' | 'partial' | 'failed'
+// 'timed_out' is never derived: it marks runs the platform killed before they
+// could finish (migration_v38, scripts/cleanup-stale-agent-runs.mjs).
+export type RunStatus = 'running' | 'success' | 'partial' | 'failed' | 'timed_out'
 
 export interface AgentRunError {
   item: string

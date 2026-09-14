@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
+import { resetVenueScrapeState } from '@/lib/venue-scrape-queue'
 
 // PATCH /api/admin/venues/[id] — update scrape flags
 // Body: {
@@ -9,6 +10,11 @@ import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 //   scrape_notes?: string | null,   free-text hint fed to the extraction prompt
 //   scrapable?: boolean             human decision to stop scraping this venue
 // }
+//
+// Setting manual_entry_required to false also resets the venue's queue state to
+// not_started with no failures. That is the Scrape Issues "Clear Issue" button,
+// and it is the way out of error3 without scraping: clearing the flag alone
+// would leave error3 blocking the queue.
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -43,6 +49,13 @@ export async function PATCH(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  if (update.manual_entry_required === false) {
+    // 'in_progress' means a scrape is running right now; its own result will
+    // set the status when it finishes.
+    const scrapeState = await resetVenueScrapeState(id)
+    return NextResponse.json({ ok: true, scrape_state: scrapeState })
   }
 
   return NextResponse.json({ ok: true })
