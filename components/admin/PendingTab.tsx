@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
+import ScrapedAddress, { type ResolvedLocationSource, type ShowLocationSource } from './ScrapedAddress'
 import { adminFetch } from '@/lib/admin-fetch'
 import type { InstitutionType } from '@/lib/institution-types'
 
@@ -30,6 +31,14 @@ type PendingEx = {
   address_override_neighborhood: string | null
   venue_address: string | null
   venue_neighborhood: string | null
+  show_location: string | null
+  show_location_2: string | null
+  show_location_3: string | null
+  show_location_neighborhood: string | null
+  show_location_source: ShowLocationSource
+  resolved_address: string | null
+  resolved_addresses: string[]
+  resolved_location_source: ResolvedLocationSource
   missing_fields: string[]
   created_at: string
   prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null }[]
@@ -377,14 +386,24 @@ function EditModal({
             <input type="text" value={imageUrl} onChange={e => setImageUrl(e.target.value)} placeholder="https://…" style={fieldInput(missing.has('image_url'))} />
           </div>
 
+          <ScrapedAddress
+            showLocations={[ex.show_location, ex.show_location_2, ex.show_location_3].filter((a): a is string => !!a)}
+            showLocationNeighborhood={ex.show_location_neighborhood}
+            showLocationSource={ex.show_location_source}
+            resolvedAddresses={ex.resolved_addresses}
+            resolvedSource={ex.resolved_location_source}
+            addressError={missing.has('address_error')}
+          />
+
+          {/* Placeholders show what the site uses when no override is set. */}
           <div style={{ display: 'flex', gap: 16 }}>
             <div style={{ flex: 1 }}>
               <label style={lbl}>Address Override</label>
-              <input type="text" value={addr} onChange={e => setAddr(e.target.value)} placeholder={ex.venue_address ?? 'Venue default'} style={fieldInput(false)} />
+              <input type="text" value={addr} onChange={e => setAddr(e.target.value)} placeholder={ex.show_location ?? ex.venue_address ?? 'Venue default'} style={fieldInput(false)} />
             </div>
             <div style={{ flex: 1 }}>
               <label style={lbl}>Neighborhood Override</label>
-              <input type="text" value={neigh} onChange={e => setNeigh(e.target.value)} placeholder={ex.venue_neighborhood ?? 'Venue default'} style={fieldInput(false)} />
+              <input type="text" value={neigh} onChange={e => setNeigh(e.target.value)} placeholder={(ex.show_location ? ex.show_location_neighborhood : ex.venue_neighborhood) ?? 'Venue default'} style={fieldInput(false)} />
             </div>
           </div>
 

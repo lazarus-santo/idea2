@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
+import ScrapedAddress, { type ResolvedLocationSource, type ShowLocationSource } from './ScrapedAddress'
 import { adminFetch } from '@/lib/admin-fetch'
 
 type Preread = {
@@ -30,6 +31,15 @@ type PublishedEx = {
   address_override_neighborhood: string | null
   venue_address: string | null
   venue_neighborhood: string | null
+  show_location: string | null
+  show_location_2: string | null
+  show_location_3: string | null
+  show_location_neighborhood: string | null
+  show_location_source: ShowLocationSource
+  resolved_address: string | null
+  resolved_addresses: string[]
+  resolved_location_source: ResolvedLocationSource
+  missing_fields: string[] | null
   prereads: Preread[]
 }
 
@@ -243,13 +253,24 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
           <label style={labelS}>Image URL</label>
           <input type="text" value={imageUrl} onChange={e => setImageUrl(e.target.value)} placeholder="https://…" style={inputS} />
         </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <ScrapedAddress
+            showLocations={[ex.show_location, ex.show_location_2, ex.show_location_3].filter((a): a is string => !!a)}
+            showLocationNeighborhood={ex.show_location_neighborhood}
+            showLocationSource={ex.show_location_source}
+            resolvedAddresses={ex.resolved_addresses}
+            resolvedSource={ex.resolved_location_source}
+            addressError={(ex.missing_fields ?? []).includes('address_error')}
+          />
+        </div>
+        {/* Placeholders show what the site uses when no override is set. */}
         <div>
           <label style={labelS}>Address override</label>
-          <input type="text" value={addr} onChange={e => setAddr(e.target.value)} placeholder={ex.venue_address ?? 'Venue default'} style={inputS} />
+          <input type="text" value={addr} onChange={e => setAddr(e.target.value)} placeholder={ex.show_location ?? ex.venue_address ?? 'Venue default'} style={inputS} />
         </div>
         <div>
           <label style={labelS}>Neighborhood override</label>
-          <input type="text" value={neigh} onChange={e => setNeigh(e.target.value)} placeholder={ex.venue_neighborhood ?? 'Venue default'} style={inputS} />
+          <input type="text" value={neigh} onChange={e => setNeigh(e.target.value)} placeholder={(ex.show_location ? ex.show_location_neighborhood : ex.venue_neighborhood) ?? 'Venue default'} style={inputS} />
         </div>
       </div>
 
