@@ -1,0 +1,1152 @@
+{
+  "version": 1,
+  "captured_at": "2026-09-15",
+  "description": "Regression corpus for Agent 1's link filters (Section 2/3): real show URLs that must never be dropped as listing or section pages, and real listing/section pages that should be. A static snapshot — add entries by hand as new real cases turn up; don't regenerate it, or a fixed miss could quietly leave the corpus.",
+  "how_to_run": "node scripts/check-link-corpus.mjs",
+  "fields": {
+    "title": "The link title a filter would see: the show title for known-good, the link text for known-bad (null when only the URL was seen).",
+    "venue": "Venue name as stored — listingPageTitleReason matches '<venue> Exhibitions' against it.",
+    "kind": "known-bad only: listing_page_saved_as_show | archive_link | section_link | venue_listing_page"
+  },
+  "known_good": [
+    {
+      "exhibition_id": "834e4ab6-db9c-43c1-ab96-37a056b2c256",
+      "title": "Recent Work",
+      "url": "https://www.pacegallery.com/exhibitions/asher-liftin-recent-work",
+      "venue": "125 Newbury",
+      "venue_id": "4f622546-4161-4ea6-9e1b-4dba259aaae5",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d5b64503-0cfd-4250-8ce0-6ebda32d32fc",
+      "title": "Waterloo!",
+      "url": "https://56henry.nyc/exhibitions/waterloo",
+      "venue": "56 Henry",
+      "venue_id": "eb3402a5-62d1-4f44-9c15-458597e94eb1",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "e60cfcdc-a5de-402d-b465-626365b61fef",
+      "title": "Adam McGowan Exhibition View",
+      "url": "https://www.57w57arts.com/adam-mcgowan-exhibition-view",
+      "venue": "57W57 ARTS",
+      "venue_id": "9ac3c3e1-defa-4830-a1ef-62237f359b6f",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "34eabc90-e824-4770-a1b4-0ccf31eb9045",
+      "title": "Ben K. Voss | Book of Sand",
+      "url": "https://www.57w57arts.com/ben-k-voss-exhibition-view-02",
+      "venue": "57W57 ARTS",
+      "venue_id": "9ac3c3e1-defa-4830-a1ef-62237f359b6f",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "09b7e2df-39e1-464b-b281-eaeed28d464c",
+      "title": "Rorschach scapes",
+      "url": "https://www.57w57arts.com/vincent-manzi-exhibition-view",
+      "venue": "57W57 ARTS",
+      "venue_id": "9ac3c3e1-defa-4830-a1ef-62237f359b6f",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "4087814d-9379-4f50-b2ef-663d0ee3b18c",
+      "title": "People Make Art: A Tribute to Melvin Edwards",
+      "url": "http://alexandergray.com/exhibitions/905-people-make-art-a-tribute-to-melvin-edwards",
+      "venue": "Alexander Gray Associates",
+      "venue_id": "2df598ba-ef81-4f0a-b023-066b942bb07d",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a551b4a1-3f18-4954-8f98-6b6bdd9db823",
+      "title": "Missing Mountain",
+      "url": "http://alexandregallery.com/exhibitions/lisa-sanditz2",
+      "venue": "Alexandre Gallery — Upper East Side",
+      "venue_id": "419d987a-4695-4f7d-a1b8-0c877bf17c1b",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d6213a56-21c8-4461-8317-a7291b47d9e9",
+      "title": "Yuki Tawada",
+      "url": "https://www.alisonbradleyprojects.com/exhibitions/28-yuki-tawada",
+      "venue": "Alison Bradley Projects",
+      "venue_id": "46145c82-84e6-4de7-8a42-37f0928b1cad",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "8136b261-6291-4d15-844d-a4b2db9e852c",
+      "title": "The Tesseract",
+      "url": "https://www.alminerech.com/exhibitions/12595-zio-ziegler-the-tesseract",
+      "venue": "Almine Rech - New York",
+      "venue_id": "072abeff-3373-4ab5-b03f-c87025ee11db",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "0e29bc53-5273-4b6d-88b5-8f456d26edd8",
+      "title": "Count Your Chickens",
+      "url": "https://www.amant.org/exhibitions/295-kim-gordon-count-your-chickens",
+      "venue": "Amant",
+      "venue_id": "a4ab3021-876a-4f3e-854b-6c5a4266f933",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a66255de-787d-45a3-a273-72f28d105d0f",
+      "title": "Sentient Earth",
+      "url": "https://www.amant.org/exhibitions/360-sentient-earth",
+      "venue": "Amant",
+      "venue_id": "a4ab3021-876a-4f3e-854b-6c5a4266f933",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "45bccaea-7f28-49af-ae2f-263eee5dfd80",
+      "title": "The Mud Room: Itinerant Artists, Folk Spectacles, and Painted Walls",
+      "url": "https://www.amant.org/exhibitions/393-the-mud-room-itinerant-artists-folk-spectacles-and-painted-walls",
+      "venue": "Amant",
+      "venue_id": "a4ab3021-876a-4f3e-854b-6c5a4266f933",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "6b31e256-be0f-4765-b9b4-ec5559365f81",
+      "title": "Dietmar Feichtinger: Architecture of Connection",
+      "url": "https://acfny.org/exhibition/feichtinger",
+      "venue": "Austrian Cultural Forum New York",
+      "venue_id": "f61833b7-40b3-4ccc-88e2-5924dd472d1e",
+      "institution_type": "nonprofit",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "c1d5c990-9d98-46e8-92b8-d8c14fb0dc63",
+      "title": "Haas Brothers | Mathemagical",
+      "url": "https://marianneboeskygallery.com/exhibitions/348-haas-brothers-mathemagical",
+      "venue": "Boesky Gallery",
+      "venue_id": "e1a7dc00-4baf-4148-8876-b2ab893b2357",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "548a2b27-b49a-4a3f-a0ba-2b2c3f122659",
+      "title": "35th Annual Juried Exhibition",
+      "url": "https://bowerygallery.org/juriedshow2026",
+      "venue": "Bowery Gallery — Bowery Gallery",
+      "venue_id": "051c3a26-fdea-4f54-ac98-1dc6068749f9",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d2ee7eb6-b59e-4711-b289-df81ecea4673",
+      "title": "Landscaping",
+      "url": "https://bowerygallery.org/pardee2026",
+      "venue": "Bowery Gallery — Bowery Gallery",
+      "venue_id": "051c3a26-fdea-4f54-ac98-1dc6068749f9",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "eeac44dc-187b-42de-a791-ceb97702ef4a",
+      "title": "Lifelong Studio: Alternative Archives Exhibition",
+      "url": "https://bronxmuseum.org/exhibition/lifelong-studio-alternative-archives",
+      "venue": "Bronx Museum of the Arts",
+      "venue_id": "64f8954b-d359-4066-bc56-a96a1fd8f0c0",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "c2d2d884-63c2-465c-b8ec-cab88c9ed7de",
+      "title": "Ideas (cont.)",
+      "url": "https://canadanewyork.com/exhibitions/ideas",
+      "venue": "Canada — CANADA",
+      "venue_id": "beaddfaf-b779-4526-aaf8-93b058d2dbaf",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "49aa613c-3a37-4e6c-b87e-982ca397d92c",
+      "title": "Slurpee Machine",
+      "url": "https://canadanewyork.com/exhibitions/slurpee-machine",
+      "venue": "Canada — CANADA",
+      "venue_id": "beaddfaf-b779-4526-aaf8-93b058d2dbaf",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "ddf9d87a-1907-4e26-ab8f-79b98604d7ba",
+      "title": "Cold Meat, Cake, and a Variety of All the Finest Fruits in Season",
+      "url": "https://caseykaplangallery.com/?exhibitions=cold-meat-cake-and-a-variety-of-all-the-finest-fruits-in-season",
+      "venue": "Casey Kaplan — Casey Kaplan",
+      "venue_id": "18911a29-9906-486e-911b-db295e5b91fc",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "45a68d41-c5d5-4a22-a4da-e636132512a6",
+      "title": "Gardens in Orbit",
+      "url": "https://caseykaplangallery.com/?exhibitions=johanna-unzueta",
+      "venue": "Casey Kaplan — Casey Kaplan",
+      "venue_id": "18911a29-9906-486e-911b-db295e5b91fc",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "14038915-68a9-441e-8a44-ef3e38339936",
+      "title": "Casserole Culture",
+      "url": "https://charlesmoffett.com/exhibitions/109-melissa-joseph-casserole-culture",
+      "venue": "Charles Moffett",
+      "venue_id": "42dd702f-a6f2-4757-813e-d34c0b88a335",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "db58ad2c-826e-4888-ae21-9abaad07c386",
+      "title": "El Campo: Images from the Dominican Countryside",
+      "url": "http://contactphoto.org/exhibitions/el-campo-images-from-the-dominican-countryside",
+      "venue": "Contact Photo",
+      "venue_id": "4b23b60b-9f70-41ce-9186-3eec68f52dec",
+      "institution_type": "nonprofit",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "9f27771e-0f37-4e6a-b997-f42040188177",
+      "title": "Don Nice: Early Works, 1963-68",
+      "url": "https://www.craigstarr.com/exhibitions/don-nice-early-works-1963-68",
+      "venue": "Craig Starr Gallery",
+      "venue_id": "f31dd933-cb0d-4f4e-8544-e3ba31d801c2",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "55d372d0-1392-4532-a3db-335a92977309",
+      "title": "Louise Bourgeois: Germinal",
+      "url": "https://www.craigstarr.com/exhibitions/louise-bourgeois-germinal",
+      "venue": "Craig Starr Gallery",
+      "venue_id": "f31dd933-cb0d-4f4e-8544-e3ba31d801c2",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "b80ffe3f-e68b-479c-929c-4536a9e3a0e2",
+      "title": "TIMOTHY COOK",
+      "url": "https://dlangalleries.com/exhibition/timothy-cook",
+      "venue": "D Lan Galleries New York/Lenapehoking",
+      "venue_id": "852179fd-0d65-4941-98a4-f160c57930ec",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "e48680ed-d9fd-4008-8134-213e020aa022",
+      "title": "Emma McIntyre",
+      "url": "https://www.davidzwirner.com/exhibitions/2026/emma-mcintyre",
+      "venue": "David Zwirner 19th Street",
+      "venue_id": "326f9e18-0fc5-46d5-a376-e6288e903045",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "435fa36c-41dd-478a-b082-8f6a27a967b1",
+      "title": "Everyone you're looking at is also you: Artists for the Ali Forney Center",
+      "url": "https://www.davidzwirner.com/exhibitions/2026/everyone-you-re-looking-at-is-also-you-artists-for-the-ali-forney-center",
+      "venue": "David Zwirner 19th Street",
+      "venue_id": "326f9e18-0fc5-46d5-a376-e6288e903045",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "beab132c-8415-438b-a97e-836c30c0f2da",
+      "title": "Nate Lowman: Hanging Out",
+      "url": "https://www.davidzwirner.com/exhibitions/2026/nate-lowman",
+      "venue": "David Zwirner 19th Street",
+      "venue_id": "326f9e18-0fc5-46d5-a376-e6288e903045",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a459c8db-5c1a-4c20-a974-1288d7140ffa",
+      "title": "Scott Kahn: Silent Night",
+      "url": "https://www.davidzwirner.com/exhibitions/2026/scott-kahn",
+      "venue": "David Zwirner 19th Street",
+      "venue_id": "326f9e18-0fc5-46d5-a376-e6288e903045",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "1421f249-9c2e-4297-9d8d-d5f1c9214b79",
+      "title": "Thomas Ruff: jpegs ny",
+      "url": "https://www.davidzwirner.com/exhibitions/2026/thomas-ruff-jpegs-ny",
+      "venue": "David Zwirner 19th Street",
+      "venue_id": "326f9e18-0fc5-46d5-a376-e6288e903045",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "35b78aa8-0c55-419c-a8eb-ef57abbedc96",
+      "title": "Yoshitomo Nara",
+      "url": "https://www.davidzwirner.com/exhibitions/2026/yoshitomo-nara",
+      "venue": "David Zwirner 19th Street",
+      "venue_id": "326f9e18-0fc5-46d5-a376-e6288e903045",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "66dd42fd-6104-4a01-bc4f-b907cb088feb",
+      "title": "Post Seduction",
+      "url": "http://studios-efanyc.org/exhibition-52",
+      "venue": "EFA Gallery",
+      "venue_id": "df94bc9d-8bd8-43bb-8783-4542e49dca83",
+      "institution_type": "nonprofit",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "96b7d4fb-1e9d-4692-9d40-4bb610b13f78",
+      "title": "Sarah Leahy, Plain Sense",
+      "url": "http://studios-efanyc.org/exhibition-53",
+      "venue": "EFA Gallery",
+      "venue_id": "df94bc9d-8bd8-43bb-8783-4542e49dca83",
+      "institution_type": "nonprofit",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "6341ae59-46b3-43e9-9100-7f6dfa8a079d",
+      "title": "Fiber Thinks!",
+      "url": "http://elzakayal.com/fiber",
+      "venue": "Elza Kayal Gallery",
+      "venue_id": "ee57f2ba-3a1d-490e-ade6-a080fdc27e3d",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "e2913011-e863-4a14-a4ee-8681a998220c",
+      "title": "I Am Mine, Without Permission",
+      "url": "http://ecfa.com/exhibitions/155-carole-feuerman-i-am-mine-without-permission-225-w-17th-st-new-york",
+      "venue": "Ethan Cohen Gallery — NEW YORK – 17TH ST",
+      "venue_id": "3698d1fe-a964-4faa-83dc-21c5181fefa4",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "b024fdf5-0760-4336-aa01-f9118ad8bbc6",
+      "title": "Public Pool",
+      "url": "http://ecfa.com/exhibitions/156-public-pool-225-west-17th-street",
+      "venue": "Ethan Cohen Gallery — NEW YORK – 17TH ST",
+      "venue_id": "3698d1fe-a964-4faa-83dc-21c5181fefa4",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "600c1536-6307-446d-a16c-40be61506a9a",
+      "title": "American Cooking",
+      "url": "http://fortgansevoort.com/exhibitions/zoya-cherkassky4",
+      "venue": "Fort Gansevoort",
+      "venue_id": "6030e734-0f9f-4567-97d5-11e945866f15",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "286ab1c0-2208-44bf-9f4c-d2e1af7139b8",
+      "title": "Kent Monkman: Officer and Laughing Girl",
+      "url": "https://www.frick.org/exhibitions/monkman",
+      "venue": "Frick Madison",
+      "venue_id": "f88f9697-d533-4730-ac74-23ac61212aa1",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a1137f0d-4d28-4190-9a7d-32ad368d308f",
+      "title": "Siena: The Art of Bronze, 1450–1500",
+      "url": "https://www.frick.org/exhibitions/siena",
+      "venue": "Frick Madison",
+      "venue_id": "f88f9697-d533-4730-ac74-23ac61212aa1",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d16b6236-0cb3-4ef9-8d0d-ad37b3782a0d",
+      "title": "Deana Lawson",
+      "url": "https://gagosian.com/exhibitions/2026/deana-lawson",
+      "venue": "Gagosian 541 West 24th Street",
+      "venue_id": "b2394a6a-84da-4f1d-988b-14730004b1c1",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "eb17ad29-57ed-48de-8576-582f84380720",
+      "title": "Interlude of Joy",
+      "url": "https://gagosian.com/exhibitions/2026/helen-marden-interlude-of-joy",
+      "venue": "Gagosian 541 West 24th Street",
+      "venue_id": "b2394a6a-84da-4f1d-988b-14730004b1c1",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "01103b95-3e00-402a-bce7-f7eda2f85556",
+      "title": "Jordan Wolfson",
+      "url": "https://gagosian.com/exhibitions/2026/jordan-wolfson",
+      "venue": "Gagosian 555 West 24th Street",
+      "venue_id": "4812b672-1947-4fbc-98bf-7ac39922bb94",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "236e180b-8cb3-4964-a85c-a5114c122bac",
+      "title": "Groomed",
+      "url": "https://gagosian.com/exhibitions/2026/bea-scaccia-groomed",
+      "venue": "Gagosian Park & 75 ",
+      "venue_id": "dd0677ba-58d1-4b92-acb1-011bb6816abc",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "e5c8b904-b298-4720-aab1-a98c41fd72e3",
+      "title": "I Am Plane Image",
+      "url": "https://gagosian.com/exhibitions/2026/brice-marden-i-am-plane-image",
+      "venue": "Gagosian West 21st Street",
+      "venue_id": "53b3bc67-f459-4c5d-b6ef-b1f537d4f027",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a8b41c45-d746-4e89-94e9-7199dca43e3d",
+      "title": "Carol Bove",
+      "url": "https://www.guggenheim.org/exhibition/carol-bove",
+      "venue": "Guggenheim Museum",
+      "venue_id": "852a7fc0-bfb5-45ae-bb5c-f0d28df178d8",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "67b9871b-2601-4f3c-b59a-b9dd88e02166",
+      "title": "Collection in Focus | Modern European Currents",
+      "url": "https://www.guggenheim.org/exhibition/collection-in-focus-modern-european-currents",
+      "venue": "Guggenheim Museum",
+      "venue_id": "852a7fc0-bfb5-45ae-bb5c-f0d28df178d8",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "7c6c5ce4-f8e8-4e6e-a5c1-dc360d4fae64",
+      "title": "Collection in Focus | Zidane, a 21st century portrait",
+      "url": "https://www.guggenheim.org/exhibition/collection-in-focus-zidane-a-21st-century-portrait",
+      "venue": "Guggenheim Museum",
+      "venue_id": "852a7fc0-bfb5-45ae-bb5c-f0d28df178d8",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "b5e308be-6720-47fe-96cc-5196bed2ffeb",
+      "title": "Guggenheim Pop: 1960 to Now",
+      "url": "https://www.guggenheim.org/exhibition/guggenheim-pop",
+      "venue": "Guggenheim Museum",
+      "venue_id": "852a7fc0-bfb5-45ae-bb5c-f0d28df178d8",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "9eccbad3-05a1-468d-9e81-9423f1a346bd",
+      "title": "Taryn Simon",
+      "url": "https://www.guggenheim.org/exhibition/taryn-simon",
+      "venue": "Guggenheim Museum",
+      "venue_id": "852a7fc0-bfb5-45ae-bb5c-f0d28df178d8",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "adead314-da38-4338-aaf4-758e61302319",
+      "title": "Sarsabzi",
+      "url": "https://hannahtraoregallery.com/exhibition/misha-japanwala-sarsabzi",
+      "venue": "Hannah Traore Gallery",
+      "venue_id": "e0e05382-3c3d-44cb-9a72-44a4a2309cb9",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "35867bff-6116-4857-b4ab-8d26e9025847",
+      "title": "Dandelion Cluster #3",
+      "url": "https://madmuseum.org/exhibition/dandelion-cluster-3",
+      "venue": "MAD Museum",
+      "venue_id": "d46a108e-f06e-402f-bb49-ec11a6ba470b",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "fa6b44a8-f6b1-431d-aa3a-f01e5b3708e9",
+      "title": "Dwelling",
+      "url": "https://madmuseum.org/exhibition/dwelling",
+      "venue": "MAD Museum",
+      "venue_id": "d46a108e-f06e-402f-bb49-ec11a6ba470b",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "1ef50a81-0f97-4078-9f8f-38621d673bf9",
+      "title": "Nike: Form Follows Motion",
+      "url": "https://madmuseum.org/exhibition/nike-form-follows-motion",
+      "venue": "MAD Museum",
+      "venue_id": "d46a108e-f06e-402f-bb49-ec11a6ba470b",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "fc09c3e3-bf1e-41de-8d51-b4d5f68e57d3",
+      "title": "Seeing is Believing",
+      "url": "https://madmuseum.org/exhibition/seeing-believing",
+      "venue": "MAD Museum",
+      "venue_id": "d46a108e-f06e-402f-bb49-ec11a6ba470b",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "98c7f19b-4860-42d0-b0c1-8f44b4bb90d5",
+      "title": "Dream House: Artists' Notes",
+      "url": "https://melafoundation.org/LY_MZ_JHC_DH_33.html",
+      "venue": "MELA Foundation",
+      "venue_id": "5e5dafc3-c3c6-4461-b7fa-b313a5b8aa2c",
+      "institution_type": "experimental",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "3542a12f-6fcc-409b-926b-72cd8bd46e62",
+      "title": "American Folk Art: Revisiting the Collection of Abby Aldrich Rockefeller",
+      "url": "https://www.moma.org/calendar/exhibitions/5919",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "bb2c6975-7010-4e39-9581-8997b412bfb2",
+      "title": "Architects of Liberation: Modernism in Western Africa",
+      "url": "https://www.moma.org/calendar/exhibitions/5906",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "c5e6b7bb-b280-4ffe-a4e5-5f2459d2c8ad",
+      "title": "Brancusi: The Artist and His Studio",
+      "url": "https://www.moma.org/calendar/exhibitions/5910",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "378425cb-0386-4f0c-a368-b7295b722feb",
+      "title": "Core Memory",
+      "url": "https://www.moma.org/calendar/exhibitions/5890",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "23cce71a-eb45-4ab8-9444-bc9dca42c2fa",
+      "title": "Fractured Skies",
+      "url": "https://www.moma.org/calendar/exhibitions/5932",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "933520b3-b130-41c5-bd2b-8c18a7fa323d",
+      "title": "Frida and Diego: The Last Dream",
+      "url": "https://www.moma.org/calendar/exhibitions/5882",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d28c98af-40a7-41a4-a263-3886203d3d66",
+      "title": "Full Disclosure: The Edge of Information Design",
+      "url": "https://www.moma.org/calendar/exhibitions/5926",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "9013ecc9-56d9-4b4d-a3db-f8571f31af1b",
+      "title": "Ideas of Africa: Portraiture and Political Imagination",
+      "url": "https://www.moma.org/calendar/exhibitions/5755",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "67a765d4-1367-4524-8f78-c213df773b56",
+      "title": "Marcel Duchamp",
+      "url": "https://www.moma.org/calendar/exhibitions/5820",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "41428e67-1863-4b9f-a32c-85f465ab0799",
+      "title": "NO SMOKING",
+      "url": "https://www.moma.org/calendar/exhibitions/5869",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "050f8076-2bef-43ea-9aa1-1573729d189a",
+      "title": "Pageant",
+      "url": "https://www.moma.org/calendar/exhibitions/5868",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "bfce9ede-1bea-49a7-9c34-bfe563083f41",
+      "title": "Pierre Huyghe",
+      "url": "https://www.moma.org/calendar/exhibitions/5912",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "4dc4cc40-c602-4f70-a3b3-1d16af5b3044",
+      "title": "Songs from Life",
+      "url": "https://www.moma.org/calendar/exhibitions/5794",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "019e858f-f2a8-4453-9987-c3a44fc08560",
+      "title": "Taking Back Our Space: Photographic Perspectives",
+      "url": "https://www.moma.org/calendar/exhibitions/5678",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "8eab49e2-a7b3-4e0f-8f65-9bd85e3b281a",
+      "title": "The Many Lives of the Nakagin Capsule Tower",
+      "url": "https://www.moma.org/calendar/exhibitions/5830",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "7ed01e3d-08d2-43ab-8d28-1095559f57ae",
+      "title": "The Surrealist Book",
+      "url": "https://www.moma.org/calendar/exhibitions/5918",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "78ce94b3-4df3-435e-b144-2e478012095a",
+      "title": "Wetland",
+      "url": "https://www.moma.org/calendar/exhibitions/5936",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "1c120b91-7f59-4987-ba56-832cb70a29ca",
+      "title": "nowhere",
+      "url": "https://www.moma.org/calendar/exhibitions/5928",
+      "venue": "MoMA",
+      "venue_id": "dd3d62e9-fc87-4257-9106-3077b62f7078",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "635c0e2c-28a7-4ff1-b375-584965b004e9",
+      "title": "Memory of the Surface",
+      "url": "https://www.jamescohan.com/exhibitions/vicky-colombet",
+      "venue": "NORR COHAN",
+      "venue_id": "b2c81b81-6a11-4007-9c40-7ad304addd36",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "5923c889-258e-4a89-8e56-b0b32497491f",
+      "title": "Diego Marcon: Arrivederci, Piggies!",
+      "url": "https://www.newmuseum.org/exhibition/diego-marcon-arrivederci-piggies",
+      "venue": "New Museum",
+      "venue_id": "efc4303b-bab5-4381-8a55-fcc9f926e001",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d436649c-a894-4426-a609-ccaf8f6b6105",
+      "title": "KNOTTING, TYING, FOLDING",
+      "url": "https://www.pacegallery.com/exhibitions/lynda-benglis-knotting-tying-folding",
+      "venue": "Pace New York",
+      "venue_id": "072f8669-a52c-4457-9c8d-1b2a08a043e0",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "7294168d-4c0f-4446-8ac6-ae76da315f21",
+      "title": "Seeing in Blue",
+      "url": "https://www.pacegallery.com/exhibitions/torkwase-dyson-seeing-in-blue",
+      "venue": "Pace New York",
+      "venue_id": "072f8669-a52c-4457-9c8d-1b2a08a043e0",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "2e22bffd-ad74-447e-9c8d-3a71befc492f",
+      "title": "She Said She Said",
+      "url": "https://www.pacegallery.com/exhibitions/arlene-shechet-she-said-she-said",
+      "venue": "Pace New York",
+      "venue_id": "072f8669-a52c-4457-9c8d-1b2a08a043e0",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "e54d0c44-21e7-4f13-b2f7-94865e69fb44",
+      "title": "Comfort Zones",
+      "url": "https://salon94.com/exhibitions/comfort-zones",
+      "venue": "Salon 94",
+      "venue_id": "dc7775e2-7680-4ee9-8257-fc4389bf0d13",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "dc277da7-b6e4-4572-a3bc-ca4262f6d470",
+      "title": "Lights",
+      "url": "https://salon94.com/exhibitions/Lights",
+      "venue": "Salon 94",
+      "venue_id": "dc7775e2-7680-4ee9-8257-fc4389bf0d13",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "41b51b4c-f02b-4306-b8c7-572f7505bfd9",
+      "title": "A sustained becoming: Studio Museum Artists in Residence 2026",
+      "url": "https://www.studiomuseum.org/exhibitions/a-sustained-becoming-studio-museum-artists-in-residence-2026",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "861e410e-64a4-4da5-973b-19e66721629e",
+      "title": "Artist Installations",
+      "url": "https://www.studiomuseum.org/exhibitions/artist-installations",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "15ba35d8-9c21-44be-bdd9-dd5801483cd6",
+      "title": "Camille Norment: Untitled (heliotrope)",
+      "url": "https://www.studiomuseum.org/exhibitions/camille-norment-untitled-heliotrope",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "c1307294-293c-4ab5-9a2f-43bac2090864",
+      "title": "Christopher Myers: Harlem Is a Myth",
+      "url": "https://www.studiomuseum.org/exhibitions/christopher-myers-harlem-is-a-myth",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "f9ea0b3a-2fa4-4cb5-ae89-c86f68de55ef",
+      "title": "Dreams of This Future: The Collection of Peggy Cooper Cafritz",
+      "url": "https://www.studiomuseum.org/exhibitions/dreams-of-this-future-the-collection-of-peggy-cooper-cafritz",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "1e16ec43-3394-4ac7-b2f1-98b5c1d6b731",
+      "title": "Fade",
+      "url": "https://www.studiomuseum.org/exhibitions/fade",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "1fc1e1af-75c4-434f-9c68-fde5f20d26a4",
+      "title": "Geometries",
+      "url": "https://www.studiomuseum.org/exhibitions/geometries",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "518aeb54-6d7a-4e82-b74b-0414fc83cc51",
+      "title": "Through Motion and Repose: Expanding the Walls 2026",
+      "url": "https://www.studiomuseum.org/exhibitions/through-motion-and-repose-expanding-the-walls-2026",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "c79e3881-a8e7-4d49-9ca1-665c8fb3f0b6",
+      "title": "To Be A Place",
+      "url": "https://www.studiomuseum.org/exhibitions/studio-museum-archives",
+      "venue": "Studio Museum in Harlem",
+      "venue_id": "75a6b9f9-21f3-46e2-857c-20222745f664",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "6b57f3d6-33f5-4f8d-8e73-3cfe9b883433",
+      "title": "Sandra Vásquez de la Horra: Reading the Waves",
+      "url": "https://www.tanyabonakdargallery.com/exhibitions/962-sandra-vasquez-de-la-horra-reading-the-waves-tanya-bonakdar-gallery-new-york",
+      "venue": "Tanya Bonakdar Gallery",
+      "venue_id": "605bb0e3-3e25-4b63-8ac6-ec89429ec482",
+      "institution_type": "gallery",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "8cae2419-8be0-4362-afe0-3c41c2385af1",
+      "title": "The Armory Show",
+      "url": "https://www.thearmoryshow.com/exhibitors",
+      "venue": "The Armory Show",
+      "venue_id": "842c7825-0f65-4ca6-9a1b-bfceec1a2a04",
+      "institution_type": "fair",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "112dd84c-ff16-44b6-b6ae-b3bf64fcb0d9",
+      "title": "Identity, Culture, and Community: Stories from the Collection of the Jewish Museum and Pruzan Family Center for Learning",
+      "url": "https://thejewishmuseum.org/exhibitions/collection-exhibition-and-center-for-learning-october-2025",
+      "venue": "The Jewish Museum",
+      "venue_id": "522325b4-bb62-4467-b0e1-0d4083e6f461",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "47c9a669-d196-4b13-bdcc-9c0a10c6c682",
+      "title": "\"Untitled\" (America)",
+      "url": "https://whitney.org/exhibitions/untitled-america",
+      "venue": "Whitney Museum",
+      "venue_id": "2a214545-26a0-4109-ae78-8ef37afe474c",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "d57389ed-0cb7-4c20-9e8e-4dc21b82c6c0",
+      "title": "Andy Warhol Family Album",
+      "url": "https://whitney.org/exhibitions/andy-warhol-family-album",
+      "venue": "Whitney Museum",
+      "venue_id": "2a214545-26a0-4109-ae78-8ef37afe474c",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a7154e43-a93d-42d3-98a7-3a8550e2ccca",
+      "title": "Coumba Samba: Stars and Stripes",
+      "url": "https://whitney.org/exhibitions/coumba-samba",
+      "venue": "Whitney Museum",
+      "venue_id": "2a214545-26a0-4109-ae78-8ef37afe474c",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "a9423ee1-1116-4856-aa81-a5de057f7ee8",
+      "title": "Dyani White Hawk: Nourish",
+      "url": "https://whitney.org/exhibitions/nourish",
+      "venue": "Whitney Museum",
+      "venue_id": "2a214545-26a0-4109-ae78-8ef37afe474c",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "cfab0704-bf63-4a57-8c23-5e555845ce2c",
+      "title": "Mabel Dwight: Cool Head, Warm Heart",
+      "url": "https://whitney.org/exhibitions/mabel-dwight",
+      "venue": "Whitney Museum",
+      "venue_id": "2a214545-26a0-4109-ae78-8ef37afe474c",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    },
+    {
+      "exhibition_id": "bab0b48c-1c17-48cc-8ce4-903a1527308e",
+      "title": "The Lost World: The Art of Minnie Evans",
+      "url": "https://whitney.org/exhibitions/the-lost-world",
+      "venue": "Whitney Museum",
+      "venue_id": "2a214545-26a0-4109-ae78-8ef37afe474c",
+      "institution_type": "museum",
+      "source": "exhibitions: status = published, detail_url set"
+    }
+  ],
+  "known_bad": [
+    {
+      "kind": "listing_page_saved_as_show",
+      "title": "Upcomming Exhibitions",
+      "url": "https://www.artifactnyc.net/september-26",
+      "venue": "Artifact Projects",
+      "venue_id": "9b9cdd2c-6971-4ae1-8bba-483bdf8206b3",
+      "exhibition_id": "50ee06f2-9467-4660-b064-916f0f3d1114",
+      "source": "exhibitions row (status pending), scraped 2026-09-01",
+      "evidence": "Page titled '2026 — Artifact' under a 'Current Exhibitions' heading listing three separate shows (Isabelle Bouchard, Erica Bren, Bettina Newbery), each with its own dates."
+    },
+    {
+      "kind": "listing_page_saved_as_show",
+      "title": "art matters index",
+      "url": "https://www.artifactnyc.net/art-matters-index",
+      "venue": "Artifact Projects",
+      "venue_id": "9b9cdd2c-6971-4ae1-8bba-483bdf8206b3",
+      "exhibition_id": "3dfd6500-4b6f-4009-90cd-51a719770bd2",
+      "source": "exhibitions row (status pending), scraped 2026-09-01",
+      "evidence": "Index page listing 16 artists (John Drooyan, Lise Couture, Andi Edan, …) with no single show."
+    },
+    {
+      "kind": "archive_link",
+      "title": "View All",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/all",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Link into the gallery's past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2026-2024",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2026-2024",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive; the page is titled 'Exhibitions - Andrew Kreps Gallery'."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2023-2021",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2023-2021",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2020-2018",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2020-2018",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2017-2015",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2017-2015",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2014-2012",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2014-2012",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2011-2009",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2011-2009",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2008-2006",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2008-2006",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "archive_link",
+      "title": "2005-2004",
+      "url": "https://www.andrewkreps.com/exhibitions/past/all/2005-2004",
+      "venue": "Andrew Kreps Gallery",
+      "venue_id": "0d92eb04-5474-4741-b003-8548b1f72b9e",
+      "source": "Andrew Kreps listing page (andrewkreps.com/exhibitions), link text as printed, fetched 2026-09-15",
+      "evidence": "Year-range filter into the past-exhibitions archive."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/exhibitions/past",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/en/exhibitions/past",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/en/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/es/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/pt/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/fr/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/it/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/de/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/ja/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/ko/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/zh/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "section_link",
+      "title": null,
+      "url": "https://www.metmuseum.org/ru/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "Agent 1 listing-only live run 2026-09-15: link found on the Met listing page by the Tier 2 href scan",
+      "evidence": "Exhibitions section / past-exhibitions section (and its language versions), not a show."
+    },
+    {
+      "kind": "venue_listing_page",
+      "title": null,
+      "url": "https://www.davidzwirner.com/exhibitions",
+      "venue": "David Zwirner 19th Street",
+      "source": "venues.exhibitions_url — the gallery's own listing page, fetched during 2026-09-15 investigations",
+      "evidence": "The listing page Agent 1 starts from. In a real run the self-referential guard also drops it when it links back to itself; URL and title filters are tested on it here in isolation.",
+      "page_title": "Exhibitions | David Zwirner"
+    },
+    {
+      "kind": "venue_listing_page",
+      "title": null,
+      "url": "https://www.andrewkreps.com/exhibitions",
+      "venue": "Andrew Kreps Gallery",
+      "source": "venues.exhibitions_url — the gallery's own listing page, fetched during 2026-09-15 investigations",
+      "evidence": "The listing page Agent 1 starts from. In a real run the self-referential guard also drops it when it links back to itself; URL and title filters are tested on it here in isolation."
+    },
+    {
+      "kind": "venue_listing_page",
+      "title": null,
+      "url": "https://www.artifactnyc.net/exhibitions-two",
+      "venue": "Artifact Projects",
+      "source": "venues.exhibitions_url — the gallery's own listing page, fetched during 2026-09-15 investigations",
+      "evidence": "The listing page Agent 1 starts from. In a real run the self-referential guard also drops it when it links back to itself; URL and title filters are tested on it here in isolation."
+    },
+    {
+      "kind": "venue_listing_page",
+      "title": null,
+      "url": "https://www.metmuseum.org/exhibitions",
+      "venue": "The Met Fifth Avenue",
+      "source": "venues.exhibitions_url — the gallery's own listing page, fetched during 2026-09-15 investigations",
+      "evidence": "The listing page Agent 1 starts from. In a real run the self-referential guard also drops it when it links back to itself; URL and title filters are tested on it here in isolation."
+    },
+    {
+      "kind": "venue_listing_page",
+      "title": null,
+      "url": "https://www.brooklynmuseum.org/exhibitions",
+      "venue": "Brooklyn Museum",
+      "source": "venues.exhibitions_url — the gallery's own listing page, fetched during 2026-09-15 investigations",
+      "evidence": "The listing page Agent 1 starts from. In a real run the self-referential guard also drops it when it links back to itself; URL and title filters are tested on it here in isolation."
+    },
+    {
+      "kind": "venue_listing_page",
+      "title": null,
+      "url": "https://asiasociety.org/new-york/exhibitions/current",
+      "venue": "Asia Society Museum",
+      "source": "venues.exhibitions_url — the gallery's own listing page, fetched during 2026-09-15 investigations",
+      "evidence": "The listing page Agent 1 starts from. In a real run the self-referential guard also drops it when it links back to itself; URL and title filters are tested on it here in isolation."
+    }
+  ]
+}
