@@ -1032,11 +1032,16 @@ export async function filterLinksByLocation(
 Return ONLY a JSON array (no markdown):
 [{"url":"...","location":"nyc","location_note":"..."}]
 
-Use "other" ONLY when the title or URL names a specific place outside NYC (e.g. Venice Biennale, Art Basel Miami, London, Paris, LA).
+Use "other" ONLY when the address, title or URL names a specific place outside NYC (e.g. Venice Biennale, Art Basel Miami, London, Paris, LA).
 Use "nyc" for everything else, including community/partner/education programs, teen or outreach initiatives, and any name that merely sounds like it could involve another site without naming one — these are frequently presented at the institution's own NYC building. Default to "nyc" whenever there's no explicit non-NYC place name.
 
+Some exhibitions include "addresses": street addresses shown next to the link on the listing page. When present they are the strongest evidence:
+- Any address in New York City (Manhattan, Brooklyn, Queens, the Bronx, Staten Island, or a New York City zip code) → "nyc", even if the title names another place.
+- Addresses that are all in another city, state or country → "other".
+- A street named after a place ("Hudson Street", "Greenwich Street", "Boston Road") is not that place.
+
 Exhibitions:
-${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title })))}`,
+${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title, ...(l.addresses.length ? { addresses: l.addresses } : {}) })))}`,
       },
     ],
   })
@@ -1062,6 +1067,40 @@ ${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title })))}`,
   } catch {
     console.error('filterLinksByLocation: failed to parse response — keeping all links')
     return links
+  }
+}
+
+// ─── Address agreement (check #10) ────────────────────────────────────────────
+// Reached only when normalization (lib/address-normalize.ts) can't show that the
+// listing-page and show-page addresses are the same. Fails closed: an error reads
+// as 'different', which holds the show for review instead of publishing a
+// possible mismatch.
+
+export async function judgeSameAddress(a: string, b: string): Promise<'same' | 'different'> {
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 5,
+      messages: [
+        {
+          role: 'user',
+          content: `Do these two strings describe the same street address?
+
+Count them as the same when they differ only in formatting: abbreviations, punctuation, a floor or suite, a building's address range (e.g. "535-537" vs "537"), or a missing city, state or zip.
+Count them as different when they name a different street, or a different building on the same street.
+
+Answer only "same" or "different".
+
+A: ${a}
+B: ${b}`,
+        },
+      ],
+    })
+    const answer = response.content.find((block) => block.type === 'text')?.text?.toLowerCase().trim() ?? ''
+    return answer.startsWith('same') ? 'same' : 'different'
+  } catch (err) {
+    console.error(`judgeSameAddress failed for "${a}" / "${b}":`, err)
+    return 'different'
   }
 }
 
@@ -1342,6 +1381,7 @@ For each exhibition link found, return:
 - classification: exactly one of 'current' | 'past' | 'permanent' | 'upcoming', consistent with the reasoning above
 - content_type: exactly one of 'exhibition' | 'event' | 'online_only' | 'unclear'
 - location_hint: place text shown next to this link on the listing page — a city, a neighbourhood, a branch label, an address, or "on view at ..." phrasing. Copy it verbatim. Use null when no place text appears near the link. Do NOT infer a place from the gallery's name, from the artist, or from words inside the exhibition title (a show called "London Calling" at an unstated location is null, not "London")
+- addresses: every street address (house number and street) shown next to this link on the listing page for where this show is on view — a list of up to 3, one address per entry, each with the floor/suite, city, state and zip that go with it, even when those are printed on a separate line. Split a line that joins two addresses ("22 Cortlandt Alley & 394 Broadway") into two entries. Use [] when none appears near the link — a city, neighbourhood or branch name alone is not an address (that belongs in location_hint). Never infer an address from the gallery's name.
 
 Classification rules:
 - "On View", "Current", "Now On View" → 'current'
@@ -1362,7 +1402,7 @@ Content type rules:
 - Trust the site's own labeling/section headings over the presence of exhibition-like details (artist name, dates, image) — a card labeled "Project" with a real artist and real dates is still not an exhibition
 
 Return ONLY a JSON array (no markdown, no commentary):
-[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition","location_hint":"New York: 19th Street"}]
+[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition","location_hint":"New York: 19th Street","addresses":[]}]
 
 Return [] if no exhibition links are found.
 
@@ -1377,7 +1417,7 @@ ${stripped}`,
     const raw = extractJsonArray<{
       title?: string; url?: string
       classification?: string; classification_reason?: string
-      content_type?: string; location_hint?: string | null
+      content_type?: string; location_hint?: string | null; addresses?: unknown
     }>(text)
     if (!raw) return []
     return raw
@@ -1395,6 +1435,7 @@ ${stripped}`,
         location_hint: typeof item.location_hint === 'string' && item.location_hint.trim()
           ? item.location_hint.trim()
           : null,
+        addresses: cleanExtractedAddresses(item.addresses),
       }))
   } catch {
     console.error(`Failed to parse exhibition links JSON for ${venueName}:`, text.slice(0, 200))
@@ -1458,8 +1499,9 @@ ${urls.join('\n')}`,
         // No page content available in this URL-only fallback — can't judge content type, so
         // give benefit of the doubt rather than risk silently discarding a real exhibition.
         content_type: 'unclear' as ExhibitionLink['content_type'],
-        // URL-only fallback: no page text, so no place text to quote.
+        // URL-only fallback: no page text, so no place text or address to quote.
         location_hint: null,
+        addresses: [],
       }))
   } catch (err) {
     console.warn(`[classifyExhibitionUrls] Exception parsing response for ${venueName} (${urls.length} URLs, stop_reason: ${response.stop_reason}):`, err instanceof Error ? err.message : err)
@@ -1490,7 +1532,20 @@ export async function classifyExhibitionUrls(
 const EMPTY_DETAIL: ExhibitionDetailExtracted = {
   title: null, artists: [], start_date: null, end_date: null,
   date_notes: null, description: null, image_url: null, press_release_url: null,
-  show_type: 'exhibition', artist_bio: null,
+  show_type: 'exhibition', artist_bio: null, addresses: [],
+}
+
+// Up to three non-empty, de-duplicated entries. A bare string is accepted too, in
+// case a response slips back to the single-address shape.
+function cleanExtractedAddresses(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : typeof value === 'string' ? [value] : []
+  const out: string[] = []
+  for (const entry of list) {
+    if (typeof entry !== 'string') continue
+    const address = entry.trim().replace(/\s+/g, ' ')
+    if (address && !out.includes(address)) out.push(address)
+  }
+  return out.slice(0, 3)
 }
 
 function normalizeShowType(value: unknown): ExhibitionDetailExtracted['show_type'] {
@@ -1510,6 +1565,11 @@ CRITICAL RULES:
 - The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
 - show_type: "installation" when the page describes a site-specific, long-term, permanent, or on-view-indefinitely work/display (e.g. "long-term view", "permanent installation", "on view indefinitely", a commissioned site-specific work) — "exhibition" for a normal temporary show with a defined or expected run. Default to "exhibition" when unclear.
 - artist_bio: many exhibition pages have a separate biographical section about the artist(s), often under its own heading like "About the Artist," "More About [Name]," or "Biography" — distinct from the exhibition/show description above it. Extract this verbatim if present, separately from "description." If the page has bios for multiple artists, concatenate them, each preceded by the artist's name. Null if no such section exists on the page.
+- addresses: every street address where THIS exhibition is on view, as a list of up to 3 entries in page order — one location per entry, never two street addresses in one entry.
+  • Each entry is one complete address: house number and street, any floor/suite, then city, state and zip. Include the city, state and zip even when the page prints them on a separate line or in a separate element from the street — "533 West 19th Street" followed by "New York, New York 10011" becomes "533 West 19th Street, New York, New York 10011".
+  • A show held at several locations: when the page lists them as separate blocks (e.g. a "Locations" section with one labelled address each), return one entry per block. When one line joins addresses ("22 Cortlandt Alley & 394 Broadway"), split it into one entry per address, each carrying the city, state and zip they share.
+  • Prefer text about the show itself (e.g. "on view at 537 West 22nd Street"). A gallery address counts only when the page shows a single gallery address; if the page lists several gallery locations (a footer, a contact block) without saying which ones host this show, return [].
+  • Never infer an address from the gallery's name. [] if no street address is given.
 
 Return ONLY a JSON object (no markdown, no commentary):
 {
@@ -1522,7 +1582,8 @@ Return ONLY a JSON object (no markdown, no commentary):
   "image_url": "absolute URL of primary exhibition image — prefer hero/banner or og:image meta, not thumbnails/icons/logos — null if none",
   "press_release_url": "URL to a separate press release PDF or page if explicitly linked — null otherwise",
   "show_type": "exhibition" | "installation",
-  "artist_bio": "verbatim biographical text about the artist(s), separate from the exhibition description — null if no such section exists"
+  "artist_bio": "verbatim biographical text about the artist(s), separate from the exhibition description — null if no such section exists",
+  "addresses": ["one complete address per location: street, floor/suite, city, state, zip — [] if none"]
 }
 
 HTML:
@@ -1548,11 +1609,12 @@ Use these exact JSON fields (paths within the JSON):
 - image_url → heroAsset.desktop.sourceUrl (absolute https:// URL)
 - press_release_url → null
 - show_type → "installation" if the title/description indicates a long-term, permanent, or site-specific installation rather than a temporary show; "exhibition" otherwise (default)
+- addresses → every street address where this exhibition is on view, one per entry (up to 3), each with its city, state and zip; [] if none
 
 The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied verbatim) must be escaped as \\" so it does not terminate the JSON string early.
 
 Return ONLY a JSON object:
-{"title":"...","artists":["..."],"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null","date_notes":null,"description":"...","image_url":"https://...","press_release_url":null,"show_type":"exhibition"}
+{"title":"...","artists":["..."],"start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null","date_notes":null,"description":"...","image_url":"https://...","press_release_url":null,"show_type":"exhibition","addresses":[]}
 
 JSON data:
 ${nextDataJson}`,
@@ -1572,6 +1634,7 @@ ${nextDataJson}`,
     press_release_url: raw.press_release_url ?? null,
     show_type: normalizeShowType(raw.show_type),
     artist_bio: raw.artist_bio ?? null,
+    addresses: cleanExtractedAddresses(raw.addresses),
   }
 }
 
@@ -1598,6 +1661,7 @@ async function callClaudeForDetail(content: string, url: string): Promise<Exhibi
     press_release_url: raw.press_release_url ?? null,
     show_type: normalizeShowType(raw.show_type),
     artist_bio: raw.artist_bio ?? null,
+    addresses: cleanExtractedAddresses(raw.addresses),
   }
 }
 

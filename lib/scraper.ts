@@ -13,6 +13,13 @@ import {
   classifyExhibitionUrls,
 } from './claude'
 import { geocodeVenueIfNeeded } from './geocoding'
+import { addressesNameNonNyc, resolveShowLocation } from './show-location'
+import {
+  detectBlockPage,
+  isDefinitiveBlock,
+  isSectionPageUrl,
+  listingPageTitleReason,
+} from './listing-page-checks'
 import { generateMuseumCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from './museum-coverage'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import {
@@ -116,20 +123,8 @@ function cleanPressRelease(text: string | null): string | null {
 
 // ─── Validation helpers (Req #1, #3, #4, #5) ─────────────────────────────────
 
-// Req #3: URL-level section page check — runs before any Browserbase session.
-const SECTION_TERMINAL_SEGMENTS = new Set([
-  'exhibitions', 'current', 'upcoming', 'past', 'on-view', 'on-going',
-  'now-on-view', 'collection', 'programs', 'archive', 'view-all',
-])
-
-function isSectionPageUrl(url: string): boolean {
-  try {
-    const lastSegment = new URL(url).pathname.replace(/\/$/, '').split('/').pop()?.toLowerCase() ?? ''
-    return SECTION_TERMINAL_SEGMENTS.has(lastSegment)
-  } catch {
-    return false
-  }
-}
+// Req #3: the URL-level section page check (isSectionPageUrl) lives in
+// listing-page-checks.ts, next to the title-level check that shares its list.
 
 // Req #3: HTML-level section page check — runs after Browserbase fetch.
 const SECTION_TITLE_RE = /\b(current\s+)?exhibitions?\s*[-–|:·]\s*(current|past|upcoming|on.?view|all)\b|\ball\s+exhibitions?\b|on\s+view\s*[-–|:·]\s*\w|current\s+exhibitions?\s*$/i
@@ -266,37 +261,6 @@ function classifyShowByDates(
   return 'current'
 }
 
-// Detects bot-protection walls that make the page useless for link extraction.
-// Checks content signals in addition to size — MoMA returned 29K but was still blocked.
-// Returns the signal name that fired, or null if no bot wall is detected.
-function detectBotWall(html: string): string | null {
-  // If the page has exhibition links, it rendered successfully — not a bot wall.
-  // This prevents false positives on CF-protected sites that we successfully render
-  // via Browserbase (CF injects ray IDs, scripts, etc. into legitimately-served pages).
-  const hasExhibitLinks = /<a[^>]+href=["'][^"']*exhibit/i.test(html)
-  if (hasExhibitLinks) return null
-
-  // Hard signals: structural markers that only appear on challenge/block pages,
-  // not in ordinary HTML that Cloudflare serves through successfully.
-  // Note: /ray\s+id/ is intentionally excluded — it appears in normal CF-served HTML.
-  const hardSignals: Array<[RegExp, string]> = [
-    [/cf-browser-verification/i,   'cf-browser-verification'],
-    [/challenge-form/i,            'challenge-form'],
-    [/<title[^>]*>[^<]*just\s+a\s+moment[^<]*<\/title>/i, 'cf-just-a-moment'],
-    [/<title[^>]*>[^<]*attention\s+required[^<]*<\/title>/i, 'attention-required'],
-    [/verifying\s+you\s+are\s+human/i, 'verifying-human'],
-    [/checking\s+your\s+browser/i,     'checking-browser'],
-    [/ddos\s+protection\s+by/i,        'ddos-protection'],
-    [/too\s+many\s+requests/i,         'too-many-requests'],
-  ]
-
-  for (const [re, label] of hardSignals) {
-    if (re.test(html)) return label
-  }
-
-  return null
-}
-
 // Scans the FULL raw listing-page HTML for exhibition-like hrefs.
 // FIX 3 CONFIRMED: this function receives `listingHtml` — the complete HTML string
 // returned by fetchListingPage — NOT the 60K-sliced version used by extractExhibitionLinks.
@@ -333,9 +297,9 @@ function scanExhibitionHrefs(html: string, venueUrl: string, sectionPagesOut?: s
     if (pathname === selfPathname) continue
     if (selfPathname && selfPathname.startsWith(pathname + '/') && pathname.length > 1) continue
 
-    // Skip terminal section segments
-    const lastSegment = pathname.split('/').pop()?.toLowerCase() ?? ''
-    if (SECTION_TERMINAL_SEGMENTS.has(lastSegment)) {
+    // Skip section pages — same check as Tier 1's links (numbered variants and
+    // dated archive segments included).
+    if (isSectionPageUrl(absolute)) {
       sectionPagesOut?.push(absolute)
       continue
     }
@@ -346,37 +310,6 @@ function scanExhibitionHrefs(html: string, venueUrl: string, sectionPagesOut?: s
     // The URL must look like an individual show page — path contains an exhibition-like word
     if (!/(exhibition|show|display|on-view|exhibit)/.test(pathname.toLowerCase())) continue
 
-    results.push(absolute)
-  }
-
-  return results
-}
-
-// Broader fallback scan: same as scanExhibitionHrefs but WITHOUT the exhibition-keyword
-// pathname filter. Used when scanExhibitionHrefs returns 0 — passes all candidate URLs
-// to classifyExhibitionUrls (Claude Haiku) for semantic classification.
-function scanAllHrefs(html: string, venueUrl: string): string[] {
-  const base = (() => { try { return new URL(venueUrl).origin } catch { return '' } })()
-  const selfPathname = (() => { try { return new URL(venueUrl).pathname.replace(/\/$/, '') } catch { return '' } })()
-
-  const hrefs = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1])
-  const seen = new Set<string>()
-  const results: string[] = []
-
-  for (const href of hrefs) {
-    if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) continue
-    let absolute: string
-    try { absolute = href.startsWith('http') ? href : new URL(href, base).href } catch { continue }
-    if (base && !absolute.startsWith(base)) continue
-    if (seen.has(absolute)) continue
-    seen.add(absolute)
-    let pathname: string
-    try { pathname = new URL(absolute).pathname.replace(/\/$/, '') } catch { continue }
-    if (pathname === selfPathname) continue
-    if (selfPathname && selfPathname.startsWith(pathname + '/') && pathname.length > 1) continue
-    const lastSegment = pathname.split('/').pop()?.toLowerCase() ?? ''
-    if (SECTION_TERMINAL_SEGMENTS.has(lastSegment)) continue
-    if (pathname.split('/').filter(Boolean).length < 2) continue
     results.push(absolute)
   }
 
@@ -468,9 +401,13 @@ async function fetchListingPage(url: string, timeoutMs = 30000): Promise<{ html:
     // Plain HTTP fallback for SSR sites
     try {
       const res = await fetch(url, { headers: { 'User-Agent': FETCH_UA }, signal: AbortSignal.timeout(15000) })
-      if (res.ok) {
-        const html = await res.text()
-        if (html.length > 3000) return { html, success: true, method: 'http_fallback' }
+      const html = await res.text()
+      if (res.ok && html.length > 3000) return { html, success: true, method: 'http_fallback' }
+      // A refusal that is a recognisable block page is handed back as fetched, so
+      // the venue is recorded as blocked rather than as a network failure — the
+      // Vercel checkpoint arrives as an HTTP 429.
+      if (!res.ok && isDefinitiveBlock(detectBlockPage(html))) {
+        return { html, success: true, method: 'http_fallback' }
       }
     } catch (httpErr) {
       console.error(`Listing page plain HTTP also failed for ${url}:`, (httpErr as Error).message)
@@ -709,22 +646,46 @@ async function logDetailFetch(
   }
 }
 
+/** What the listing stage found, at whichever point the run stopped. */
+export interface ListingReport {
+  method: string
+  html_length: number
+  /** The block-page signal that ended or colored the run, e.g. "fingerprint:vercel-security-checkpoint". */
+  block_signal: string | null
+  links: { title: string; url: string }[]
+  discard_reasons: Record<string, number>
+}
+
 export interface ScrapeInstitutionResult {
   upserted: number
   /** Set when the venue as a whole could not be scraped (no URL, unreachable,
    *  bot-walled, no links found). Individual shows failing does not set it. */
   failureReason: string | null
+  listing?: ListingReport
+}
+
+export interface ScrapeInstitutionOptions {
+  /** Stop once the links to scrape are known, and write nothing. For testing the
+   *  listing stage against live sites; link extraction and the location filter
+   *  still call Claude, and fetching still opens Browserbase sessions. */
+  listingOnly?: boolean
 }
 
 export async function scrapeInstitution(
   venue: VenueRecord,
   skipPrereads = false,
-  errors: AgentRunError[] = []
+  errors: AgentRunError[] = [],
+  options: ScrapeInstitutionOptions = {}
 ): Promise<ScrapeInstitutionResult> {
   const vn = venue.name
   console.log(`[${vn}] Starting scrape — ${venue.exhibitions_url}`)
   const db = getSupabaseAdmin()
   const isMuseum = venue.type === 'museum'
+  const listingOnly = options.listingOnly === true
+  const updateVenue = async (fields: Record<string, unknown>) => {
+    if (listingOnly) return
+    await db.from('venues').update(fields).eq('id', venue.id)
+  }
 
   // A venue can reach the database with no exhibitions_url: Manual Entry allows
   // it, and the CSV import leaves it blank on the second venue of a
@@ -736,10 +697,7 @@ export async function scrapeInstitution(
   if (!venue.exhibitions_url?.trim()) {
     console.warn(`[${vn}] No exhibitions_url set — nothing to scrape`)
     errors.push({ item: vn, step: 'fetch', message: 'Venue has no exhibitions URL' })
-    await db.from('venues').update({
-      scrape_failed: true,
-      scrape_failure_reason: 'no_exhibitions_url',
-    }).eq('id', venue.id)
+    await updateVenue({ scrape_failed: true, scrape_failure_reason: 'no_exhibitions_url' })
     return { upserted: 0, failureReason: 'no_exhibitions_url' }
   }
 
@@ -774,24 +732,53 @@ export async function scrapeInstitution(
       location_rejected: 0,
       section_page_tier1: 0,
       section_page_tier2: 0,
+      title_check_tier1: 0,
+      title_check_tier2: 0,
       non_nyc_tier1: 0,
       upsert_failed: 0,
     },
   }
 
-  await geocodeVenueIfNeeded(venue.id, venue.address ?? null, venue.latitude, venue.longitude)
+  // A link whose whole title is listing-page language ("Past Exhibitions", "View
+  // All", "Hauser & Wirth Exhibitions") leads to another listing, not a show.
+  const dropListingTitles = (links: ExhibitionLink[], tier: 'tier1' | 'tier2'): ExhibitionLink[] =>
+    links.filter((link) => {
+      const reason = listingPageTitleReason(link.title, { venueName: vn, url: link.url })
+      if (!reason) return true
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
+        guard: `listingTitle:${tier}`, reason, title: link.title,
+      }))
+      diag.discard_reasons[tier === 'tier1' ? 'title_check_tier1' : 'title_check_tier2']++
+      return false
+    })
+
+  if (!listingOnly) await geocodeVenueIfNeeded(venue.id, venue.address ?? null, venue.latitude, venue.longitude)
 
   // ─── Step 1: listing page ─────────────────────────────────────────────────
   let { html: listingHtml, success: listingSuccess, method: listingMethod } =
     await fetchListingPage(venue.exhibitions_url)
 
-  // Retry with a longer timeout when the first attempt fails or returns suspiciously small HTML
-  // (< 10K on success = likely a bot-protection redirect page)
-  const likelBotWall = listingSuccess && listingHtml.length < 10000
-  if (!listingSuccess || likelBotWall) {
-    console.warn(`[${vn}] First listing fetch ${likelBotWall ? 'returned tiny HTML' : 'failed'} — retrying with 60s timeout`)
+  // Retry once, with a fresh browser session and a 60s timeout, when the fetch
+  // failed, came back under 10KB, or looks like a block page by any one signal
+  // (listing-page-checks.ts): a known fingerprint, a challenge phrase, or a large
+  // page with almost no text. Size alone missed the 32KB Vercel checkpoint.
+  const firstBlock = listingSuccess ? detectBlockPage(listingHtml) : null
+  const firstUnder10KB = listingSuccess && listingHtml.length < 10000
+  if (!listingSuccess || firstUnder10KB || firstBlock) {
+    const reason = !listingSuccess ? 'fetch_failed' : firstBlock ? `${firstBlock.kind}:${firstBlock.label}` : 'under_10kb'
+    console.warn(`[${vn}] Retrying listing fetch with a fresh session (${reason})`)
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, event: 'LISTING_RETRY', reason, html_length: listingHtml.length,
+    }))
     const retry = await fetchListingPage(venue.exhibitions_url, 60000)
-    if (retry.success && (!likelBotWall || retry.html.length > listingHtml.length)) {
+    const retryBlock = retry.success ? detectBlockPage(retry.html) : null
+    const useRetry = retry.success && (
+      !listingSuccess ||                                        // the first attempt failed outright
+      (firstBlock !== null && retryBlock === null) ||           // the retry got past the block
+      (retryBlock === null && retry.html.length > listingHtml.length) // more page, and not a block
+    )
+    if (useRetry) {
       listingHtml = retry.html
       listingSuccess = retry.success
       listingMethod = retry.method
@@ -805,42 +792,44 @@ export async function scrapeInstitution(
     html_length: listingHtml.length,
   }))
 
+  // Set when the page looked like a block page; returned in the listing report,
+  // and decides how a venue that yields no links is recorded.
+  let blockNote: string | null = null
+  const listingReport = (links: ExhibitionLink[]): ListingReport => ({
+    method: listingMethod,
+    html_length: listingHtml.length,
+    block_signal: blockNote,
+    links: links.map((l) => ({ title: l.title, url: l.url })),
+    discard_reasons: { ...diag.discard_reasons },
+  })
+
+  // Every venue-level failure below returns a failureReason and writes nothing
+  // else: the queue (finishVenueScrape) turns it into error1 → error2 → error3.
   if (!listingSuccess) {
     console.error(`[${vn}] Listing page fetch failed after retry — marking scrape_failed`)
     errors.push({ item: vn, step: 'fetch', message: 'Listing page fetch failed after retry' })
-    await db.from('venues').update({
-      scrape_failed: true,
-      scrape_failure_reason: 'fetch_failed',
-    }).eq('id', venue.id)
-    return { upserted: 0, failureReason: 'fetch_failed' }
+    await updateVenue({ scrape_failed: true, scrape_failure_reason: 'fetch_failed' })
+    return { upserted: 0, failureReason: 'fetch_failed', listing: listingReport([]) }
   }
 
-  // Bot-wall detection: check for known bot-protection signals regardless of HTML size.
-  // Size alone is insufficient — MoMA returned 29K but was still bot-blocked.
-  const botWallSignal = detectBotWall(listingHtml)
-  if (botWallSignal) {
+  // A fingerprint or phrase match is proof: the venue is recorded as blocked and
+  // link extraction, which could only find nothing, is skipped. A page that is
+  // merely suspicious — a large page with almost no text, or one still under 10KB
+  // — goes on to link extraction, because JavaScript-shell sites look the same
+  // before rendering. It only counts as blocked if no links come out of it.
+  const blockSignal = detectBlockPage(listingHtml)
+  if (isDefinitiveBlock(blockSignal)) {
+    blockNote = `${blockSignal!.kind}:${blockSignal!.label}`
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'BOT_WALL_DETECTED',
-      html_size: listingHtml.length, signal: botWallSignal,
+      html_size: listingHtml.length, signal: blockNote,
     }))
-    errors.push({ item: vn, step: 'fetch', message: `Bot wall detected (${botWallSignal})` })
-    await db.from('venues').update({
-      scrape_failed: true,
-      scrape_failure_reason: 'bot_protected',
-    }).eq('id', venue.id)
-    return { upserted: 0, failureReason: 'bot_protected' }
+    errors.push({ item: vn, step: 'fetch', message: `Bot wall detected (${blockNote})` })
+    await updateVenue({ scrape_failed: true, scrape_failure_reason: 'bot_protected' })
+    return { upserted: 0, failureReason: 'bot_protected', listing: listingReport([]) }
   }
-
-  // Still too small after retry and no specific bot signal → flag anyway
-  if (listingHtml.length < 10000) {
-    console.warn(`[${vn}] Listing HTML too small after retry (${listingHtml.length}B) — likely bot protection`)
-    errors.push({ item: vn, step: 'fetch', message: `Listing HTML too small after retry (${listingHtml.length}B) — likely bot protection` })
-    await db.from('venues').update({
-      scrape_failed: true,
-      scrape_failure_reason: 'bot_protected',
-    }).eq('id', venue.id)
-    return { upserted: 0, failureReason: 'bot_protected' }
-  }
+  if (blockSignal) blockNote = `${blockSignal.kind}:${blockSignal.label}`
+  else if (listingHtml.length < 10000) blockNote = `under_10kb:${listingHtml.length}B`
 
   // Logged so a note's effect is legible in the run output: if a venue keeps
   // failing you need to know whether the hint was actually in play, and if it
@@ -914,14 +903,13 @@ export async function scrapeInstitution(
   // re-climbing. Only widens: a smaller stored value is never written back.
   const endedAt = LOCATION_WINDOW_LADDER[windowIdx]
   if (ladderEligible && hintsFound > 0 && endedAt !== (venue.location_window_size ?? 0)) {
-    await db.from('venues').update({ location_window_size: endedAt }).eq('id', venue.id)
+    if (!listingOnly) await db.from('venues').update({ location_window_size: endedAt }).eq('id', venue.id)
     console.log(`[${vn}] Stored location window size ${endedAt} for future scrapes`)
   }
 
   // Tier 1 is a content extraction rather than a URL scan, so unlike the two href
-  // scans below it has never been filtered against SECTION_TERMINAL_SEGMENTS —
-  // scanExhibitionHrefs and scanAllHrefs both apply it inline as they build their
-  // candidate list. Until now a Tier 1 link ending in /past or /archive was only
+  // scan below it has never been filtered against SECTION_TERMINAL_SEGMENTS —
+  // scanExhibitionHrefs applies it inline as it builds its candidate list. Until now a Tier 1 link ending in /past or /archive was only
   // stopped in Step 2's per-link loop, after classification, content-type,
   // location and self-link filtering had already been spent on it. Same function,
   // same set, just applied where Tier 1's links are produced.
@@ -941,8 +929,15 @@ export async function scrapeInstitution(
     return false
   })
 
-  // Fallback tier 1: if extractExhibitionLinks found nothing, scan full HTML for exhibition hrefs.
-  // Recovers venues where content is past the 60K slice window.
+  // Tier 1's titles are read off the listing page itself. Checked here, before the
+  // fallback, for the same reason as the URL check above.
+  allLinks = dropListingTitles(allLinks, 'tier1')
+
+  // Tier 2: if Tier 1 found nothing, scan the full HTML for exhibition-shaped hrefs
+  // and let a cheap model sort them. Recovers venues whose shows sit past Tier 1's
+  // text window. (Tier 3, a scan of every link on the page, was removed 2026-09-15:
+  // no exhibition on record depends on it, and it once took a JavaScript bundle for
+  // a show.)
   if (allLinks.length === 0) {
     console.warn(`[${vn}] extractExhibitionLinks returned 0 — trying exhibition href scan`)
     const tier2SectionPages: string[] = []
@@ -963,33 +958,24 @@ export async function scrapeInstitution(
       candidates: candidateUrls.slice(0, 20),
     }))
     if (candidateUrls.length > 0) {
-      allLinks = await classifyExhibitionUrls(candidateUrls.slice(0, 60), vn, venue.exhibitions_url)
+      const tier2Links = await classifyExhibitionUrls(candidateUrls.slice(0, 60), vn, venue.exhibitions_url)
+      // Tier 2's titles are guessed from the URL slug rather than read from the
+      // page — a weaker signal, checked the same way.
+      allLinks = dropListingTitles(tier2Links, 'tier2')
     }
   }
 
-  // Fallback tier 2: broader scan without exhibition-keyword URL filter + Haiku classification.
-  // Covers SPAs (Wix, Squarespace) where show URLs don't contain "exhibition" in the path.
+  // No links anywhere. A page that looked suspicious (large with almost no text,
+  // or under 10KB) is recorded as blocked; any other page as zero links.
   if (allLinks.length === 0) {
-    console.warn(`[${vn}] exhibition href scan returned 0 — trying broad href scan + Haiku classification`)
-    const broadCandidates = scanAllHrefs(listingHtml, venue.exhibitions_url)
-    console.log(JSON.stringify({
-      tag: 'AGENT1', venue: vn, event: 'BROAD_HREF_SCAN',
-      candidates_found: broadCandidates.length,
-    }))
-    if (broadCandidates.length > 0) {
-      allLinks = await classifyExhibitionUrls(broadCandidates.slice(0, 80), vn, venue.exhibitions_url)
-    }
-  }
-
-  // After all attempts: if still 0 links, flag for manual entry
-  if (allLinks.length === 0) {
-    console.warn(`[${vn}] No links after href scan — marking scrape_failed`)
-    errors.push({ item: vn, step: 'fetch', message: 'No exhibition links found after href scan' })
-    await db.from('venues').update({
-      scrape_failed: true,
-      scrape_failure_reason: 'zero_links_after_retry',
-    }).eq('id', venue.id)
-    return { upserted: 0, failureReason: 'zero_links_after_retry' }
+    const failureReason = blockNote ? 'bot_protected' : 'zero_links_after_retry'
+    const message = blockNote
+      ? `No exhibition links on a suspected block page (${blockNote})`
+      : 'No exhibition links found after href scan'
+    console.warn(`[${vn}] ${message} — marking scrape_failed`)
+    errors.push({ item: vn, step: 'fetch', message })
+    await updateVenue({ scrape_failed: true, scrape_failure_reason: failureReason })
+    return { upserted: 0, failureReason, listing: listingReport([]) }
   }
 
   // Dedup by URL — Claude's Step-1 classification can return the same detail
@@ -1017,14 +1003,18 @@ export async function scrapeInstitution(
   // it lets through is unchanged and still faces the authoritative check after
   // its detail page is downloaded; nothing here marks a link as confirmed-NYC.
   allLinks = allLinks.filter((link) => {
-    const city = hintNamesNonNycCity(link.location_hint, link.title)
+    // Street addresses read off the listing page count too — only when every one
+    // of them is elsewhere, and only the text after the street ("88 Hudson
+    // Street" is not Hudson, NY).
+    const city = hintNamesNonNycCity(link.location_hint, link.title) ?? addressesNameNonNyc(link.addresses)
     if (!city) return true
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
       guard: 'locationHint:tier1',
-      reason: `location_hint names ${city}, not NYC`,
+      reason: `listing-page place text names ${city}, not NYC`,
       title: link.title,
       location_hint: link.location_hint,
+      addresses: link.addresses,
     }))
     diag.discard_reasons.non_nyc_tier1++
     return false
@@ -1051,7 +1041,7 @@ export async function scrapeInstitution(
 
   if (currentLinks.length === 0) {
     console.log(`[${vn}] No current shows — updating check_back_date`)
-    await db.from('venues').update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
+    await updateVenue({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null })
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'SCRAPE_COMPLETE',
       shows_found_on_listing: diag.shows_found_on_listing,
@@ -1063,7 +1053,7 @@ export async function scrapeInstitution(
       location_ladder: diag.location_ladder,
       pending_wipe: diag.pending_wipe,
     }))
-    return { upserted: 0, failureReason: null }
+    return { upserted: 0, failureReason: null, listing: listingReport([]) }
   }
 
   // Content-type filter: only exhibitions of physical artwork proceed to Step 2.
@@ -1083,7 +1073,7 @@ export async function scrapeInstitution(
       count: discardedByContentType.length,
       items: discardedByContentType.map((l) => ({ title: l.title, url: l.url, content_type: l.content_type })),
     }))
-    await db.from('agent1_discarded_items').insert(
+    if (!listingOnly) await db.from('agent1_discarded_items').insert(
       discardedByContentType.map((l) => ({
         institution_id: venue.institution_id ?? null,
         title: l.title,
@@ -1095,8 +1085,8 @@ export async function scrapeInstitution(
 
   if (exhibitionLinks.length === 0) {
     console.log(`[${vn}] All current/upcoming links were events or online-only — updating check_back_date`)
-    await db.from('venues').update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
-    return { upserted: 0, failureReason: null }
+    await updateVenue({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null })
+    return { upserted: 0, failureReason: null, listing: listingReport([]) }
   }
 
   // Req #2: Location filter — remove shows at fairs, partner venues, other cities
@@ -1151,7 +1141,7 @@ export async function scrapeInstitution(
 
   if (guardedLinks.length === 0) {
     console.warn(`[${vn}] No current links remain after location + self-referential filtering`)
-    await db.from('venues').update({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null }).eq('id', venue.id)
+    await updateVenue({ check_back_date: nextScheduledScrapeDate(venue.scrape_day_of_week ?? null, new Date()), scrape_failed: false, manual_entry_required: false, scrape_failure_reason: null })
     const totalDiscarded = diag.shows_found_on_listing
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'SCRAPE_COMPLETE',
@@ -1164,7 +1154,12 @@ export async function scrapeInstitution(
       location_ladder: diag.location_ladder,
       pending_wipe: diag.pending_wipe,
     }))
-    return { upserted: 0, failureReason: null }
+    return { upserted: 0, failureReason: null, listing: listingReport([]) }
+  }
+
+  // Listing-only mode ends here, before the stale-pending wipe and any show page.
+  if (listingOnly) {
+    return { upserted: 0, failureReason: null, listing: listingReport(guardedLinks) }
   }
 
   if (guardedLinks.length > DETAIL_SESSION_CAP) {
@@ -1401,20 +1396,35 @@ export async function scrapeInstitution(
     // another institution entirely reach this point. This is the first moment the
     // page that actually states the location is in hand, so it is the last honest
     // chance to check. No extra fetch: it reads the HTML already in memory.
-    const location = await verifyExhibitionLocation(
+    //
+    // resolveShowLocation then settles the show's own address: it weighs any
+    // street address from the listing page (T1) and this page (check #4) against
+    // the page check, and uses the venue address only when neither page gave one.
+    const pageLocation = await verifyExhibitionLocation(
       detailHtml,
       cleanTitle,
       vn,
       venue.address ?? null
     )
+    const location = await resolveShowLocation({
+      listingAddresses: link.addresses,
+      detailAddresses: detail.addresses,
+      pageCheck: pageLocation,
+      venue,
+    })
 
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, url: link.url, event: 'LOCATION_CHECK',
       title: cleanTitle,
       verdict: location.verdict,
       city: location.city,
-      source: location.source,
-      evidence: location.evidence,
+      page_verdict: pageLocation.verdict,
+      source: pageLocation.source,
+      evidence: pageLocation.evidence,
+      show_locations: location.locations.map((l) => l.address),
+      show_location_source: location.source,
+      flags: location.flags,
+      ...location.trace,
     }))
 
     if (location.verdict === 'non_nyc') {
@@ -1451,15 +1461,13 @@ export async function scrapeInstitution(
     const isOngoing = isInstallation && !!detail.start_date && !detail.end_date
 
     const missingFields: string[] = []
-    // 'unknown' means the page said nothing either way about where the show is.
-    // That is only worth worrying about when the gallery has somewhere else to
-    // be: a single-address New York gallery saying nothing is at its own
-    // address, and when it isn't it says so — which is how the Hudson, East
-    // Hampton and Rockport shows are caught. Holding those too would bury real
-    // shows in the queue for no gain. For a gallery with branches, silence is
-    // genuinely ambiguous, and treating that as a pass is exactly how the
-    // wrong-city shows reached the site, so it goes to pending for review.
-    if (location.verdict === 'unknown' && location.galleryMultiCity) missingFields.push('location_unverified')
+    // From resolveShowLocation: 'location_unverified' when nothing places the show
+    // (no address, and a gallery with branches elsewhere; or an address no borough
+    // can be found for), 'address_error' when the listing page and show page give
+    // different addresses, when an extracted address is a corrupted merge, or when
+    // an address placed only by its zip meets a page naming another city. Either
+    // one holds the show in pending. Several clean addresses are never a flag.
+    missingFields.push(...location.flags)
     if (dateClass === 'upcoming') missingFields.push('upcoming')
     if (!detail.start_date) missingFields.push('start_date')
     if (!detail.end_date && !isOngoing) missingFields.push('end_date')
@@ -1519,6 +1527,14 @@ export async function scrapeInstitution(
       is_ongoing: isOngoing,
       missing_fields: missingFields,
       preread_type: isMuseum ? 'coverage_only' : 'full',
+      // Up to three locations; only the first is geocoded — it's the map pin.
+      show_location: location.locations[0]?.address ?? null,
+      show_location_latitude: location.locations[0]?.latitude ?? null,
+      show_location_longitude: location.locations[0]?.longitude ?? null,
+      show_location_neighborhood: location.locations[0]?.neighborhood ?? null,
+      show_location_2: location.locations[1]?.address ?? null,
+      show_location_3: location.locations[2]?.address ?? null,
+      show_location_source: location.source,
     }
 
     let exhibitionId: string
@@ -1776,7 +1792,7 @@ export async function scrapeInstitution(
 // ─── Institution queries ──────────────────────────────────────────────────────
 
 const VENUE_SELECT =
-  'id, name, exhibitions_url, active, address, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, location_window_size, scrape_day_of_week, scrape_status, scrape_status_changed_at, scrape_failures, institutions!inner(id, type, is_multi_city)'
+  'id, name, exhibitions_url, active, address, neighborhood, latitude, longitude, check_back_date, scrape_failed, manual_entry_required, scrape_failure_reason, scrape_notes, scrapable, location_window_size, scrape_day_of_week, scrape_status, scrape_status_changed_at, scrape_failures, institutions!inner(id, type, is_multi_city)'
 
 function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1789,6 +1805,7 @@ function normalizeVenueRow(v: Record<string, unknown>): VenueRecord {
     active: v.active as boolean,
     institution_id: institution?.id ?? undefined,
     address: (v.address as string | null) ?? null,
+    neighborhood: (v.neighborhood as string | null) ?? null,
     latitude: (v.latitude as number | null) ?? null,
     longitude: (v.longitude as number | null) ?? null,
     check_back_date: (v.check_back_date as string | null) ?? null,

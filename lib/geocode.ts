@@ -37,16 +37,39 @@ export const NYC_PROXIMITY = '-73.99,40.75'
 /** Query string fragment shared by every Mapbox forward-geocode call. */
 export const NYC_GEOCODE_PARAMS = `&country=US&bbox=${NYC_BBOX}&proximity=${NYC_PROXIMITY}`
 
+export interface GeocodeDetail {
+  lat: number
+  lng: number
+  placeName: string
+  /** Mapbox place_type, e.g. ['address'] for a house-number match, ['street'] for a street centroid. */
+  placeType: string[]
+  /** House number Mapbox matched — present only on address features. */
+  houseNumber: string | null
+  street: string | null
+  postcode: string | null
+  neighborhood: string | null
+}
+
 /**
  * Forward-geocode a street address. Returns null when the address cannot be
  * resolved — callers treat coordinates as optional.
- *
- * Failures are logged rather than swallowed: the silent null is exactly what let
- * the 403 above go unnoticed for as long as it did.
  */
 export async function geocodeAddress(
   address: string
 ): Promise<{ lat: number; lng: number } | null> {
+  const detail = await geocodeAddressDetailed(address)
+  return detail ? { lat: detail.lat, lng: detail.lng } : null
+}
+
+/**
+ * The same NYC-bounded lookup as geocodeAddress, keeping what Mapbox knows about
+ * the match — house number, street, zip and neighborhood from the feature's
+ * context — for callers that need to check or standardize the address itself.
+ *
+ * Failures are logged rather than swallowed: the silent null is exactly what let
+ * the 403 above go unnoticed for as long as it did.
+ */
+export async function geocodeAddressDetailed(address: string): Promise<GeocodeDetail | null> {
   if (!MAPBOX_TOKEN) {
     console.warn('geocodeAddress: MAPBOX_SERVER_TOKEN is not set — skipping')
     return null
@@ -70,7 +93,18 @@ export async function geocodeAddress(
       return null
     }
     const [lng, lat] = feature.center as [number, number]
-    return { lat, lng }
+    const context = (feature.context ?? []) as { id?: string; text?: string }[]
+    const fromContext = (kind: string) => context.find((c) => c.id?.startsWith(`${kind}.`))?.text ?? null
+    return {
+      lat,
+      lng,
+      placeName: (feature.place_name as string | undefined) ?? '',
+      placeType: (feature.place_type as string[] | undefined) ?? [],
+      houseNumber: (feature.address as string | undefined) ?? null,
+      street: (feature.text as string | undefined) ?? null,
+      postcode: fromContext('postcode'),
+      neighborhood: fromContext('neighborhood'),
+    }
   } catch (err) {
     console.warn(`geocodeAddress: request failed for "${address}":`, (err as Error).message)
     return null

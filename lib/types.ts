@@ -92,6 +92,8 @@ export interface ExhibitionDetailData {
   venue_address: string | null
   venue_neighborhood: string | null
   resolved_address: string | null
+  /** Every address to show, in order — more than one for a multi-location show. */
+  resolved_addresses: string[]
   address_override: string | null
   address_override_neighborhood: string | null
   lat: number | null
@@ -161,6 +163,7 @@ export interface VenueRecord {
   active: boolean
   institution_id?: string
   address?: string | null
+  neighborhood?: string | null
   latitude?: number | null
   longitude?: number | null
   check_back_date?: string | null
@@ -208,6 +211,9 @@ export interface ExhibitionLink {
    *  Only ever used to discard clearly non-NYC links early — never to confirm a
    *  link is in NYC. Tier 2/3 have no page content, so they always emit null. */
   location_hint: string | null
+  /** Street addresses shown next to the link on the listing page (up to 3), or [].
+   *  Compared against the show page's addresses at check #10. Tier 2/3 always emit []. */
+  addresses: string[]
 }
 
 export interface ExhibitionDetailExtracted {
@@ -221,6 +227,9 @@ export interface ExhibitionDetailExtracted {
   press_release_url: string | null
   show_type: 'exhibition' | 'installation'
   artist_bio: string | null
+  /** Street addresses where this show is on view — up to 3, one location per
+   *  entry, each with its city and zip — or []. */
+  addresses: string[]
 }
 
 export type VenueHours = {
