@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
+import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 import type { ExhibitionDetailData, CoverageItem, CoverageDisplayItem } from '@/lib/types'
 import type { InstitutionType } from '@/lib/institution-types'
 
@@ -43,6 +44,12 @@ export default async function ExhibitionPage({ params }: PageProps) {
       address_override_neighborhood,
       override_latitude,
       override_longitude,
+      show_location,
+      show_location_2,
+      show_location_3,
+      show_location_neighborhood,
+      show_location_latitude,
+      show_location_longitude,
       preread_type,
       coverage,
       venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name, type, exhibitors)),
@@ -65,14 +72,19 @@ export default async function ExhibitionPage({ params }: PageProps) {
     address_override_neighborhood: string | null
     override_latitude: number | null
     override_longitude: number | null
+    show_location: string | null
+    show_location_2: string | null
+    show_location_3: string | null
+    show_location_neighborhood: string | null
+    show_location_latitude: number | null
+    show_location_longitude: number | null
     is_ongoing: boolean | null
     preread_type: string | null
     coverage: CoverageItem[] | null
   }
 
-  const hasOverride = raw.address_override && raw.override_latitude && raw.override_longitude
-  const resolvedLat = hasOverride ? Number(raw.override_latitude) : raw.venues.latitude ? Number(raw.venues.latitude) : null
-  const resolvedLng = hasOverride ? Number(raw.override_longitude) : raw.venues.longitude ? Number(raw.venues.longitude) : null
+  // address_override → show_location → venue — see lib/exhibition-location.ts.
+  const location = resolveExhibitionLocation(raw, raw.venues)
 
   const prereadType: 'full' | 'coverage_only' =
     raw.preread_type === 'coverage_only' ? 'coverage_only' : 'full'
@@ -161,11 +173,12 @@ export default async function ExhibitionPage({ params }: PageProps) {
     institution_id: raw.venues.institution_id ?? null,
     venue_address: raw.venues.address,
     venue_neighborhood: raw.venues.neighborhood,
-    resolved_address: raw.address_override ?? raw.venues.address,
+    resolved_address: location.address,
+    resolved_addresses: location.addresses,
     address_override: raw.address_override,
     address_override_neighborhood: raw.address_override_neighborhood,
-    lat: resolvedLat,
-    lng: resolvedLng,
+    lat: location.lat,
+    lng: location.lng,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     artists: (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
     preread_type: prereadType,

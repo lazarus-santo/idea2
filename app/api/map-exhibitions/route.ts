@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/geocode'
+import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 import type { MapExhibition } from '@/lib/types'
 
 export async function GET() {
@@ -18,6 +19,9 @@ export async function GET() {
       address_override,
       override_latitude,
       override_longitude,
+      show_location,
+      show_location_latitude,
+      show_location_longitude,
       venues!inner(id, name, latitude, longitude, hours, address, institution_id,
         institutions!inner(id, name, type)
       ),
@@ -44,8 +48,12 @@ export async function GET() {
     // still drops it once the fair closes.
     .filter((ex) => ex.venues?.institutions?.type === 'fair' || !ex.start_date || ex.start_date <= today)
     .filter((ex) => ex.is_ongoing || ex.end_date || (ex.start_date && ex.start_date >= cutoff))
-    // Keep if venue has coords OR has an address_override to geocode
-    .filter((ex) => (ex.venues?.latitude && ex.venues?.longitude) || ex.address_override)
+    // Keep if anything can place it: venue coords, show_location coords, or an address_override to geocode
+    .filter((ex) =>
+      (ex.venues?.latitude && ex.venues?.longitude) ||
+      (ex.show_location_latitude && ex.show_location_longitude) ||
+      ex.address_override
+    )
 
   // Geocode address overrides that don't have cached coordinates yet
   const needsGeocode = candidates.filter(
@@ -75,14 +83,9 @@ export async function GET() {
     const { venues: venueData, exhibition_artists, ...rest } = ex
     const institution = venueData.institutions ?? null
 
-    // Resolved coordinates: address_override geocode takes precedence over venue lat/lng
-    const hasOverride = rest.address_override && rest.override_latitude && rest.override_longitude
-    const resolvedLat = hasOverride
-      ? Number(rest.override_latitude)
-      : venueData.latitude ? Number(venueData.latitude) : null
-    const resolvedLng = hasOverride
-      ? Number(rest.override_longitude)
-      : venueData.longitude ? Number(venueData.longitude) : null
+    // address_override → show_location → venue, for both the pin and the address.
+    // venue_lat / venue_lng keep their names: they're the map's existing contract.
+    const location = resolveExhibitionLocation(rest, venueData)
 
     return {
       id: rest.id,
@@ -95,10 +98,10 @@ export async function GET() {
       venue_type: (institution?.type ?? 'gallery') as MapExhibition['venue_type'],
       venue_id: venueData.id,
       venue_name: venueData.name,
-      venue_lat: resolvedLat,
-      venue_lng: resolvedLng,
+      venue_lat: location.lat,
+      venue_lng: location.lng,
       venue_hours: venueData.hours ?? null,
-      venue_address: rest.address_override ?? venueData.address ?? null,
+      venue_address: location.address,
       artists: (exhibition_artists ?? [])
         .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
         .filter(Boolean) as string[],

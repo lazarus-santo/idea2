@@ -10,6 +10,7 @@ import ExhibitionFilters from './ExhibitionFilters'
 import { createPrimaryMarkerEl } from '@/lib/mapMarkers'
 import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
 import { VENUE_TABS, TAB_LABEL, tabMatches, type VenueTab } from '@/lib/institution-types'
+import { groupByPlace } from '@/lib/exhibition-location'
 
 // ── Holiday detection ──────────────────────────────────────────────────────────
 
@@ -456,16 +457,14 @@ export default function StandaloneMap() {
       : exhibitions.filter(ex => tabMatches(venueFilter as VenueTab, ex.venue_type))
     if (subFilter === 'closing-soon') visible = visible.filter(isClosingSoon)
 
-    // Group by venue only to detect co-located exhibitions for jitter
-    const byVenue = new Map<string, MapExhibition[]>()
-    visible.forEach(ex => {
-      if (!ex.venue_lat || !ex.venue_lng) return
-      const arr = byVenue.get(ex.venue_id) ?? []
-      arr.push(ex)
-      byVenue.set(ex.venue_id, arr)
-    })
+    // One pin per venue per place: a venue's shows share a pin unless one has
+    // resolved to a different address (address_override or show_location).
+    const pins = groupByPlace(
+      visible.filter(ex => ex.venue_lat && ex.venue_lng),
+      ex => ({ venueId: ex.venue_id, lat: ex.venue_lat!, lng: ex.venue_lng! })
+    )
 
-    byVenue.forEach(shows => {
+    pins.forEach(shows => {
       const primary = shows[0]
       const lat = primary.venue_lat!
       const lng = primary.venue_lng!

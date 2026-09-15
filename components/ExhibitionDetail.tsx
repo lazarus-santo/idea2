@@ -171,18 +171,19 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
           )}
 
           {dateRange && <p className="ep-meta">{dateRange}</p>}
-          {exhibition.resolved_address && (
-            <p className="ep-meta">
+          {/* One line per location — a multi-location show lists each of its addresses. */}
+          {exhibition.resolved_addresses.map((address) => (
+            <p key={address} className="ep-meta">
               <a
-                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(exhibition.resolved_address)}`}
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ep-meta-link"
               >
-                {exhibition.resolved_address}
+                {address}
               </a>
             </p>
-          )}
+          ))}
 
           {hasCollapsibles && <div className="ep-sections-gap" />}
 

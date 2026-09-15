@@ -7,6 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 import type { NearbyExhibition } from '@/lib/types'
 import { createPrimaryMarkerEl, createSecondaryMarkerEl } from '@/lib/mapMarkers'
 import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
+import { groupByPlace } from '@/lib/exhibition-location'
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
 
@@ -57,16 +58,12 @@ export default function ExhibitionMiniMap({ exhibitionId, lat, lng }: Exhibition
         secondaryMarkersRef.current = []
 
         const addMarkers = () => {
-          // Group by venue — a nearby venue with 2+ current shows gets one marker,
-          // paged via the shared popup card's prev/next arrows, same as the other map surfaces.
-          const byVenue = new Map<string, NearbyExhibition[]>()
-          data.forEach((ex) => {
-            const arr = byVenue.get(ex.venue_id) ?? []
-            arr.push(ex)
-            byVenue.set(ex.venue_id, arr)
-          })
+          // One marker per venue per place — a nearby venue with 2+ current shows at
+          // the same address gets one marker, paged via the shared popup card's
+          // prev/next arrows, same as the other map surfaces.
+          const pins = groupByPlace(data, (ex) => ({ venueId: ex.venue_id, lat: ex.lat, lng: ex.lng }))
 
-          byVenue.forEach((shows) => {
+          pins.forEach((shows) => {
             const primary = shows[0]
             const el = createSecondaryMarkerEl()
 

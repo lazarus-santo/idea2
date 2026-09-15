@@ -7,6 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css'
 import type { MapExhibition } from '@/lib/types'
 import { createPrimaryMarkerEl } from '@/lib/mapMarkers'
 import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
+import { groupByPlace } from '@/lib/exhibition-location'
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
 
@@ -137,15 +138,11 @@ export default function ExhibitionsSplitView({ exhibitions, hoveredId, onHover }
 
     const bounds = new mapboxgl.LngLatBounds()
 
-    // Group by venue to detect co-located exhibitions for jitter
-    const byVenue = new Map<string, MapExhibition[]>()
-    withCoords.forEach(ex => {
-      const arr = byVenue.get(ex.venue_id) ?? []
-      arr.push(ex)
-      byVenue.set(ex.venue_id, arr)
-    })
+    // One pin per venue per place: a venue's shows share a pin unless one has
+    // resolved to a different address (address_override or show_location).
+    const pins = groupByPlace(withCoords, ex => ({ venueId: ex.venue_id, lat: ex.venue_lat!, lng: ex.venue_lng! }))
 
-    byVenue.forEach(shows => {
+    pins.forEach(shows => {
       const primary = shows[0]
       const lat = primary.venue_lat!
       const lng = primary.venue_lng!

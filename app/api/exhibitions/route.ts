@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 
 // GET /api/exhibitions — returns current published exhibitions with prereads
 export async function GET() {
@@ -40,6 +41,8 @@ export async function GET() {
       const raw = ex as any
       const { venues: venueData, exhibition_artists, ...rest } = raw
       const institution = venueData.institutions ?? null
+      // `*` already carries address_override and show_location — see lib/exhibition-location.ts for the order.
+      const location = resolveExhibitionLocation(rest, venueData)
 
       return {
         ...rest,
@@ -49,8 +52,8 @@ export async function GET() {
         venue_type: institution?.type ?? 'gallery',
         venue_url: venueData.exhibitions_url,
         venue_address: venueData.address ?? null,
-        resolved_address: rest.address_override ?? venueData.address ?? null,
-        resolved_neighborhood: rest.address_override_neighborhood ?? venueData.neighborhood ?? null,
+        resolved_address: location.address,
+        resolved_neighborhood: location.neighborhood,
         artists: (exhibition_artists ?? [])
           .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
           .filter(Boolean) as string[],

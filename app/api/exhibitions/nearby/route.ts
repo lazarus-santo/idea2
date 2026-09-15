@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 import type { NearbyExhibition } from '@/lib/types'
 
 function haversineDistanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -38,6 +39,9 @@ export async function GET(request: Request) {
       address_override,
       override_latitude,
       override_longitude,
+      show_location,
+      show_location_latitude,
+      show_location_longitude,
       venues!inner(id, name, latitude, longitude,
         institutions(id, name)
       ),
@@ -55,13 +59,7 @@ export async function GET(request: Request) {
   const nearby: NearbyExhibition[] = ((data ?? []) as any[])
     .filter((ex) => ex.id !== exclude)
     .map((ex) => {
-      const hasOverride = ex.address_override && ex.override_latitude && ex.override_longitude
-      const resolvedLat = hasOverride
-        ? Number(ex.override_latitude)
-        : ex.venues?.latitude ? Number(ex.venues.latitude) : null
-      const resolvedLng = hasOverride
-        ? Number(ex.override_longitude)
-        : ex.venues?.longitude ? Number(ex.venues.longitude) : null
+      const { lat: resolvedLat, lng: resolvedLng } = resolveExhibitionLocation(ex, ex.venues ?? {})
 
       if (!resolvedLat || !resolvedLng) return null
 
