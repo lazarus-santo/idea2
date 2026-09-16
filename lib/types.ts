@@ -201,12 +201,30 @@ export interface ExhibitionRaw {
   image_url: string | null
 }
 
+/**
+ * How much the listing page itself said about when a show runs.
+ *  - 'dated'   real date text, or a classification the model justified with dates
+ *  - 'ongoing' a status word used in place of dates ("Ongoing", "long-term view")
+ *  - 'none'    nothing — the listing page gave no date signal at all
+ *
+ * 'none' is never grounds to discard at Section 3: it means "ask the detail page",
+ * not "this is past". Only Section 4, having fetched the real page, may discard on
+ * dates. Set during Section 3, not by Tier 1.
+ */
+export type DateEvidence = 'dated' | 'ongoing' | 'none'
+
 export interface ExhibitionLink {
   title: string
   url: string
   classification: 'current' | 'past' | 'permanent' | 'upcoming'
   classification_reason: string
-  content_type: 'exhibition' | 'event' | 'online_only' | 'unclear'
+  /**
+   * 'fair' and 'offsite' are shows the listing page carries but that are not on
+   * at the venue's own space — an art-fair booth, or a loan/collaboration at
+   * another institution. Both are excluded like 'event' and 'online_only'; they
+   * are separate values so the discard log says which kind it was.
+   */
+  content_type: 'exhibition' | 'event' | 'online_only' | 'fair' | 'offsite' | 'unclear'
   /** Place text seen next to the link on the listing page, verbatim, or null.
    *  Only ever used to discard clearly non-NYC links early — never to confirm a
    *  link is in NYC. Tier 2/3 have no page content, so they always emit null. */
@@ -214,6 +232,21 @@ export interface ExhibitionLink {
   /** Street addresses shown next to the link on the listing page (up to 3), or [].
    *  Compared against the show page's addresses at check #10. Tier 2/3 always emit []. */
   addresses: string[]
+  /** Date text printed next to the link on the listing page, verbatim, or null —
+   *  a range, an open-ended date, or a status word ("Ongoing"). Never parsed here:
+   *  the year the page omits is inferred at the detail stage. Carried through the
+   *  run for Section 3's filtering and logged next to the detail stage's own dates.
+   *  The URL-only fallback has no page text, so it always emits null. */
+  date_hint: string | null
+  /** Set by Section 3 from date_hint and the classification reasoning, then read
+   *  at the cap (ongoing shows bypass it) and at check #4 (a link that had no
+   *  date signal here is discarded only if the detail page has none either). */
+  date_evidence?: DateEvidence
+  /** Set by Section 3: a 'current' show whose listing text names no closing date.
+   *  Bypasses the cap so it can't be squeezed out for lacking a close date it may
+   *  never have had. Independent of date_evidence, which still governs the check #4
+   *  discard. */
+  cap_exempt?: boolean
 }
 
 export interface ExhibitionDetailExtracted {

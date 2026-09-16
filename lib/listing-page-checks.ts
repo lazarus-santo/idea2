@@ -198,7 +198,7 @@ function normalizeTitle(title: string): string {
 // "Hauser & Wirth New York, 22nd Street" → also "hauser & wirth new york" and
 // "hauser & wirth"; "Bowery Gallery — Bowery Gallery" → also "bowery gallery";
 // "The Met" → also "met".
-function venueNameForms(venueName: string): string[] {
+export function venueNameForms(venueName: string): string[] {
   const full = normalizeTitle(venueName)
   const forms = new Set([full, full.split(/\s+[—–-]\s+/)[0], full.split(',')[0], full.split(/\s+new york\b/)[0]])
   for (const form of [...forms]) if (form.startsWith('the ')) forms.add(form.slice(4))

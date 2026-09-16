@@ -6,6 +6,7 @@ import {
   extractExhibitionLinks,
   extractExhibitionDetail,
   filterLinksByLocation,
+  rankLinksBySoonestClosing,
   hintNamesNonNycCity,
   verifyExhibitionLocation,
   verifyTitleInHtml,
@@ -19,7 +20,17 @@ import {
   isDefinitiveBlock,
   isSectionPageUrl,
   listingPageTitleReason,
+  venueNameForms,
 } from './listing-page-checks'
+import {
+  capExemptFor,
+  childListingPathReason,
+  dateCrossCheck,
+  dateEvidenceFor,
+  detailCapForVenueType,
+  offsiteReason,
+  selectWithinCap,
+} from './link-filters'
 import { generateMuseumCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from './museum-coverage'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import {
@@ -611,8 +622,6 @@ async function upsertArtist(name: string): Promise<string | null> {
 // than no hint at all — the detail-stage verifier is the real safety net.
 const LOCATION_WINDOW_LADDER = [600, 1500, 3000] as const
 
-const DETAIL_SESSION_CAP = 15
-
 // Persists what console logs previously lost on serverless exit: which method
 // (http/browserbase) fetched a given detail page, its html_length, and how far
 // it got through the pipeline. Lets admin trace a pending exhibition's missing
@@ -652,7 +661,16 @@ export interface ListingReport {
   html_length: number
   /** The block-page signal that ended or colored the run, e.g. "fingerprint:vercel-security-checkpoint". */
   block_signal: string | null
-  links: { title: string; url: string }[]
+  links: { title: string; url: string; date_hint: string | null }[]
+  /** What the cap did, so a listing-only run can be checked without any writes.
+   *  Null when the venue never reached the cap (no links, or a failure first). */
+  cap: {
+    limit: number
+    candidates: number
+    processing: number
+    exempt_no_end_date: number
+    deferred: string[]
+  } | null
   discard_reasons: Record<string, number>
 }
 
@@ -736,6 +754,13 @@ export async function scrapeInstitution(
       title_check_tier2: 0,
       non_nyc_tier1: 0,
       upsert_failed: 0,
+      // Section 3 additions: shows that are real but not on at this venue, deeper
+      // listing pages under the venue's own URL, and candidates that had no date
+      // evidence on either the listing page or their own detail page.
+      offsite_fair: 0,
+      offsite_institution: 0,
+      child_listing_path: 0,
+      no_date_evidence: 0,
     },
   }
 
@@ -795,11 +820,15 @@ export async function scrapeInstitution(
   // Set when the page looked like a block page; returned in the listing report,
   // and decides how a venue that yields no links is recorded.
   let blockNote: string | null = null
+  // Filled in when the cap runs, which is before the listing-only return so a test
+  // run can see the cap's decision without fetching a single show page.
+  let capReport: ListingReport['cap'] = null
   const listingReport = (links: ExhibitionLink[]): ListingReport => ({
     method: listingMethod,
     html_length: listingHtml.length,
     block_signal: blockNote,
-    links: links.map((l) => ({ title: l.title, url: l.url })),
+    links: links.map((l) => ({ title: l.title, url: l.url, date_hint: l.date_hint })),
+    cap: capReport,
     discard_reasons: { ...diag.discard_reasons },
   })
 
@@ -1020,6 +1049,27 @@ export async function scrapeInstitution(
     return false
   })
 
+  // What the listing page said about each show's dates, recorded before anything
+  // is filtered. This is a cross-check, not a gate: a listing page not printing
+  // dates is not evidence that a show has closed, so a link with no date signal is
+  // flagged and still proceeds. Only the detail page, in check #4, may discard on
+  // dates — which is where the flag is read again.
+  for (const link of allLinks) {
+    link.date_evidence = dateEvidenceFor(link)
+    // A current show with no announced closing date skips the cap further down.
+    // Separate from date_evidence on purpose: this decides cap position only, and
+    // changes nothing about the check #4 discard.
+    link.cap_exempt = capExemptFor(link)
+    const note = dateCrossCheck(link, link.date_evidence)
+    if (note) {
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, url: link.url, event: 'DATE_CROSS_CHECK',
+        title: link.title, classification: link.classification,
+        date_hint: link.date_hint, date_evidence: link.date_evidence, note,
+      }))
+    }
+  }
+
   const currentLinks = allLinks.filter(
     (l) => l.classification === 'current' || l.classification === 'upcoming'
   )
@@ -1035,6 +1085,9 @@ export async function scrapeInstitution(
     classified_past: allLinks.filter((l) => l.classification === 'past').length,
     classified_permanent: allLinks.filter((l) => l.classification === 'permanent').length,
     links_proceeding: currentLinks.map((l) => l.url),
+    // The dates the listing page printed, as printed — kept for Section 3 and for
+    // checking the detail stage's parsed dates against what the page actually said.
+    listing_dates: currentLinks.filter((l) => l.date_hint).map((l) => ({ url: l.url, date_hint: l.date_hint })),
   }))
 
   console.log(`[${vn}] Listing: ${allLinks.length} links → ${currentLinks.length} current/upcoming`)
@@ -1060,14 +1113,36 @@ export async function scrapeInstitution(
   // 'event' and 'online_only' links never become pending exhibition records —
   // they're logged to agent1_discarded_items for visibility only. 'unclear'
   // links get the benefit of the doubt and proceed like normal exhibitions.
+  // Tier 1 labels fairs and off-site loans from the listing text; offsiteReason is
+  // a deterministic second pass over that same text for the ones it still called
+  // 'exhibition'. It reads title, place text and Tier 1's own reasoning — never the
+  // URL, because these sit interspersed among ordinary shows at ordinary URLs. A
+  // collaboration held at this venue's own space is left alone.
+  const ownNameForms = venueNameForms(vn)
+  for (const link of currentLinks) {
+    if (link.content_type !== 'exhibition' && link.content_type !== 'unclear') continue
+    const offsite = offsiteReason(link, ownNameForms)
+    if (!offsite) continue
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, url: link.url, event: 'OFFSITE_RECLASSIFIED',
+      title: link.title, from: link.content_type, to: offsite.kind, reason: offsite.reason,
+    }))
+    link.content_type = offsite.kind
+  }
+
   const exhibitionLinks = currentLinks.filter(
     (l) => l.content_type === 'exhibition' || l.content_type === 'unclear'
   )
   const discardedByContentType = currentLinks.filter(
     (l) => l.content_type === 'event' || l.content_type === 'online_only'
+      || l.content_type === 'fair' || l.content_type === 'offsite'
   )
 
   if (discardedByContentType.length > 0) {
+    for (const l of discardedByContentType) {
+      if (l.content_type === 'fair') diag.discard_reasons.offsite_fair++
+      else if (l.content_type === 'offsite') diag.discard_reasons.offsite_institution++
+    }
     console.log(JSON.stringify({
       tag: 'AGENT1', venue: vn, event: 'CONTENT_TYPE_DISCARDED',
       count: discardedByContentType.length,
@@ -1110,26 +1185,39 @@ export async function scrapeInstitution(
   const selfPathname = (() => {
     try { return new URL(venue.exhibitions_url).pathname.replace(/\/$/, '') } catch { return null }
   })()
-  const guardedLinks = selfPathname
-    ? nycLinks.filter((link) => {
-        try {
-          const linkPath = new URL(link.url).pathname.replace(/\/$/, '')
-          const isSelf = linkPath === selfPathname
-          const isParent = selfPathname.startsWith(linkPath + '/') && linkPath.length > 1
-          if (isSelf || isParent) {
-            console.log(`[${vn}] Skipping self-referential URL: ${link.url}`)
-            console.log(JSON.stringify({
-              tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
-              guard: 'self_referential',
-              reason: `linkPath "${linkPath}" equals or is parent of exhibitionsUrl "${selfPathname}"`,
-            }))
-            diag.discard_reasons.guard_failed++
-            return false
-          }
-          return true
-        } catch { return true }
-      })
-    : nycLinks
+  const guardedLinks = nycLinks.filter((link) => {
+    // The other direction of the same guard. The self-referential test below only
+    // ever looked at the listing URL itself and its ancestors, so descendants like
+    // /exhibitions/past/all/2026-2024 — a year filter into the archive — went
+    // through as though they were shows.
+    const childReason = childListingPathReason(link.url, venue.exhibitions_url)
+    if (childReason) {
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
+        guard: 'child_listing_path', reason: childReason, title: link.title,
+      }))
+      diag.discard_reasons.child_listing_path++
+      return false
+    }
+
+    if (!selfPathname) return true
+    try {
+      const linkPath = new URL(link.url).pathname.replace(/\/$/, '')
+      const isSelf = linkPath === selfPathname
+      const isParent = selfPathname.startsWith(linkPath + '/') && linkPath.length > 1
+      if (isSelf || isParent) {
+        console.log(`[${vn}] Skipping self-referential URL: ${link.url}`)
+        console.log(JSON.stringify({
+          tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
+          guard: 'self_referential',
+          reason: `linkPath "${linkPath}" equals or is parent of exhibitionsUrl "${selfPathname}"`,
+        }))
+        diag.discard_reasons.guard_failed++
+        return false
+      }
+      return true
+    } catch { return true }
+  })
 
   diag.shows_after_guards = guardedLinks.length
 
@@ -1157,15 +1245,46 @@ export async function scrapeInstitution(
     return { upserted: 0, failureReason: null, listing: listingReport([]) }
   }
 
-  // Listing-only mode ends here, before the stale-pending wipe and any show page.
-  if (listingOnly) {
-    return { upserted: 0, failureReason: null, listing: listingReport(guardedLinks) }
+  // Museums run far more concurrent shows than galleries, and one shared cap of 15
+  // was silently truncating the largest ones.
+  const detailCap = detailCapForVenueType(venue.type)
+  // Rank before cutting, so what survives is what closes soonest rather than
+  // whatever order the listing page happened to print. Only worth a call when the
+  // cap actually binds; it fails open to the listing order.
+  const orderedLinks = guardedLinks.length > detailCap
+    ? await rankLinksBySoonestClosing(guardedLinks, vn)
+    : guardedLinks
+  const { selected: linksToProcess, deferred, exemptCount } = selectWithinCap(orderedLinks, detailCap)
+
+  capReport = {
+    limit: detailCap,
+    candidates: guardedLinks.length,
+    processing: linksToProcess.length,
+    exempt_no_end_date: exemptCount,
+    deferred: deferred.map((l) => l.url),
   }
 
-  if (guardedLinks.length > DETAIL_SESSION_CAP) {
-    console.warn(`[${vn}] Capping at ${DETAIL_SESSION_CAP} (found ${guardedLinks.length})`)
+  if (deferred.length > 0 || exemptCount > 0) {
+    console.warn(`[${vn}] Cap ${detailCap} (${venue.type}): ${guardedLinks.length} candidates → ${linksToProcess.length} processing, ${deferred.length} deferred`)
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, event: 'DETAIL_CAP',
+      venue_type: venue.type, cap: detailCap,
+      candidates: guardedLinks.length,
+      processing: linksToProcess.length,
+      // Current shows with no announced closing date never compete for a slot: a
+      // soonest-closing order has nothing to rank them by, so it would push them
+      // behind every dated show and drop them every single run.
+      exempt_no_end_date: exemptCount,
+      deferred: deferred.map((l) => l.url),
+    }))
   }
-  const linksToProcess = guardedLinks.slice(0, DETAIL_SESSION_CAP)
+
+  // Listing-only mode ends here, before the stale-pending wipe and any show page.
+  // It runs the cap first (just above) so a no-write test run exercises the museum
+  // limit, the soonest-closing ranking and the ongoing bypass for real.
+  if (listingOnly) {
+    return { upserted: 0, failureReason: null, listing: listingReport(linksToProcess) }
+  }
 
   // Wipe stale pending entries for this venue before inserting fresh ones.
   // Published and upcoming exhibitions are intentionally left untouched.
@@ -1373,9 +1492,40 @@ export async function scrapeInstitution(
       start_date: detail.start_date,
       end_date: detail.end_date,
       date_notes: detail.date_notes ?? null,
+      // What the listing page said, for comparison — logged only; the classification
+      // above is the detail page's dates, unchanged.
+      listing_date_hint: link.date_hint,
       result: dateClass === 'past' ? 'discarded_past' : (!detail.start_date && !detail.end_date ? 'missing_dates' : 'kept'),
       reason: `classified as ${dateClass}${dateClass === 'past' ? ` (end: ${detail.end_date})` : ''}`,
     }))
+
+    // Section 3 let this candidate through on purpose: the listing page printed no
+    // dates, and that is not evidence a show has closed. This is where that debt is
+    // settled. The real page has now been fetched and extracted, and if it has no
+    // dates either, nothing anywhere says this is a current show — which is exactly
+    // what an archive or listing link looks like. Candidates that did have listing
+    // dates are untouched here and still become pending with missing_fields.
+    if (link.date_evidence === 'none' && !detail.start_date && !detail.end_date) {
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
+        guard: 'no_date_evidence',
+        reason: 'no date text on the listing page and no dates on the detail page either',
+        title: cleanTitle,
+      }))
+      diag.discard_reasons.no_date_evidence++
+      await db.from('agent1_discarded_items').insert({
+        institution_id: venue.institution_id ?? null,
+        title: cleanTitle,
+        url: link.url,
+        content_type: 'no_date_evidence',
+      })
+      await logDetailFetch(db, {
+        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
+        method: detailMethod, htmlLength: detailHtml.length,
+        outcome: 'no_date_evidence',
+      })
+      continue
+    }
 
     if (dateClass === 'past') {
       console.log(`[${vn}] Skipping past show: "${cleanTitle}" (end: ${detail.end_date})`)

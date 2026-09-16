@@ -1035,13 +1035,23 @@ Return ONLY a JSON array (no markdown):
 Use "other" ONLY when the address, title or URL names a specific place outside NYC (e.g. Venice Biennale, Art Basel Miami, London, Paris, LA).
 Use "nyc" for everything else, including community/partner/education programs, teen or outreach initiatives, and any name that merely sounds like it could involve another site without naming one — these are frequently presented at the institution's own NYC building. Default to "nyc" whenever there's no explicit non-NYC place name.
 
+Some exhibitions include "location_hint": the place text printed next to the link on the listing page — a city, a neighbourhood, a branch name, or "on view at ..." phrasing. Weigh it ahead of the title and URL, which often say nothing about where a show is:
+- A hint naming a place outside New York City ("London", "Los Angeles", "Aspen", "Seoul") → "other".
+- A hint naming a New York City place, borough or branch ("Chelsea", "Tribeca", "19th Street", "New York") → "nyc".
+- A hint that names no place, or only a gallery's own branch label you cannot place, decides nothing on its own — fall back to the rules below.
+
 Some exhibitions include "addresses": street addresses shown next to the link on the listing page. When present they are the strongest evidence:
 - Any address in New York City (Manhattan, Brooklyn, Queens, the Bronx, Staten Island, or a New York City zip code) → "nyc", even if the title names another place.
 - Addresses that are all in another city, state or country → "other".
 - A street named after a place ("Hudson Street", "Greenwich Street", "Boston Road") is not that place.
 
 Exhibitions:
-${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title, ...(l.addresses.length ? { addresses: l.addresses } : {}) })))}`,
+${JSON.stringify(links.map((l) => ({
+  url: l.url,
+  title: l.title,
+  ...(l.location_hint ? { location_hint: l.location_hint } : {}),
+  ...(l.addresses.length ? { addresses: l.addresses } : {}),
+})))}`,
       },
     ],
   })
@@ -1066,6 +1076,70 @@ ${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title, ...(l.addresses
     })
   } catch {
     console.error('filterLinksByLocation: failed to parse response — keeping all links')
+    return links
+  }
+}
+
+/**
+ * Orders candidates by which close soonest, for the cap.
+ *
+ * Judgment, not parsing. The listing text this reads is free-form — "Through Jan 2,
+ * 2027", "Apr 24, 2026–Fall 2026", "Ongoing from Oct 19" — and mechanically
+ * resolving that into dates at this stage is the bug that once dropped 18 real MoMA
+ * shows. A wrong ordering here only means a slightly worse choice of which shows to
+ * fetch first; it never drops one.
+ *
+ * Fails open in every direction: any error, unparseable reply or missing URL leaves
+ * the original order, which is what this stage used before ranking existed.
+ */
+export async function rankLinksBySoonestClosing(
+  links: ExhibitionLink[],
+  institutionName: string,
+  today = new Date().toISOString().split('T')[0]
+): Promise<ExhibitionLink[]> {
+  if (links.length < 2) return links
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      messages: [
+        {
+          role: 'user',
+          content: `These exhibitions are all listed by ${institutionName}. Order them by which closes soonest, so the most urgent come first.
+
+Today: ${today}
+
+Use your judgement on the date text as written — it is copied verbatim off the listing page and is often incomplete ("Through Jan 2", "Sep 3, 2026—Spring 2027", "Ongoing"). Do not try to convert it into exact dates.
+- A show closing sooner comes before one closing later.
+- A show with no stated end ("Ongoing", "long-term view") goes last — nothing about it is urgent.
+- A show whose date text says nothing useful, or that has none, goes after the dated ones but before the ongoing ones.
+
+Return ONLY a JSON array of every url, in your chosen order, no markdown:
+["https://...", "https://..."]
+
+Exhibitions:
+${JSON.stringify(links.map((l) => ({ url: l.url, title: l.title, dates: l.date_hint })))}`,
+        },
+      ],
+    })
+
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
+    const order = extractJsonArray<string>(text)
+    if (!order) return links
+
+    const byUrl = new Map(links.map((l) => [l.url, l]))
+    const ranked: ExhibitionLink[] = []
+    for (const url of order) {
+      const link = typeof url === 'string' ? byUrl.get(url) : undefined
+      if (link && !ranked.includes(link)) ranked.push(link)
+    }
+    // Anything the model left out keeps its original position at the back, so a
+    // partial answer can never lose a candidate.
+    for (const link of links) if (!ranked.includes(link)) ranked.push(link)
+    return ranked
+  } catch (err) {
+    console.error('rankLinksBySoonestClosing failed — keeping listing order:', err)
     return links
   }
 }
@@ -1379,9 +1453,10 @@ For each exhibition link found, return:
 - url: full absolute URL to the exhibition detail page (resolve relative URLs against base ${venueUrl})
 - classification_reason: work through the evidence first (section heading, labels, explicit dates compared to today) — brief note (e.g. "labeled On View", "end date passed", "section heading: Past")
 - classification: exactly one of 'current' | 'past' | 'permanent' | 'upcoming', consistent with the reasoning above
-- content_type: exactly one of 'exhibition' | 'event' | 'online_only' | 'unclear'
+- content_type: exactly one of 'exhibition' | 'event' | 'online_only' | 'fair' | 'offsite' | 'unclear'
 - location_hint: place text shown next to this link on the listing page — a city, a neighbourhood, a branch label, an address, or "on view at ..." phrasing. Copy it verbatim. Use null when no place text appears near the link. Do NOT infer a place from the gallery's name, from the artist, or from words inside the exhibition title (a show called "London Calling" at an unstated location is null, not "London")
 - addresses: every street address (house number and street) shown next to this link on the listing page for where this show is on view — a list of up to 3, one address per entry, each with the floor/suite, city, state and zip that go with it, even when those are printed on a separate line. Split a line that joins two addresses ("22 Cortlandt Alley & 394 Broadway") into two entries. Use [] when none appears near the link — a city, neighbourhood or branch name alone is not an address (that belongs in location_hint). Never infer an address from the gallery's name.
+- date_hint: the date text shown next to this link on the listing page, copied verbatim and whole, exactly as printed — a range ("September 18—October 31", "Sept. 17, 2026–Feb. 14, 2027"), an open-ended date ("Through January 4"), or a status word used in place of dates ("Ongoing", "On view now"). Keep the year only if the page prints it; do not add, complete or correct a year, and do not reformat. A label that comes with the dates may stay if it is part of the same text ("Coming Soon: September 18—October 31"). Use null when no date text appears near the link. Do NOT infer dates from the exhibition title, from the section heading, or from the classification you chose.
 
 Classification rules:
 - "On View", "Current", "Now On View" → 'current'
@@ -1397,12 +1472,14 @@ Content type rules:
 - 'exhibition': a physical exhibition of artwork on view at the institution's OWN physical gallery/museum space
 - 'event': artist talks, panel discussions, members' events, tours, workshops, screenings, performances, off-site public art commissions, community initiatives, or anything the site itself labels as a "Project", "Program", "Initiative", or similar (as opposed to "Exhibition") — even if it has a real artist name, real dates, and a real image. Institutions often list these alongside real exhibitions under section headings like "Beyond Our Walls", "Museum Projects", "Public Programs", or "Community" — these are NOT exhibitions regardless of how exhibition-like their listing card looks.
 - 'online_only': viewing rooms, digital exhibitions, or online-only content with no physical component
+- 'fair': a presentation at an art fair rather than at this venue — a booth or stand at Frieze, Art Basel, NADA, The Armory Show, TEFAF, Independent, EXPO Chicago, Untitled and the like. Galleries list their fair booths among their own shows; a booth number ("Booth D12") or a fair's name next to the link is the signal. Still 'fair' even though it is this gallery's own booth — it is not on at this gallery.
+- 'offsite': a show at someone else's space — a loan, a touring show, or a collaboration hosted by another institution ("on view at the Whitney", "presented at the Aldrich", "on loan to ..."). IMPORTANT: a collaboration or co-organized show that takes place at ${venueName}'s OWN space is a normal 'exhibition', not 'offsite' — the test is where the work hangs, not who organized it.
 - 'unclear': cannot determine content type from the listing page alone
 - When ambiguous between 'exhibition' and something else: use 'unclear', not 'exhibition'
 - Trust the site's own labeling/section headings over the presence of exhibition-like details (artist name, dates, image) — a card labeled "Project" with a real artist and real dates is still not an exhibition
 
 Return ONLY a JSON array (no markdown, no commentary):
-[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition","location_hint":"New York: 19th Street","addresses":[]}]
+[{"title":"...","url":"https://...","classification_reason":"...","classification":"current","content_type":"exhibition","location_hint":"New York: 19th Street","addresses":[],"date_hint":null}]
 
 Return [] if no exhibition links are found.
 
@@ -1418,6 +1495,7 @@ ${stripped}`,
       title?: string; url?: string
       classification?: string; classification_reason?: string
       content_type?: string; location_hint?: string | null; addresses?: unknown
+      date_hint?: string | null
     }>(text)
     if (!raw) return []
     return raw
@@ -1429,13 +1507,19 @@ ${stripped}`,
           ? item.classification
           : 'current') as ExhibitionLink['classification'],
         classification_reason: item.classification_reason ?? '',
-        content_type: (['exhibition','event','online_only','unclear'].includes(item.content_type ?? '')
+        content_type: (['exhibition','event','online_only','fair','offsite','unclear'].includes(item.content_type ?? '')
           ? item.content_type
           : 'unclear') as ExhibitionLink['content_type'],
         location_hint: typeof item.location_hint === 'string' && item.location_hint.trim()
           ? item.location_hint.trim()
           : null,
         addresses: cleanExtractedAddresses(item.addresses),
+        // Kept as printed: parsing it here would mean re-deriving the year the
+        // page left out, which is the detail stage's job (DETAIL_PROMPT) and the
+        // source of a real wrong-year discard before now.
+        date_hint: typeof item.date_hint === 'string' && item.date_hint.trim()
+          ? item.date_hint.trim().replace(/\s+/g, ' ')
+          : null,
       }))
   } catch {
     console.error(`Failed to parse exhibition links JSON for ${venueName}:`, text.slice(0, 200))
@@ -1499,9 +1583,10 @@ ${urls.join('\n')}`,
         // No page content available in this URL-only fallback — can't judge content type, so
         // give benefit of the doubt rather than risk silently discarding a real exhibition.
         content_type: 'unclear' as ExhibitionLink['content_type'],
-        // URL-only fallback: no page text, so no place text or address to quote.
+        // URL-only fallback: no page text, so no place text, address or date to quote.
         location_hint: null,
         addresses: [],
+        date_hint: null,
       }))
   } catch (err) {
     console.warn(`[classifyExhibitionUrls] Exception parsing response for ${venueName} (${urls.length} URLs, stop_reason: ${response.stop_reason}):`, err instanceof Error ? err.message : err)
