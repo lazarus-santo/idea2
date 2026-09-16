@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
 
 /**
@@ -32,7 +33,7 @@ export default function LoginForm({
   const [mode, setMode] = useState<Mode>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState<null | 'apple' | 'google' | 'email' | 'reset'>(null)
+  const [busy, setBusy] = useState<null | 'apple' | 'google' | 'email'>(null)
   const [error, setError] = useState<string | null>(initialError)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -108,22 +109,6 @@ export default function LoginForm({
     // A full load, not a router push: the session cookie was just written and
     // every server component needs to render with it.
     window.location.href = next && next.startsWith('/') ? next : '/onboarding'
-  }
-
-  async function sendReset() {
-    if (!email) {
-      setError('Enter your email address first.')
-      return
-    }
-    setBusy('reset')
-    setError(null)
-    const supabase = getSupabaseBrowser()
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent('/reset-password')}`,
-    })
-    if (error) setError(error.message)
-    else setNotice(`If ${email} has an account, a reset link is on its way.`)
-    setBusy(null)
   }
 
   return (
@@ -214,14 +199,10 @@ export default function LoginForm({
 
       {mode === 'signin' && (
         <p className="ac-hint" style={{ marginTop: 16 }}>
-          <button
-            type="button"
-            className="ac-linkbtn"
-            onClick={sendReset}
-            disabled={busy !== null}
-          >
-            {busy === 'reset' ? 'Sending…' : 'Forgot your password?'}
-          </button>
+          {/* Its own page now. The old version reused whatever happened to be
+              in the email field above, and scolded people with "Enter your
+              email address first" when it was empty. */}
+          <Link href="/forgot-password">Forgot your password?</Link>
         </p>
       )}
     </>
