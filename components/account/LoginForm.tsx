@@ -70,7 +70,13 @@ export default function LoginForm({
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/auth/confirm?next=${encodeURIComponent('/onboarding')}`,
+          // /auth/callback, not /auth/confirm: the link Supabase puts in the
+          // signup email comes back carrying a PKCE `code`, which is what the
+          // callback route exchanges for a session. /auth/confirm only ever
+          // understood the `token_hash` shape that custom email templates
+          // produce, so a real signup confirmed the account and then dropped
+          // the person on the login page with an error.
+          emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent('/onboarding')}`,
         },
       })
 
@@ -113,7 +119,7 @@ export default function LoginForm({
     setError(null)
     const supabase = getSupabaseBrowser()
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/confirm?next=${encodeURIComponent('/reset-password')}`,
+      redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent('/reset-password')}`,
     })
     if (error) setError(error.message)
     else setNotice(`If ${email} has an account, a reset link is on its way.`)

@@ -22,8 +22,23 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get('type') as EmailOtpType | null
   const next = searchParams.get('next') ?? '/'
 
+  // Links already sitting in people's inboxes point here, so this route stays
+  // and simply forwards whatever shape it is handed to the one place that now
+  // understands all of them.
+  const code = searchParams.get('code')
+  if (code) {
+    return NextResponse.redirect(
+      `${origin}/auth/callback?code=${encodeURIComponent(code)}&next=${encodeURIComponent(next)}`
+    )
+  }
+
   if (!tokenHash || !type) {
-    return NextResponse.redirect(`${origin}/login?error=invalid_link`)
+    // No usable query parameters. Most likely the tokens are in the URL
+    // fragment, which the server cannot see — /auth/finish reads it in the
+    // browser instead of sending the person to an error page.
+    return NextResponse.redirect(
+      `${origin}/auth/finish?next=${encodeURIComponent(next.startsWith('/') && !next.startsWith('//') ? next : '/')}`
+    )
   }
 
   const supabase = await getSupabaseServer()

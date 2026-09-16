@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
+import type { EmailOtpType } from '@supabase/supabase-js'
 import { getSupabaseServer } from '@/lib/supabase-server'
 
 /**
@@ -15,6 +16,8 @@ import { getSupabaseServer } from '@/lib/supabase-server'
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
+  const tokenHash = searchParams.get('token_hash')
+  const type = searchParams.get('type') as EmailOtpType | null
   const next = searchParams.get('next') ?? '/'
 
   // The provider itself refused (cancelled at the Apple/Google screen, or a
@@ -26,12 +29,30 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  if (!code) {
-    return NextResponse.redirect(`${baseUrl(request, origin)}/login?error=missing_code`)
-  }
-
   const supabase = await getSupabaseServer()
-  const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+  // Supabase hands the session back in one of three shapes, and which one you
+  // get is not a choice the app makes:
+  //   ?code=...        PKCE — a signup or reset started in THIS browser.
+  //   ?token_hash=...  what a custom email template emits.
+  //   #access_token=.. no PKCE verifier in this browser (the email was opened
+  //                    on a different device), so Supabase falls back to the
+  //                    implicit flow and puts the tokens in the URL fragment.
+  // A fragment is never sent to the server, so that last one cannot be read
+  // here at all — it is handed to /auth/finish, which reads it in the browser.
+  // Structural type rather than AuthError: the three calls below return
+  // different error classes, and all this code needs from any of them is the
+  // message it puts in the redirect.
+  let error: { message: string } | null = null
+  if (code) {
+    ({ error } = await supabase.auth.exchangeCodeForSession(code))
+  } else if (tokenHash && type) {
+    ({ error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash }))
+  } else {
+    return NextResponse.redirect(
+      `${baseUrl(request, origin)}/auth/finish?next=${encodeURIComponent(safeNext(next))}`
+    )
+  }
 
   if (error) {
     return NextResponse.redirect(
