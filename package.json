@@ -11,7 +11,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
     "@browserbasehq/sdk": "^2.14.0",
-    "@supabase/supabase-js": "^2.105.1",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.116.0",
     "@tiptap/extension-link": "^3.27.1",
     "@tiptap/extension-text-align": "^3.27.1",
     "@tiptap/extension-text-style": "^3.27.1",
@@ -26,7 +27,8 @@
     "next": "16.2.4",
     "puppeteer": "^24.43.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
