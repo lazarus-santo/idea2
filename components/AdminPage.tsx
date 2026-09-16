@@ -8,10 +8,11 @@ import EditorPicksTab from '@/components/admin/EditorPicksTab'
 import PublishedTab from '@/components/admin/PublishedTab'
 import SeedTool from '@/components/admin/SeedTool'
 import ScrapeIssuesTab from '@/components/admin/ScrapeIssuesTab'
+import VenueHealthTab from '@/components/admin/VenueHealthTab'
 import FairsTab from '@/components/admin/FairsTab'
 import { adminFetch, setAdminSecret } from '@/lib/admin-fetch'
 
-type Tab = 'dashboard' | 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues' | 'fairs'
+type Tab = 'dashboard' | 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues' | 'health' | 'fairs'
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
 
@@ -69,6 +70,7 @@ export default function AdminPage({ adminPw }: { adminPw: string }) {
     if (t === 'seed') return 'Seed'
     if (t === 'fairs') return 'Fairs'
     if (t === 'issues') return `Scrape Issues${issueCount > 0 ? ` (${issueCount})` : ''}`
+    if (t === 'health') return 'Venue Health'
     return 'Published'
   }
 
@@ -93,7 +95,7 @@ export default function AdminPage({ adminPw }: { adminPw: string }) {
         </div>
 
         <div style={{ display: 'flex', gap: 32, borderBottom: '1px solid rgba(0,0,0,0.12)', marginBottom: 36 }}>
-          {(['dashboard', 'pending', 'publications', 'picks', 'published', 'issues', 'fairs', 'seed'] as Tab[]).map(t => (
+          {(['dashboard', 'pending', 'publications', 'picks', 'published', 'issues', 'health', 'fairs', 'seed'] as Tab[]).map(t => (
             <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
               {label(t)}
             </button>
@@ -106,6 +108,7 @@ export default function AdminPage({ adminPw }: { adminPw: string }) {
         {tab === 'picks' && <EditorPicksTab />}
         {tab === 'published' && <PublishedTab />}
         {tab === 'issues' && <ScrapeIssuesTab onCount={setIssueCount} />}
+        {tab === 'health' && <VenueHealthTab />}
         {tab === 'fairs' && <FairsTab />}
         {tab === 'seed' && <SeedTool inline />}
       </div>
