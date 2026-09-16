@@ -13,6 +13,15 @@ import { getSupabaseBrowser } from '@/lib/supabase-browser'
 
 type Mode = 'signin' | 'signup'
 
+/**
+ * Apple sign-in is built and wired, but Apple is not configured in Supabase
+ * yet — deliberately deferred until there is an app build in play. Until then
+ * the button would take someone to a provider that refuses the request, so it
+ * is not rendered at all. The code path below is untouched: flip this to true
+ * once Apple is configured in the dashboard, and nothing else needs to change.
+ */
+const SHOW_APPLE_SIGN_IN = false
+
 export default function LoginForm({
   next,
   initialError,
@@ -116,15 +125,17 @@ export default function LoginForm({
       {notice && <p className="ac-notice">{notice}</p>}
 
       <div className="ac-providers">
-        <button
-          type="button"
-          className="ac-provider"
-          onClick={() => signInWithProvider('apple')}
-          disabled={busy !== null}
-        >
-          <AppleMark />
-          {busy === 'apple' ? 'Opening Apple…' : 'Continue with Apple'}
-        </button>
+        {SHOW_APPLE_SIGN_IN && (
+          <button
+            type="button"
+            className="ac-provider"
+            onClick={() => signInWithProvider('apple')}
+            disabled={busy !== null}
+          >
+            <AppleMark />
+            {busy === 'apple' ? 'Opening Apple…' : 'Continue with Apple'}
+          </button>
+        )}
         <button
           type="button"
           className="ac-provider"
