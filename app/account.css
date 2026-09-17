@@ -14,6 +14,40 @@
   color: #000;
   font-family: var(--font-inter-tight), system-ui, sans-serif;
   padding: 32px 24px 96px;
+
+  /*
+   * Text colours as real values rather than opacity.
+   *
+   * Secondary text used to be plain black at opacity 0.55-0.6, which on this
+   * cream ground reads as washed-out at 12-15px. These are measured against
+   * #FFFCEC: soft is about 9:1 and faint about 5.4:1, so both clear WCAG AA
+   * for body text instead of relying on how a given screen renders a
+   * half-transparent glyph.
+   */
+  --ac-ink: #000;
+  --ac-ink-soft: #4A4640;
+  --ac-ink-faint: #6B665D;
+}
+
+/*
+ * globals.css styles every anchor on the site as `a { color: var(--yellow) }`.
+ * That is an element-level rule, so it beats the black these pages inherit
+ * from .ac-page, and it made every link in the sign-in and reset flow yellow
+ * on cream — about 1.7:1, which is effectively invisible. Links here are ink
+ * with an underline instead.
+ */
+.ac-page a {
+  color: var(--ac-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ac-page a:hover { opacity: 0.6; }
+
+/* The wordmark and anything shaped like a button opt out of the underline. */
+.ac-page a.ac-back,
+.ac-page a.ac-btn {
+  text-decoration: none;
 }
 
 .ac-shell {
@@ -46,7 +80,7 @@
 .ac-subtitle {
   font-size: 15px;
   line-height: 1.5;
-  opacity: 0.6;
+  color: var(--ac-ink-soft);
   margin: 0 0 32px;
 }
 
@@ -86,6 +120,47 @@
   border-color: #000;
 }
 
+/* ── Password field with show/hide toggle ────────────────── */
+
+.ac-password {
+  position: relative;
+}
+
+/* Room for the eye, so a long password never runs under it. */
+.ac-input--password {
+  padding-right: 48px;
+}
+
+.ac-password-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--ac-ink-soft);
+  cursor: pointer;
+  border-radius: 0 10px 10px 0;
+}
+
+.ac-password-toggle:hover { color: var(--ac-ink); }
+
+.ac-password-toggle:focus-visible {
+  outline: 2px solid #000;
+  outline-offset: -2px;
+}
+
+.ac-password-toggle svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
 .ac-textarea {
   min-height: 96px;
   resize: vertical;
@@ -100,19 +175,19 @@
 
 .ac-input-prefix span {
   font-size: 15px;
-  opacity: 0.45;
+  color: var(--ac-ink-faint);
 }
 
 .ac-hint {
   font-size: 12px;
   line-height: 1.4;
-  opacity: 0.55;
+  color: var(--ac-ink-soft);
   margin: 6px 0 0;
 }
 
 .ac-count {
   font-size: 12px;
-  opacity: 0.45;
+  color: var(--ac-ink-faint);
   text-align: right;
   margin: 6px 0 0;
 }
@@ -127,6 +202,7 @@
 .ac-notice {
   font-size: 14px;
   line-height: 1.5;
+  color: var(--ac-ink);
   background: rgba(226, 206, 58, 0.25);
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 10px;
@@ -237,7 +313,7 @@
   font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  opacity: 0.4;
+  color: var(--ac-ink-faint);
 }
 
 .ac-divider::before,
@@ -301,7 +377,7 @@
   justify-content: center;
   font-size: 24px;
   font-weight: 700;
-  opacity: 0.35;
+  color: var(--ac-ink-faint);
 }
 
 .ac-avatar--large {
@@ -334,7 +410,7 @@
 
 .ac-choice input { margin-top: 3px; }
 .ac-choice-label { font-size: 14px; font-weight: 600; }
-.ac-choice-desc { font-size: 12.5px; line-height: 1.4; opacity: 0.6; margin-top: 2px; }
+.ac-choice-desc { font-size: 12.5px; line-height: 1.4; color: var(--ac-ink-soft); margin-top: 2px; }
 
 /* ── Settings sections ───────────────────────────────────── */
 
@@ -355,7 +431,7 @@
 .ac-meta {
   font-size: 13px;
   line-height: 1.6;
-  opacity: 0.6;
+  color: var(--ac-ink-soft);
 }
 
 /* ── Public profile ──────────────────────────────────────── */
@@ -377,7 +453,7 @@
 
 .ac-profile-handle {
   font-size: 15px;
-  opacity: 0.5;
+  color: var(--ac-ink-soft);
   margin: 4px 0 0;
 }
 
@@ -391,7 +467,7 @@
 .ac-profile-empty {
   font-size: 15px;
   line-height: 1.6;
-  opacity: 0.45;
+  color: var(--ac-ink-faint);
   margin: 0 0 24px;
 }
 

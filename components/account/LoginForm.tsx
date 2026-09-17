@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
+import PasswordField from '@/components/account/PasswordField'
 
 /**
  * Sign in and create account: Apple, Google, and email + password.
@@ -174,19 +175,16 @@ export default function LoginForm({
           />
         </label>
 
-        <label className="ac-field">
-          <span className="ac-label">Password</span>
-          <input
-            className="ac-input"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-            minLength={8}
-            required
-          />
-          {mode === 'signup' && <p className="ac-hint">At least 8 characters.</p>}
-        </label>
+        <PasswordField
+          id="signin-password"
+          label="Password"
+          value={password}
+          onChange={setPassword}
+          autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+          minLength={8}
+          required
+          hint={mode === 'signup' ? 'At least 8 characters.' : undefined}
+        />
 
         {error && <p className="ac-error">{error}</p>}
 
