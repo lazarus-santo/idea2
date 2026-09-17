@@ -27,11 +27,28 @@ export async function POST() {
   const admin = getSupabaseAdmin()
 
   // Avatars live under a folder named with the person's uuid.
-  const { data: files } = await admin.storage.from('avatars').list(user.id)
-  if (files?.length) {
-    await admin.storage
-      .from('avatars')
-      .remove(files.map((f) => `${user.id}/${f.name}`))
+  //
+  // migration_v41 puts a trigger on auth.users and public.profiles that clears
+  // these rows too, so this step is belt-and-braces. It stays for two reasons:
+  // it makes the deletion legible without having to know a database trigger
+  // exists, and it is the one place where a storage failure can be caught and
+  // logged. It also goes through the storage API rather than deleting rows,
+  // which is the supported route to reclaiming the bytes themselves.
+  //
+  // A failure here is logged and does NOT abort the deletion: someone asking
+  // to be deleted should not be kept because an image would not go away. The
+  // trigger is the backstop, and the log line is how we would find out.
+  const { data: files, error: listError } = await admin.storage.from('avatars').list(user.id)
+  if (listError) {
+    console.error('[account/delete] could not list avatars for', user.id, listError.message)
+  } else if (files?.length) {
+    const paths = files.map((f) => `${user.id}/${f.name}`)
+    const { error: removeError } = await admin.storage.from('avatars').remove(paths)
+    if (removeError) {
+      console.error('[account/delete] avatar removal failed for', user.id, removeError.message)
+    } else {
+      console.log('[account/delete] removed', paths.length, 'avatar file(s) for', user.id)
+    }
   }
 
   const { error: deleteError } = await admin.auth.admin.deleteUser(user.id)
