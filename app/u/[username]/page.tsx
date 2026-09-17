@@ -9,7 +9,6 @@ import {
   getPendingRequests,
 } from '@/lib/follows'
 import {
-  PROFILE_CARD_COLUMNS,
   PROFILE_COLUMNS,
   normalizePrivacy,
   normalizeUsername,
@@ -50,10 +49,12 @@ interface ProfileView {
  * here re-implements that check, which is exactly why approving a request
  * unlocks this page with no code in it that knows what approval means.
  *
- * The CARD comes from public.profile_cards (migration_v43), a view of every
- * claimed username carrying only id, username, display_name, avatar_url and
- * privacy. A private profile answers here and nowhere else, which is what lets
- * a stranger find it and ask.
+ * The CARD comes from public.profile_card() (migration_v45), which answers for
+ * every claimed username carrying only id, username, display_name, avatar_url
+ * and privacy. A private profile answers here and nowhere else, which is what
+ * lets a stranger find it and ask. It replaced a view of the same shape: the
+ * view was GRANTed, so PostgREST let anyone page through the whole of it in one
+ * request; a function answers one handle at a time.
  *
  * A username nobody has claimed still 404s, because it has no card.
  */
@@ -62,13 +63,9 @@ async function loadProfile(username: string): Promise<ProfileView | null> {
 
   const supabase = await getSupabaseServer()
   const [cardRes, profileRes] = await Promise.all([
-    // The view returns the same rows to everyone, so this one is read as plain
-    // `anon` rather than through the visitor's session.
-    getSupabase()
-      .from('profile_cards')
-      .select(PROFILE_CARD_COLUMNS)
-      .eq('username', handle)
-      .maybeSingle(),
+    // The function returns the same row to everyone, so this one is read as
+    // plain `anon` rather than through the visitor's session.
+    getSupabase().rpc('profile_card', { handle }),
     supabase
       .from('profiles')
       .select(PROFILE_COLUMNS)
@@ -89,7 +86,9 @@ async function loadProfile(username: string): Promise<ProfileView | null> {
     return null
   }
 
-  const card = cardRes.data as ProfileCard | null
+  // A set-returning function comes back as an array; the handle is unique, so
+  // there is at most one.
+  const card = ((cardRes.data ?? []) as ProfileCard[])[0] ?? null
   if (!card) return null
 
   return {

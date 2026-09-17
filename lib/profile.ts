@@ -32,12 +32,18 @@ export const PROFILE_COLUMNS =
  * The discoverable half of a profile: what a search result and a locked
  * profile header show, and nothing else.
  *
- * Backed by the public.profile_cards view (migration_v43), which returns EVERY
- * profile that has a username whatever its privacy. That is what makes a
- * private account findable. The columns missing here — bio, created_at — are
- * missing from the view too, so a private profile's writing never leaves the
- * database; only the full row in public.profiles carries them, and RLS still
- * keeps that owner-only.
+ * Returned by public.profile_card(handle) and public.search_profile_cards(q),
+ * which answer for EVERY profile that has a username whatever its privacy —
+ * that is what makes a private account findable, and therefore askable. The
+ * columns missing here, bio and created_at, are missing from those functions'
+ * signatures too, so a private profile's writing never leaves the database.
+ * Only the full row in public.profiles carries them, and RLS keeps that to the
+ * owner and to approved followers.
+ *
+ * These replaced the public.profile_cards VIEW in migration_v45. The view was
+ * not leaking — it carried the same five columns — but being GRANTed it was a
+ * table to PostgREST, so one unfiltered request returned every account. A
+ * function answers only the question it was written for.
  */
 export interface ProfileCard {
   id: string
@@ -46,9 +52,6 @@ export interface ProfileCard {
   avatar_url: string | null
   privacy: ProfilePrivacy
 }
-
-/** The columns of public.profile_cards — the whole view. */
-export const PROFILE_CARD_COLUMNS = 'id, username, display_name, avatar_url, privacy'
 
 export const USERNAME_MIN = 3
 export const USERNAME_MAX = 30

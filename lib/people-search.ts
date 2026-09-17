@@ -1,5 +1,5 @@
 import { getSupabase } from '@/lib/supabase'
-import { PROFILE_CARD_COLUMNS, profileDisplayName, type ProfileCard } from '@/lib/profile'
+import { profileDisplayName, type ProfileCard } from '@/lib/profile'
 
 /**
  * Person search: profiles by username or display name.
@@ -20,14 +20,20 @@ import { PROFILE_CARD_COLUMNS, profileDisplayName, type ProfileCard } from '@/li
  * the profile PAGE — /u/[username] shows a locked state instead of content —
  * and search is how someone gets there to ask.
  *
- * What protects a private profile here is the source: public.profile_cards, a
- * view holding only id, username, display_name, avatar_url and privacy. Bio
- * never comes back from it, for any profile, because the view does not select
- * it. public.profiles itself is untouched and still owner-only for a private
- * row.
+ * What protects a private profile here is the source: public.search_profile_cards,
+ * a SECURITY DEFINER function whose RETURNS TABLE names five columns — id,
+ * username, display_name, avatar_url, privacy. Bio is not among them, for any
+ * profile, so it cannot come back however this is called. public.profiles
+ * itself is untouched and still owner-only for a private row.
+ *
+ * This used to read a view of the same name and shape. migration_v45 replaced
+ * it: a GRANTed view is a table to PostgREST, so `?select=*` with no filter
+ * handed back every account in the database. The function takes a search term,
+ * refuses anything under two characters and caps its own result, so there is no
+ * single request that returns the user list.
  *
  * Still queried as `anon` with no session (getSupabase(), never the visitor's
- * cookies and never the service role). The view returns the same rows to
+ * cookies and never the service role). The function returns the same rows to
  * everyone, so a session would change nothing — but reaching for one would
  * invite the service role in later, and that WOULD change something.
  */
@@ -40,16 +46,11 @@ export interface UserResult {
   url: string
 }
 
-/** A row of public.profile_cards. username is non-null — the view filters. */
+/** A row from search_profile_cards. username is non-null — the function filters. */
 type ProfileRow = ProfileCard & { username: string }
 
 /** Fetch ceiling per field, before ranking. Ranking needs the exact match in hand. */
 const FETCH_LIMIT = 50
-
-/** Treat the query as literal text: % and _ are wildcards in ILIKE. */
-function escapeLike(s: string): string {
-  return s.replace(/[\\%_]/g, c => `\\${c}`)
-}
 
 /**
  * Exact username first, then names that start with the query, then everything
@@ -69,37 +70,25 @@ function rank(rows: ProfileRow[], q: string): ProfileRow[] {
  * cannot take exhibition search down with it (and vice versa in the route).
  */
 export async function searchPeople(rawQuery: string, limit: number): Promise<UserResult[]> {
-  // "@santo" should find santo.
+  // "@santo" should find santo. The function normalises the same way, so this
+  // is for the ranking below, which compares against the cleaned term.
   const q = rawQuery.trim().replace(/^@+/, '').toLowerCase()
   if (q.length < 2) return []
 
-  const pattern = `%${escapeLike(q)}%`
-
   try {
-    const sb = getSupabase()
-    const base = () =>
-      sb
-        .from('profile_cards')
-        .select(PROFILE_CARD_COLUMNS)
-        .limit(FETCH_LIMIT)
+    // One round trip instead of two. Matching both username and display_name
+    // used to need a query each — a single PostgREST .or() string breaks on
+    // user input containing a comma or a parenthesis — but inside the function
+    // it is an ordinary OR, and the wildcard escaping happens there too.
+    const { data, error } = await getSupabase()
+      .rpc('search_profile_cards', { q, max_rows: FETCH_LIMIT })
 
-    // Two queries rather than one .or() string: user input containing commas
-    // or parentheses would otherwise break the filter syntax.
-    const [byUsername, byDisplayName] = await Promise.all([
-      base().ilike('username', pattern),
-      base().ilike('display_name', pattern),
-    ])
-
-    for (const res of [byUsername, byDisplayName]) {
-      if (res.error) console.error('[search] people query failed:', res.error.message)
+    if (error) {
+      console.error('[search] people query failed:', error.message)
+      return []
     }
 
-    const seen = new Map<string, ProfileRow>()
-    for (const row of [...(byUsername.data ?? []), ...(byDisplayName.data ?? [])] as ProfileRow[]) {
-      if (!seen.has(row.id)) seen.set(row.id, row)
-    }
-
-    return rank([...seen.values()], q)
+    return rank((data ?? []) as ProfileRow[], q)
       .slice(0, limit)
       .map(r => ({
         id: r.id,
