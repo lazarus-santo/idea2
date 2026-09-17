@@ -1,5 +1,20 @@
 -- migration_v41: remove a person's uploaded files when their account is deleted
 --
+-- ############################################################################
+-- ## DO NOT APPLY. THIS MIGRATION IS WRONG AND WAS REVERTED BY v42.         ##
+-- ##                                                                        ##
+-- ## Applied 2026-09-17 and rolled back within minutes: it BROKE ACCOUNT    ##
+-- ## DELETION ENTIRELY. Supabase guards storage.objects against direct      ##
+-- ## DELETE ("42501: Direct deletion from storage tables is not allowed.    ##
+-- ## Use the Storage API instead."), SECURITY DEFINER does not bypass it,   ##
+-- ## and the guard rejects the statement even when it matches no rows — so  ##
+-- ## every deletion failed, including for users with no avatar.             ##
+-- ##                                                                        ##
+-- ## Kept only as the record of what was tried. See migration_v42.sql for   ##
+-- ## the rollback and for the approaches that can actually work (all of     ##
+-- ## them go through the Storage API, not the database).                    ##
+-- ############################################################################
+--
 -- HOW TO APPLY: paste into the Supabase SQL editor as role `postgres`
 -- (dashboard/project/sgkycnecmdxvujybsuev/sql/new). There is no psql, no
 -- Supabase CLI and no DATABASE_URL in this project.
