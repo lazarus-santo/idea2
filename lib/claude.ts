@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
 import { loggedExaSearch } from './exa-log'
+import { analyzeListingPage, sizingFor } from './listing-prepass'
 import type { ExhibitionRaw, Preread, CoverageItem, ExhibitionLink, ExhibitionDetailExtracted } from './types'
 
 const anthropic = new Anthropic({
@@ -1426,28 +1427,62 @@ export async function extractExhibitionLinks(
   // noise. Framed below as a hint, not an override, so it cannot on its own
   // reclassify a Program as an exhibition.
   scrapeNotes?: string | null,
-  // Anchor-context half-width. The caller widens this via the retry ladder when a
-  // multi-city institution's links come back with no location_hint — on some
-  // layouts a card's own location sits ~1,000 characters past its anchor.
+  // MINIMUM anchor-context half-width, not the value used. The pre-pass below
+  // sizes the window to this page's own worst link-to-date distance; this floor
+  // is how the location_hint retry ladder widens it further for a multi-city
+  // institution whose links come back with no location_hint.
   contextChars = 600
 ): Promise<ExhibitionLink[]> {
   const today = new Date().toISOString().split('T')[0]
-  const stripped = extractAnchorContext(extractMainContent(html), venueUrl, contextChars).slice(0, 100000)
+
+  // One pure pass over the real page, before the call, so all three limits are
+  // sized to the page in front of us. Flat limits were failing silently: a
+  // response that hit the old 4,096-token ceiling stopped mid-array and the
+  // parser read the unterminated JSON as zero links.
+  const main = extractMainContent(html)
+  const analysis = analyzeListingPage(stripImageUrlNoise(main), venueUrl)
+  const sizing = sizingFor(analysis)
+  // The ladder's rung is a floor on the window, never a cap on it.
+  const windowChars = Math.max(sizing.contextChars, contextChars)
+  const stripped = extractAnchorContext(main, venueUrl, windowChars).slice(0, sizing.pageCutoff)
+
+  console.log(JSON.stringify({
+    tag: 'AGENT1', venue: venueName, event: 'T1_SIZING',
+    page_chars: analysis.pageChars,
+    links_found: analysis.linkCount,
+    boundary: analysis.boundaryIndex !== null,
+    links_before_boundary: analysis.linksBeforeBoundary,
+    max_date_distance: analysis.maxDistance,
+    window: windowChars,
+    page_cutoff: sizing.pageCutoff,
+    sent_chars: stripped.length,
+    max_tokens: sizing.maxTokens,
+    skip_past_section: sizing.skipPastSection,
+    basis: sizing.basis,
+  }))
 
   const notesBlock = scrapeNotes?.trim()
     ? `\nNote from the site's operator about this page — treat as a hint about where to look, not as a rule that overrides the classification below:\n${scrapeNotes.trim()}\n`
     : ''
 
+  // Only ever set when the page has a real archive heading with shows above it.
+  // Paired with the output ceiling: that ceiling is sized to the links above the
+  // heading, and truncation does not return the first N links — it returns an
+  // unterminated array the parser reads as none. So the two move together.
+  const skipPastBlock = sizing.skipPastSection
+    ? `\nThis page has a "Past"/"Archive" section further down. Return ONLY the exhibitions listed ABOVE that heading, and skip every link below it. Those are closed shows that are discarded later anyway, and including them makes the reply long enough to be cut off — which loses the entire page, not just the closed shows.\n`
+    : ''
+
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
+    max_tokens: sizing.maxTokens,
     messages: [
       {
         role: 'user',
         content: `Extract all exhibition links from this ${venueName} listing page (${venueUrl}).
 
 Today: ${today}
-${notesBlock}
+${notesBlock}${skipPastBlock}
 For each exhibition link found, return:
 - title: the exhibition or show title
 - url: full absolute URL to the exhibition detail page (resolve relative URLs against base ${venueUrl})
