@@ -4,6 +4,11 @@ import { getSupabase } from '@/lib/supabase'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { getCurrentUser } from '@/lib/auth'
 import {
+  getFollowCounts,
+  getFollowRelationship,
+  getPendingRequests,
+} from '@/lib/follows'
+import {
   PROFILE_CARD_COLUMNS,
   PROFILE_COLUMNS,
   normalizePrivacy,
@@ -12,6 +17,9 @@ import {
   type Profile,
   type ProfileCard,
 } from '@/lib/profile'
+import FollowButton from '@/components/account/FollowButton'
+import FollowCounts from '@/components/account/FollowCounts'
+import FollowRequests from '@/components/account/FollowRequests'
 import '@/app/account.css'
 
 interface Props {
@@ -23,7 +31,8 @@ interface Props {
  *
  * `card` is present whenever the username is claimed — it is what makes the
  * page exist at all. `profile` is present only when this visitor is allowed
- * the contents: the profile is public, or it is their own.
+ * the contents: the profile is public, it is their own, or they are an
+ * approved follower of it.
  */
 interface ProfileView {
   card: ProfileCard
@@ -35,19 +44,16 @@ interface ProfileView {
  *
  * Two reads, and the difference between them is the privacy model.
  *
- * The FULL row comes from public.profiles through the visitor's own session,
- * so the policies in migration_v40 decide: a public profile is readable by
- * anyone, a private one only by its owner. Nothing here re-implements that
- * check, and nothing here can accidentally widen it.
+ * The FULL row comes from public.profiles through the visitor's own session, so
+ * the policies decide: public to anyone, private to its owner, and — since
+ * migration_v44 — private to anyone whose follow request was approved. Nothing
+ * here re-implements that check, which is exactly why approving a request
+ * unlocks this page with no code in it that knows what approval means.
  *
  * The CARD comes from public.profile_cards (migration_v43), a view of every
  * claimed username carrying only id, username, display_name, avatar_url and
- * privacy. A private profile answers here and nowhere else. That is deliberate
- * and it is a change from v40, which 404'd a private profile at this route to
- * avoid admitting it existed. Hiding it that thoroughly also made it
- * impossible to ask its owner for access, which is the thing privacy is
- * supposed to allow — so a private profile is now a locked door with a name on
- * it rather than a blank wall.
+ * privacy. A private profile answers here and nowhere else, which is what lets
+ * a stranger find it and ask.
  *
  * A username nobody has claimed still 404s, because it has no card.
  */
@@ -118,8 +124,17 @@ export default async function ProfilePage({ params }: Props) {
   // Locked when the contents did not come back. Whether that is because the
   // profile is private or because a policy said no, the answer on the page is
   // the same, and it is the read that decides it — not a privacy flag this
-  // component interprets for itself.
+  // component interprets for itself. An approved follower is unlocked here
+  // without this line changing, because the policy changed instead.
   const locked = profile === null
+
+  // The approval queue is only ever fetched for your own profile, and the
+  // function behind it answers only about whoever is calling it.
+  const [counts, relationship, requests] = await Promise.all([
+    getFollowCounts(card.id),
+    getFollowRelationship(viewer?.id ?? null, card.id),
+    isOwnProfile ? getPendingRequests() : Promise.resolve([]),
+  ])
 
   return (
     <div className="ac-page">
@@ -135,19 +150,30 @@ export default async function ProfilePage({ params }: Props) {
                 {profileDisplayName(card).charAt(0).toUpperCase()}
               </div>
             )}
-          <div>
+          <div className="ac-profile-id">
             <h1 className="ac-profile-name">{profileDisplayName(card)}</h1>
             <p className="ac-profile-handle">@{card.username}</p>
+            {/* Counts sit above the fold on every profile, locked or not. The
+                lists behind them open only when this visitor got the contents. */}
+            <FollowCounts profileId={card.id} counts={counts} listsOpen={!locked} />
+          </div>
+
+          <div className="ac-profile-action">
+            <FollowButton
+              targetId={card.id}
+              targetUsername={card.username}
+              relationship={relationship}
+            />
           </div>
         </div>
 
         {locked ? (
-          // No follow button yet — there is no follow graph to attach one to.
-          // When there is, the request to follow belongs right here.
           <div className="ac-locked">
             <p className="ac-locked-title">This profile is private</p>
             <p className="ac-locked-note">
-              Only {profileDisplayName(card)} can see what is on it.
+              {relationship === 'pending'
+                ? <>Your request to follow {profileDisplayName(card)} is waiting to be approved.</>
+                : <>Follow {profileDisplayName(card)} to ask for access.</>}
             </p>
           </div>
         ) : (
@@ -166,16 +192,23 @@ export default async function ProfilePage({ params }: Props) {
         )}
 
         {isOwnProfile && (
-          <div className="ac-btn-row" style={{ marginTop: 24 }}>
-            <Link href="/settings" className="ac-btn ac-btn--secondary ac-btn--inline">
-              Edit profile
-            </Link>
-            {card.privacy === 'private' && (
-              <span className="ac-meta" style={{ alignSelf: 'center' }}>
-                People can find you in search, but only you can see this page.
-              </span>
-            )}
-          </div>
+          <>
+            <div className="ac-btn-row" style={{ marginTop: 24 }}>
+              <Link href="/settings" className="ac-btn ac-btn--secondary ac-btn--inline">
+                Edit profile
+              </Link>
+              {card.privacy === 'private' && (
+                <span className="ac-meta" style={{ alignSelf: 'center' }}>
+                  People can find you in search, but only approved followers see this page.
+                </span>
+              )}
+            </div>
+
+            {/* Nobody is told a request arrived — there is no notification
+                system yet — so the queue lives on the page its owner already
+                visits. See the note in FollowRequests. */}
+            <FollowRequests requests={requests} />
+          </>
         )}
       </div>
     </div>

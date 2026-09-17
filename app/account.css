@@ -474,8 +474,151 @@
   margin: 6px 0 0;
 }
 
+/* ── Follows ─────────────────────────────────────────────── */
+
+/* The head becomes avatar | name+counts | button. ac-profile-id takes the
+   slack so the button stays pinned right at every width. */
+.ac-profile-id { flex: 1 1 auto; min-width: 0; }
+.ac-profile-action { flex: 0 0 auto; }
+
+.ac-counts {
+  display: flex;
+  gap: 16px;
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--ac-ink-soft);
+}
+
+/* A count is a button when its list will open and plain text when it will not,
+   so a private profile's numbers never look pressable to someone who has not
+   been let in. Both spellings have to sit on the same baseline. */
+.ac-count-link {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ac-count-link:hover { color: var(--ac-ink); }
+.ac-count-static { color: inherit; }
+
+.ac-follow-error { margin-top: 6px; }
+
+.ac-btn--small {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+/* ── A list of people: followers, following, follow requests ── */
+
+.ac-people {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ac-person {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.ac-person:last-child { border-bottom: none; }
+
+.ac-person-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.ac-person-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ac-person-name {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-person-handle {
+  font-size: 13px;
+  color: var(--ac-ink-soft);
+}
+
+.ac-person-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* ── The followers / following sheet ─────────────────────── */
+
+.ac-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  z-index: 100;
+}
+
+.ac-sheet {
+  background: #FFFCEC;
+  border-radius: 12px;
+  width: min(420px, 100%);
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+}
+
+.ac-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.ac-sheet-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.ac-sheet-close {
+  font-size: 24px;
+  line-height: 1;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  cursor: pointer;
+  color: var(--ac-ink-soft);
+}
+
 @media (max-width: 600px) {
   .ac-page { padding: 24px 16px 64px; }
   .ac-back { margin-bottom: 28px; }
   .ac-locked { padding: 24px 16px; }
+
+  /* The head wraps to two rows on a phone; the follow button drops under the
+     name rather than squeezing it. */
+  .ac-profile-head { flex-wrap: wrap; }
+  .ac-profile-action { width: 100%; }
+  .ac-profile-action .ac-btn { width: 100%; text-align: center; }
 }
