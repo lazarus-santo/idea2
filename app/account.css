@@ -29,27 +29,6 @@
   --ac-ink-faint: #6B665D;
 }
 
-/*
- * globals.css styles every anchor on the site as `a { color: var(--yellow) }`.
- * That is an element-level rule, so it beats the black these pages inherit
- * from .ac-page, and it made every link in the sign-in and reset flow yellow
- * on cream — about 1.7:1, which is effectively invisible. Links here are ink
- * with an underline instead.
- */
-.ac-page a {
-  color: var(--ac-ink);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.ac-page a:hover { opacity: 0.6; }
-
-/* The wordmark and anything shaped like a button opt out of the underline. */
-.ac-page a.ac-back,
-.ac-page a.ac-btn {
-  text-decoration: none;
-}
-
 .ac-shell {
   max-width: 520px;
   margin: 0 auto;

@@ -44,8 +44,22 @@ html, body {
   min-height: 100vh;
 }
 
+/*
+ * Links are ink, not yellow.
+ *
+ * The default page background is the cream set on html/body just above, and
+ * --yellow on that ground measures 1.55:1 — effectively unreadable. --black
+ * (the palette's ink token) measures 8.84:1 against the same cream.
+ *
+ * Links on dark surfaces are unaffected because they all set their own
+ * colour: .home-links a is cream on the navy gradient, and .eim-popup-links a
+ * and .ep-pr-prose a set theirs. Nothing else puts a link on a dark
+ * background — the other dark rules in this file are skeleton loaders,
+ * thumbnail placeholders and calendar chips, none of which contain anchors.
+ * If you add a link to a dark surface, give it its own colour.
+ */
 a {
-  color: var(--yellow);
+  color: var(--black);
   text-decoration: none;
   transition: opacity 200ms ease;
 }
@@ -2248,6 +2262,38 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
 
 .sr-see-all:hover { color: #000; }
 
+/* "See all users" inside the full results list, which has no side padding */
+.sr-see-all--inline {
+  width: auto;
+  padding: 4px 0 14px;
+}
+
+.sr-dropdown-empty {
+  margin: 0;
+  padding: 16px;
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+/* User results: round avatar, initial when there's no photo */
+.sr-thumb--round,
+.sr-thumb--round .sr-thumb-img,
+.sr-thumb--round .sr-thumb-empty {
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.sr-thumb-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: #000;
+}
+
 /* Full results section */
 .sr-results {
   margin-top: 40px;
@@ -2269,6 +2315,8 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
 /* Tab bar */
 .sr-tabs {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 12px;
   gap: 24px;
   margin-bottom: 28px;
 }
