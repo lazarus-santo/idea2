@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { searchPeople } from '@/lib/people-search'
 
 interface SearchResult {
   id: string
@@ -52,13 +53,17 @@ export async function GET(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get('mode') ?? 'full'
 
   if (!q || q.length < 2) {
-    return NextResponse.json({ exhibitions: [], institutions: [], readings: [], artists: [] })
+    return NextResponse.json({ exhibitions: [], institutions: [], readings: [], artists: [], users: [] })
   }
 
   const sb = getSupabaseAdmin()
   const pattern = `%${q}%`
   const perCat = mode === 'dropdown' ? 3 : 50
   const today = new Date().toISOString().split('T')[0]
+
+  // People search runs alongside, never joined: see lib/people-search.ts.
+  // Started now so it overlaps the content queries; it never throws.
+  const usersPromise = searchPeople(q, perCat)
 
   // Phase 1: parallel searches
   const [exByTitle, artistsRaw, institutionsRaw, readingsRaw] = await Promise.all([
@@ -330,6 +335,7 @@ export async function GET(req: NextRequest) {
       institutions: institutionResults.slice(0, 3),
       readings: readingResults.slice(0, 3),
       artists: artistResults.slice(0, 3),
+      users: await usersPromise,
     })
   }
 
@@ -338,5 +344,6 @@ export async function GET(req: NextRequest) {
     institutions: sortEnriched(institutionResults, q),
     readings: sortFlat(readingResults, q),
     artists: sortEnriched(artistResults, q),
+    users: await usersPromise,
   })
 }

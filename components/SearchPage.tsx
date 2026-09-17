@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 
-type Category = 'exhibition' | 'institution' | 'reading' | 'artist'
+type Category = 'exhibition' | 'institution' | 'reading' | 'artist' | 'user'
 type TabFilter = 'all' | Category
 
 interface FlatItem {
@@ -16,6 +16,8 @@ interface FlatItem {
   is_external: boolean
   subtitle: string | null
   fromArtist?: boolean
+  /** Users only: shown beside the label, since display names aren't unique. */
+  handle?: string
 }
 
 interface SubResult {
@@ -36,18 +38,57 @@ interface EnrichedResult {
   readings: SubResult[]
 }
 
+interface UserResult {
+  id: string
+  username: string
+  display_name: string
+  avatar_url: string | null
+  url: string
+}
+
 interface SearchResponse {
   exhibitions: FlatItem[]
   institutions: EnrichedResult[]
   readings: FlatItem[]
   artists: EnrichedResult[]
+  users?: UserResult[]
 }
+
+/** Most users shown in the dropdown, and in the All tab before "See all users". */
+const USERS_SHOWN = 3
 
 const CATEGORY_LABEL: Record<Category, string> = {
   exhibition: 'Exhibition',
   institution: 'Institution',
   reading: 'Reading',
   artist: 'Artist',
+  user: 'User',
+}
+
+const EMPTY_MESSAGE: Record<TabFilter, string> = {
+  all: 'No exhibitions, institutions, readings, artists or users match this search.',
+  exhibition: 'No exhibitions match this search.',
+  institution: 'No institutions match this search.',
+  reading: 'No readings match this search.',
+  artist: 'Nothing yet — check back as we add more venues.',
+  user: 'No users match this search.',
+}
+
+/**
+ * People come from a separate query (lib/people-search.ts) and are kept out of
+ * flattenResults, which only deduplicates exhibition-side content.
+ */
+function userItems(data: SearchResponse): FlatItem[] {
+  return (data.users ?? []).map(u => ({
+    id: u.id,
+    title: u.display_name,
+    category: 'user' as const,
+    image_url: u.avatar_url,
+    url: u.url,
+    is_external: false,
+    subtitle: null,
+    handle: u.username,
+  }))
 }
 
 function flattenResults(data: SearchResponse): FlatItem[] {
@@ -115,16 +156,31 @@ function Thumbnail({ url }: { url: string | null }) {
   )
 }
 
+function Avatar({ url, name }: { url: string | null; name: string }) {
+  return (
+    <div className="sr-thumb sr-thumb--round">
+      {url
+        ? <img src={url} alt="" className="sr-thumb-img" />
+        : <div className="sr-thumb-empty sr-thumb-initial">{name.charAt(0).toUpperCase()}</div>}
+    </div>
+  )
+}
+
 function ResultRow({ result, onClick }: { result: FlatItem; onClick?: () => void }) {
   const inner = (
     <>
-      <Thumbnail url={result.image_url} />
+      {result.category === 'user'
+        ? <Avatar url={result.image_url} name={result.title} />
+        : <Thumbnail url={result.image_url} />}
       <div className="sr-row-text">
         <span className="sr-row-title">
           {result.title}
           {result.is_external && <span className="sr-external-icon"> ↗</span>}
         </span>
-        <span className="sr-row-category">{CATEGORY_LABEL[result.category]}</span>
+        <span className="sr-row-category">
+          {CATEGORY_LABEL[result.category]}
+          {result.handle && <> &middot; @{result.handle}</>}
+        </span>
       </div>
     </>
   )
@@ -149,6 +205,10 @@ export default function SearchPage() {
 
   const [inputValue, setInputValue] = useState(urlQuery)
   const [dropdownItems, setDropdownItems] = useState<FlatItem[]>([])
+  // The query the dropdown's items belong to, so "no matches" only shows once
+  // that query has actually come back.
+  const [dropdownQuery, setDropdownQuery] = useState('')
+  const latestQueryRef = useRef('')
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [fullResults, setFullResults] = useState<SearchResponse | null>(null)
   const [activeTab, setActiveTab] = useState<TabFilter>(urlCategory === 'artists' ? 'artist' : 'all')
@@ -172,8 +232,10 @@ export default function SearchPage() {
   const handleInputChange = useCallback((val: string) => {
     setInputValue(val)
     if (debounceRef.current) clearTimeout(debounceRef.current)
+    latestQueryRef.current = val
     if (!val.trim() || val.length < 2) {
       setDropdownItems([])
+      setDropdownQuery('')
       setIsDropdownOpen(false)
       return
     }
@@ -181,9 +243,17 @@ export default function SearchPage() {
       try {
         const res = await fetch(`/api/search?q=${encodeURIComponent(val)}&mode=dropdown`)
         const data: SearchResponse = await res.json()
-        const all = flattenResults(data).slice(0, 6)
+        // A slower, older request must not overwrite a newer one — matters now
+        // that an empty answer shows a message instead of closing silently.
+        if (latestQueryRef.current !== val) return
+        // Content first; people last and capped.
+        const all = [
+          ...flattenResults(data).slice(0, 6),
+          ...userItems(data).slice(0, USERS_SHOWN),
+        ]
         setDropdownItems(all)
-        setIsDropdownOpen(all.length > 0)
+        setDropdownQuery(val)
+        setIsDropdownOpen(true)
       } catch {
         // ignore
       }
@@ -209,11 +279,19 @@ export default function SearchPage() {
 
   const isFullResults = !!urlQuery
 
-  const allFlat = fullResults ? flattenResults(fullResults) : []
-  const visibleResults =
-    activeTab === 'all' ? allFlat :
-    activeTab === 'artist' ? allFlat.filter(r => r.fromArtist) :
-    allFlat.filter(r => r.category === activeTab)
+  const contentFlat = fullResults ? flattenResults(fullResults) : []
+  const userFlat = fullResults ? userItems(fullResults) : []
+  // In All, people are a capped group at the bottom; the Users tab has the rest.
+  const visibleUsers =
+    activeTab === 'all' ? userFlat.slice(0, USERS_SHOWN) :
+    activeTab === 'user' ? userFlat :
+    []
+  const visibleContent =
+    activeTab === 'all' ? contentFlat :
+    activeTab === 'user' ? [] :
+    activeTab === 'artist' ? contentFlat.filter(r => r.fromArtist) :
+    contentFlat.filter(r => r.category === activeTab)
+  const hiddenUserCount = activeTab === 'all' ? userFlat.length - visibleUsers.length : 0
 
   return (
     <div className="sr-page">
@@ -236,12 +314,12 @@ export default function SearchPage() {
           <input
             type="text"
             className={`sr-input${inputValue ? ' sr-input--active' : ''}`}
-            placeholder="Search by exhibition, institution, reading, artist"
+            placeholder="Search by exhibition, institution, reading, artist, user"
             value={inputValue}
             onChange={e => handleInputChange(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSubmit()}
             onFocus={() => {
-              if (inputValue.length >= 2 && dropdownItems.length > 0) {
+              if (inputValue.length >= 2 && dropdownQuery === inputValue) {
                 setIsDropdownOpen(true)
               }
             }}
@@ -250,18 +328,26 @@ export default function SearchPage() {
           />
 
           {/* Dropdown — shows while typing, including when on results page if input differs from current query */}
-          {isDropdownOpen && dropdownItems.length > 0 && (!isFullResults || inputValue.trim() !== urlQuery) && (
+          {isDropdownOpen && dropdownQuery === inputValue && (!isFullResults || inputValue.trim() !== urlQuery) && (
             <div className="sr-dropdown">
-              {dropdownItems.map(r => (
-                <ResultRow
-                  key={`${r.category}-${r.id}`}
-                  result={r}
-                  onClick={() => setIsDropdownOpen(false)}
-                />
-              ))}
-              <button className="sr-see-all" onClick={handleSubmit}>
-                See full results
-              </button>
+              {dropdownItems.length === 0 ? (
+                <p className="sr-dropdown-empty">
+                  Nothing matches &ldquo;{dropdownQuery.trim()}&rdquo; &mdash; no exhibitions, institutions, readings, artists or users.
+                </p>
+              ) : (
+                <>
+                  {dropdownItems.map(r => (
+                    <ResultRow
+                      key={`${r.category}-${r.id}`}
+                      result={r}
+                      onClick={() => setIsDropdownOpen(false)}
+                    />
+                  ))}
+                  <button className="sr-see-all" onClick={handleSubmit}>
+                    See full results
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -275,7 +361,7 @@ export default function SearchPage() {
 
             {/* Category tabs */}
             <div className="sr-tabs">
-              {(['all', 'exhibition', 'institution', 'reading', 'artist'] as TabFilter[]).map(tab => (
+              {(['all', 'exhibition', 'institution', 'reading', 'artist', 'user'] as TabFilter[]).map(tab => (
                 <button
                   key={tab}
                   className={`sr-tab${activeTab === tab ? ' sr-tab--active' : ''}`}
@@ -289,17 +375,21 @@ export default function SearchPage() {
             {/* Results list */}
             {fullResults === null ? (
               <div className="sr-loading" />
-            ) : visibleResults.length === 0 ? (
-              <p className="sr-empty">
-                {activeTab === 'artist'
-                  ? 'Nothing yet — check back as we add more venues.'
-                  : 'No results found.'}
-              </p>
+            ) : visibleUsers.length + visibleContent.length === 0 ? (
+              <p className="sr-empty">{EMPTY_MESSAGE[activeTab]}</p>
             ) : (
               <div className="sr-list">
-                {visibleResults.map(r => (
+                {visibleContent.map(r => (
                   <ResultRow key={`${r.category}-${r.id}`} result={r} />
                 ))}
+                {visibleUsers.map(r => (
+                  <ResultRow key={`${r.category}-${r.id}`} result={r} />
+                ))}
+                {hiddenUserCount > 0 && (
+                  <button className="sr-see-all sr-see-all--inline" onClick={() => setActiveTab('user')}>
+                    See all {userFlat.length} users
+                  </button>
+                )}
               </div>
             )}
           </div>
