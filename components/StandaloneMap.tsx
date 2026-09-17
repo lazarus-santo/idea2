@@ -11,6 +11,7 @@ import { createPrimaryMarkerEl } from '@/lib/mapMarkers'
 import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from '@/lib/mapPopup'
 import { VENUE_TABS, TAB_LABEL, tabMatches, type VenueTab } from '@/lib/institution-types'
 import { groupByPlace } from '@/lib/exhibition-location'
+import AccountNav from '@/components/account/AccountNav'
 
 // ── Holiday detection ──────────────────────────────────────────────────────────
 
@@ -712,6 +713,7 @@ export default function StandaloneMap() {
             <Link href="/editors-picks">Editor&rsquo;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

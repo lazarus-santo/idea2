@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import AccountNav from '@/components/account/AccountNav'
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -68,6 +69,7 @@ export default async function ReadingPage({ params }: PageProps) {
             <Link href="/editors-picks">Editor&apos;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

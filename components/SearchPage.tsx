@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import AccountNav from '@/components/account/AccountNav'
 
 type Category = 'exhibition' | 'institution' | 'reading' | 'artist' | 'user'
 type TabFilter = 'all' | Category
@@ -305,6 +306,7 @@ export default function SearchPage() {
             <Link href="/editors-picks">Editor&rsquo;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

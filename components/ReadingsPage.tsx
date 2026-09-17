@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import type { Reading } from '@/lib/types'
+import AccountNav from '@/components/account/AccountNav'
 
 type Tab = 'top-stories' | 'river'
 type RiverGroupFilter = 'all' | 'news' | 'art_market' | 'people' | 'opinion'
@@ -407,6 +408,7 @@ export default function ReadingsPage() {
             <Link href="/editors-picks">Editor&rsquo;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import type { VenueExhibition, VenuePreread, VenueInstitutionPin } from '@/lib/types'
+import AccountNav from '@/components/account/AccountNav'
 
 const VenueMap = dynamic(() => import('./VenueMap'), { ssr: false })
 
@@ -104,6 +105,7 @@ export default function VenuePage({
             <Link href="/editors-picks">Editor&apos;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

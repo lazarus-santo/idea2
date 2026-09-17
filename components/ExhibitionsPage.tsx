@@ -6,6 +6,7 @@ import type { Exhibition, MapExhibition } from '@/lib/types'
 import ExhibitionsSplitView from './ExhibitionsSplitView'
 import ExhibitionFilters from './ExhibitionFilters'
 import { VENUE_TABS, TAB_LABEL, tabMatches, type VenueTab } from '@/lib/institution-types'
+import AccountNav from '@/components/account/AccountNav'
 
 type Tab = VenueTab
 type SubFilter = 'closing-soon' | null
@@ -126,6 +127,7 @@ export default function ExhibitionsPage() {
             <Link href="/editors-picks">Editor&rsquo;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

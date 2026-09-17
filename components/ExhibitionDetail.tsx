@@ -6,6 +6,7 @@ import type { ExhibitionDetailData } from '@/lib/types'
 import { sortByTier } from '@/lib/publication-tiers'
 import { sanitizeHtml, normalizeToHtml } from '@/lib/sanitize-html'
 import dynamic from 'next/dynamic'
+import AccountNav from '@/components/account/AccountNav'
 
 const ExhibitionMiniMap = dynamic(() => import('@/components/ExhibitionMiniMap'), { ssr: false })
 
@@ -135,6 +136,7 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
               <Link href="/editors-picks">Editor&apos;s Picks</Link>
             </div>
             <Link href="/search" className="ep-nav-search">Search</Link>
+            <AccountNav />
           </div>
         </nav>
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import s from './EditorsPicksPage.module.css'
+import AccountNav from '@/components/account/AccountNav'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -245,6 +246,7 @@ export default function EditorsPicksPage() {
             <Link href="/editors-picks">Editor&rsquo;s Picks</Link>
           </div>
           <Link href="/search" className="ep-nav-search">Search</Link>
+          <AccountNav />
         </div>
       </nav>
 

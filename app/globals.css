@@ -2125,6 +2125,47 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
 
 .ep-nav-search:hover { opacity: 0.45; }
 
+/* Account item after Search: Search's margin-left:auto pushes both right. */
+.ep-nav-search.ep-nav-account { margin-left: 14px; }
+
+.ep-nav-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Signed in with no photo: first initial in a circle, not a long @username. */
+.ep-nav-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #d8d5c8;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  /* The phone size for Search lives in the nav block above, but that rule
+     comes earlier in this file than .ep-nav-search, so it never applied and
+     Search rendered at 14px beside 11px links. Restated here to win. */
+  .ep-nav-search { font-size: 11px; }
+  .ep-nav-search.ep-nav-account { margin-left: 4px; }
+  .ep-nav-avatar,
+  .ep-nav-initial { width: 24px; height: 24px; }
+}
+
+/* Narrowest phones: wordmark, three links, Search and the account item only
+   fit in a 360px screen with slightly tighter link spacing. */
+@media (max-width: 400px) {
+  .ep-nav-inner { gap: 4px; }
+  .ep-nav-links a { padding: 0 4px; }
+  .ep-nav-long { display: none; }
+}
+
 /* ── SEARCH PAGE ─────────────────────────────────────────── */
 
 .sr-page {
