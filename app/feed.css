@@ -1,0 +1,134 @@
+/*
+ * The activity feed.
+ *
+ * Prefixed .fd- and loaded alongside account.css, which the page leans on for
+ * the shell, the avatars and the buttons — a feed row is a person plus a line
+ * of text, which is the same furniture the follower lists already use. Only
+ * what is genuinely new to the feed is here. Colour tokens (--ac-ink-soft and
+ * friends) come from .ac-page, so everything below must live inside it.
+ */
+
+.fd-body {
+  margin-top: 32px;
+}
+
+/* ── The empty state ─────────────────────────────────────── */
+
+/*
+ * What every account sees today: there are no event types yet. It is sized to
+ * sit calmly on a page with nothing else on it rather than to fill the space —
+ * a huge empty panel would insist on the absence.
+ */
+.fd-empty {
+  padding: 16px 0 8px;
+}
+
+.fd-empty-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.fd-empty-note {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ac-ink-soft);
+  margin: 0;
+  max-width: 44ch;
+}
+
+/* ── The event list ──────────────────────────────────────── */
+
+.fd-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/*
+ * Rows are separated by space alone — no rules between them, following the
+ * search results list (.sr-row in globals.css), which is the site's existing
+ * pattern for a list of people and things.
+ *
+ * The gap has to do the work the border used to, so it is deliberately larger
+ * than the old 16px padding: at that spacing without a line, an event's second
+ * line and the next event's name sat close enough to read as one block. 28px
+ * is enough to group each avatar with its own text and nothing else.
+ */
+.fd-event {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.fd-event:last-child { margin-bottom: 0; }
+
+.fd-event-avatar-link {
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+.fd-event-avatar {
+  width: 36px;
+  height: 36px;
+}
+
+/* min-width: 0 so a long event body wraps instead of stretching the row. */
+.fd-event-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fd-event-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 2px;
+}
+
+.fd-event-actor {
+  font-size: 15px;
+  font-weight: 600;
+  color: #000;
+  text-decoration: none;
+}
+
+.fd-event-actor:hover {
+  text-decoration: underline;
+}
+
+.fd-event-time {
+  font-size: 13px;
+  color: var(--ac-ink-faint);
+  flex: 0 0 auto;
+}
+
+/*
+ * The body a renderer supplies. There are no renderers yet, so the only thing
+ * that can appear here is the unknown-type fallback below — which is exactly
+ * what proves the list draws whatever it is given.
+ */
+.fd-event-body {
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 0;
+  color: var(--ac-ink);
+  overflow-wrap: anywhere;
+}
+
+.fd-event-body--unknown {
+  color: var(--ac-ink-faint);
+}
+
+/* Monospace so an unrendered type reads as a machine name, not a sentence. */
+.fd-event-type {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+/* ── Paging ──────────────────────────────────────────────── */
+
+.fd-more {
+  margin-top: 24px;
+}
