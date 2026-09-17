@@ -1,5 +1,5 @@
 import { getSupabase } from '@/lib/supabase'
-import { profileDisplayName } from '@/lib/profile'
+import { PROFILE_CARD_COLUMNS, profileDisplayName, type ProfileCard } from '@/lib/profile'
 
 /**
  * Person search: profiles by username or display name.
@@ -11,17 +11,25 @@ import { profileDisplayName } from '@/lib/profile'
  * kept clear of that schema so it can never hold a reference that goes stale.
  * The route merges the two lists only as JSON for display.
  *
- * PRIVACY: only public profiles are returned, enforced twice.
- *   1. The query runs as `anon` with no session (getSupabase(), never the
- *      visitor's cookies and never the service role), so the RLS policy
- *      profiles_anon_read_public refuses every private and followers_only row.
- *      A signed-in visitor's own session would also return their OWN private
- *      profile — they would find themselves in search and conclude they are
- *      public.
- *   2. An explicit privacy = 'public' filter, so the rule survives if someone
- *      later swaps the client.
- * followers_only is excluded along with private, matching /u/[username]: it
- * reads as private until a follow graph exists.
+ * PRIVACY: every profile is searchable, private ones included.
+ *
+ * This reversed in v43. The first version filtered private profiles out, which
+ * sounded careful and was the wrong place to draw the line: you cannot ask to
+ * follow an account you are unable to find, so hiding private accounts from
+ * search made a private account useless rather than protected. Privacy gates
+ * the profile PAGE — /u/[username] shows a locked state instead of content —
+ * and search is how someone gets there to ask.
+ *
+ * What protects a private profile here is the source: public.profile_cards, a
+ * view holding only id, username, display_name, avatar_url and privacy. Bio
+ * never comes back from it, for any profile, because the view does not select
+ * it. public.profiles itself is untouched and still owner-only for a private
+ * row.
+ *
+ * Still queried as `anon` with no session (getSupabase(), never the visitor's
+ * cookies and never the service role). The view returns the same rows to
+ * everyone, so a session would change nothing — but reaching for one would
+ * invite the service role in later, and that WOULD change something.
  */
 
 export interface UserResult {
@@ -32,14 +40,8 @@ export interface UserResult {
   url: string
 }
 
-interface ProfileRow {
-  id: string
-  username: string
-  display_name: string | null
-  avatar_url: string | null
-}
-
-const COLUMNS = 'id, username, display_name, avatar_url'
+/** A row of public.profile_cards. username is non-null — the view filters. */
+type ProfileRow = ProfileCard & { username: string }
 
 /** Fetch ceiling per field, before ranking. Ranking needs the exact match in hand. */
 const FETCH_LIMIT = 50
@@ -77,10 +79,8 @@ export async function searchPeople(rawQuery: string, limit: number): Promise<Use
     const sb = getSupabase()
     const base = () =>
       sb
-        .from('profiles')
-        .select(COLUMNS)
-        .eq('privacy', 'public')
-        .not('username', 'is', null)
+        .from('profile_cards')
+        .select(PROFILE_CARD_COLUMNS)
         .limit(FETCH_LIMIT)
 
     // Two queries rather than one .or() string: user input containing commas

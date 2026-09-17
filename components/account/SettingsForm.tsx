@@ -6,6 +6,7 @@ import {
   BIO_MAX,
   DISPLAY_NAME_MAX,
   PRIVACY_OPTIONS,
+  normalizePrivacy,
   normalizeUsername,
   profilePath,
   validateBio,
@@ -36,7 +37,9 @@ export default function SettingsForm({
   const [displayName, setDisplayName] = useState(profile.display_name ?? '')
   const [bio, setBio] = useState(profile.bio ?? '')
   const [avatarUrl, setAvatarUrl] = useState<string | null>(profile.avatar_url)
-  const [privacy, setPrivacy] = useState<ProfilePrivacy>(profile.privacy)
+  // Normalised on the way in: a row still holding v40's 'followers_only'
+  // would otherwise match no radio and render the whole group unchecked.
+  const [privacy, setPrivacy] = useState<ProfilePrivacy>(normalizePrivacy(profile.privacy))
 
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)

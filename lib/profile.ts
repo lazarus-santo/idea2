@@ -11,7 +11,7 @@
  * migration's version to win.
  */
 
-export type ProfilePrivacy = 'public' | 'private' | 'followers_only'
+export type ProfilePrivacy = 'public' | 'private'
 
 /** A profile as the browser and public pages see it (the granted columns). */
 export interface Profile {
@@ -27,6 +27,28 @@ export interface Profile {
 /** The columns anon/authenticated may SELECT — see migration_v40 section 6. */
 export const PROFILE_COLUMNS =
   'id, username, display_name, avatar_url, bio, privacy, created_at'
+
+/**
+ * The discoverable half of a profile: what a search result and a locked
+ * profile header show, and nothing else.
+ *
+ * Backed by the public.profile_cards view (migration_v43), which returns EVERY
+ * profile that has a username whatever its privacy. That is what makes a
+ * private account findable. The columns missing here — bio, created_at — are
+ * missing from the view too, so a private profile's writing never leaves the
+ * database; only the full row in public.profiles carries them, and RLS still
+ * keeps that owner-only.
+ */
+export interface ProfileCard {
+  id: string
+  username: string
+  display_name: string | null
+  avatar_url: string | null
+  privacy: ProfilePrivacy
+}
+
+/** The columns of public.profile_cards — the whole view. */
+export const PROFILE_CARD_COLUMNS = 'id, username, display_name, avatar_url, privacy'
 
 export const USERNAME_MIN = 3
 export const USERNAME_MAX = 30
@@ -94,9 +116,14 @@ export function validateBio(raw: string): string | null {
 /**
  * The privacy choices, with the wording shown in settings.
  *
- * followers_only is offered now and stored now, but until the follow graph
- * exists it reads exactly like private — the copy says so rather than implying
- * a following that cannot yet see anything.
+ * Two states, not three. 'followers_only' existed in v40 and never behaved
+ * differently from 'private' — there was no follow graph to check it against —
+ * so v43 folded every such row into 'private' and dropped it from the CHECK.
+ *
+ * The Private copy says "found" on purpose. A private profile IS returned by
+ * search; what privacy hides is the content of the profile page, not the
+ * profile's existence. Saying "only you can see your profile" would now be a
+ * lie about where the line falls.
  */
 export const PRIVACY_OPTIONS: {
   value: ProfilePrivacy
@@ -109,16 +136,25 @@ export const PRIVACY_OPTIONS: {
     description: 'Anyone can see your profile.',
   },
   {
-    value: 'followers_only',
-    label: 'Followers only',
-    description: 'Saved for when following arrives. For now this hides your profile like Private.',
-  },
-  {
     value: 'private',
     label: 'Private',
-    description: 'Only you can see your profile.',
+    description: 'People can find you in search, but only you can see what is on your profile.',
   },
 ]
+
+/**
+ * Read a stored privacy value as one of the two that now exist.
+ *
+ * v43 collapsed 'followers_only' into 'private' in the database, so nothing
+ * should reach this that is not already one of the two. It is here for the row
+ * that is loaded by a browser tab which was open across the migration, and for
+ * any future value this build has not been taught: an unrecognised setting
+ * must read as the private one, never as public, or a mistake here quietly
+ * publishes somebody.
+ */
+export function normalizePrivacy(value: string | null | undefined): ProfilePrivacy {
+  return value === 'public' ? 'public' : 'private'
+}
 
 /** Where a profile lives. Kept in one place so the route can move later. */
 export function profilePath(username: string): string {

@@ -450,7 +450,32 @@
   margin: 0 0 24px;
 }
 
+/* A private profile, seen by anyone who is not its owner. The name and avatar
+   above stay visible — this stands in for everything below them. */
+
+.ac-locked {
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 10px;
+  padding: 28px 24px;
+  text-align: center;
+  margin: 0 0 24px;
+}
+
+.ac-locked-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.ac-locked-note {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ac-ink-soft);
+  margin: 6px 0 0;
+}
+
 @media (max-width: 600px) {
   .ac-page { padding: 24px 16px 64px; }
   .ac-back { margin-bottom: 28px; }
+  .ac-locked { padding: 24px 16px; }
 }
