@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
 import { resolveExhibitionLocation } from '@/lib/exhibition-location'
-import type { ExhibitionDetailData, CoverageItem, CoverageDisplayItem } from '@/lib/types'
+import type { ExhibitionDetailData, CoverageDisplayItem } from '@/lib/types'
+import { prereadsToCoverageDisplay } from '@/lib/coverage-display'
 import type { InstitutionType } from '@/lib/institution-types'
 
 interface PageProps {
@@ -51,11 +52,10 @@ export default async function ExhibitionPage({ params }: PageProps) {
       show_location_latitude,
       show_location_longitude,
       preread_type,
-      coverage,
       hide_artist_names,
       venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name, type, exhibitors)),
       exhibition_artists(artists!inner(name)),
-      prereads(id, article_title, publication, article_url, thumbnail_url)
+      prereads(id, article_title, publication, article_url, thumbnail_url, author, published_date, item_coverage_type, row_status)
     `)
     .eq('id', id)
     .eq('status', 'published')
@@ -66,7 +66,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
   const raw = data as typeof data & {
     venues: { name: string; address: string | null; neighborhood: string | null; institution_id: string | null; latitude: number | null; longitude: number | null; institutions: { name: string; type: string | null; exhibitors: unknown } | null }
     exhibition_artists: { artists: { name: string } }[]
-    prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null; thumbnail_url: string | null }[]
+    prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null; thumbnail_url: string | null; author: string | null; published_date: string | null; item_coverage_type: string | null; row_status: string }[]
     description: string | null
     press_release: string | null
     address_override: string | null
@@ -81,7 +81,6 @@ export default async function ExhibitionPage({ params }: PageProps) {
     show_location_longitude: number | null
     is_ongoing: boolean | null
     preread_type: string | null
-    coverage: CoverageItem[] | null
   }
 
   // address_override → show_location → venue — see lib/exhibition-location.ts.
@@ -111,55 +110,32 @@ export default async function ExhibitionPage({ params }: PageProps) {
   let mergedPrereads: ExhibitionDetailData['prereads'] = []
   if (prereadType === 'full') {
     mergedPrereads = (raw.prereads ?? [])
-      .filter((p) => !!p.article_url)
+      // Blanked rows (flagged by Agent 2, or hidden by an admin) stay admin-only.
+      .filter((p) => !!p.article_url && p.row_status === 'active')
       .sort((a, b) => urlTier(a.article_url) - urlTier(b.article_url))
   }
 
-  // ── Merge coverage jsonb with exhibition_coverage-linked readings (museums) ────
-  // Only source='agent2' links are included — Agent 3's own cross-linking (tagReading in
-  // readings-curator.ts) uses the same unverified substring matching that caused the
-  // "Kleinert" bug on the gallery side, so it's excluded here until it gets a real
-  // relevance check too.
+  // ── Museum and fair coverage: prereads rows, same table and visibility rule as
+  // the gallery path above (see lib/coverage-display.ts for why this no longer reads
+  // exhibitions.coverage). exhibition_coverage is consulted only to link an item to
+  // its /readings page when it is also a curated reading — it no longer adds items
+  // of its own, since anything shown must be a prereads row an admin can blank.
+  // Only source='agent2' links: Agent 3's cross-linking was unverified substring
+  // matching (the "Kleinert" bug) and is excluded.
   let mergedCoverage: CoverageDisplayItem[] = []
   if (prereadType === 'coverage_only') {
     const { data: coverageLinksRaw } = await getSupabaseAdmin()
       .from('exhibition_coverage')
-      .select('reading_id, readings!inner(id, headline, article_url, author, thumbnail_url, published_at, publications(name))')
+      .select('readings!inner(id, article_url)')
       .eq('exhibition_id', id)
       .eq('source', 'agent2')
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const linkedReadingItems: CoverageDisplayItem[] = (coverageLinksRaw ?? []).map((row: any) => {
-      const r = row.readings
-      return {
-        url: r.article_url,
-        title: r.headline,
-        author: r.author ?? null,
-        publication: r.publications?.name ?? null,
-        published_date: r.published_at ?? null,
-        thumbnail_url: r.thumbnail_url ?? null,
-        reading_id: r.id,
-      }
-    })
+    const readingIdByUrl = new Map<string, string>(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (coverageLinksRaw ?? []).map((row: any) => [row.readings.article_url, row.readings.id])
+    )
 
-    const readingIdByUrl = new Map(linkedReadingItems.map((r) => [r.url, r.reading_id]))
-
-    const seenUrls = new Set<string>()
-    const fromCoverageJsonb: CoverageDisplayItem[] = (raw.coverage ?? [])
-      .filter((c: CoverageItem) => !!c.url && !seenUrls.has(c.url) && seenUrls.add(c.url))
-      .map((c: CoverageItem) => ({
-        url: c.url,
-        title: c.title,
-        author: c.author,
-        publication: c.publication,
-        published_date: c.published_date,
-        thumbnail_url: c.thumbnail_url,
-        reading_id: readingIdByUrl.get(c.url),
-      }))
-
-    const extraFromLinks = linkedReadingItems.filter((r) => !seenUrls.has(r.url) && seenUrls.add(r.url))
-
-    mergedCoverage = [...fromCoverageJsonb, ...extraFromLinks]
+    mergedCoverage = prereadsToCoverageDisplay(raw.prereads ?? [], readingIdByUrl)
   }
 
   const exhibition: ExhibitionDetailData = {

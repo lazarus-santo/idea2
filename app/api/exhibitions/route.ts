@@ -14,6 +14,9 @@ export async function GET() {
       exhibition_artists(artists(name)),
       prereads(id, exhibition_id, article_title, publication, article_url, thumbnail_url, created_at)
     `)
+    // Blanked prereads are admin-only (migration_v53). Filters the embedded rows,
+    // not the exhibitions.
+    .eq('prereads.row_status', 'active')
     .eq('status', 'published')
     .or(`end_date.gte.${today},end_date.is.null`)
     .order('start_date', { ascending: true })

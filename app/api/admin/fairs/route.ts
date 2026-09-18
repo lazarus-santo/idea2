@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 import { geocodeAddress } from '@/lib/geocode'
 import { generateFairCoverage, coverageItemToPrereadRow } from '@/lib/museum-coverage'
+import { recomputePrereadStatus, setPrereadStatus } from '@/lib/agent2'
 
 // GET  /api/admin/fairs — every fair with its exhibitor count, for the admin list
 // POST /api/admin/fairs — create a fair
@@ -165,8 +166,12 @@ export async function POST(request: NextRequest) {
       if (coverage.length > 0) {
         await db.from('prereads').insert(coverage.map((c) => coverageItemToPrereadRow(ex.id, c)))
       }
+      // Agent 2's status (migration_v53) — otherwise Run Now reads this show as
+      // never attempted and searches it again.
+      await recomputePrereadStatus(ex.id)
     } catch (err) {
       console.error(`Fair coverage failed for ${name}:`, err)
+      await setPrereadStatus(ex.id, 'error').catch(console.error)
     }
   }
 

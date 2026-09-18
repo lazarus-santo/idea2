@@ -42,6 +42,8 @@ export default async function VenueRoute({ params }: PageProps) {
         exhibition_artists(artists!inner(name)),
         prereads(id, article_title, publication, article_url, created_at)
       `)
+      // Blanked prereads are admin-only (migration_v53).
+      .eq('prereads.row_status', 'active')
       .in('venue_id', venueIds)
       .eq('status', 'published')
       .order('end_date', { ascending: false })

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { auditAndRepairPrereads } from '@/lib/audit'
+import { runAgent2ForExhibition } from '@/lib/agent2'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/admin/exhibitions/[id]/approve
@@ -24,7 +24,9 @@ export async function POST(request: NextRequest,
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  auditAndRepairPrereads([id]).catch(console.error)
+  // Agent 2 by the same status rules as an Agent 1 run (lib/agent2.ts): a show
+  // that already has its prereads is skipped, one never attempted is generated.
+  runAgent2ForExhibition(id, { mode: 'auto' }).catch(console.error)
 
   return NextResponse.json({ ok: true })
 }

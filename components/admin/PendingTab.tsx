@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
 import ScrapedAddress, { type ResolvedLocationSource, type ShowLocationSource } from './ScrapedAddress'
 import { adminFetch } from '@/lib/admin-fetch'
+import PrereadPanel, { type AdminPreread } from './PrereadPanel'
+import type { PrereadStatus } from '@/lib/types'
 import type { InstitutionType } from '@/lib/institution-types'
 
 type ScrapeFailedVenue = {
@@ -43,7 +45,8 @@ type PendingEx = {
   /** Display suppression only — the names are always stored in exhibition_artists. */
   hide_artist_names: boolean
   created_at: string
-  prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null }[]
+  preread_status: PrereadStatus | null
+  prereads: AdminPreread[]
 }
 
 const F = 'var(--font-inter-tight), system-ui, sans-serif'
@@ -605,7 +608,14 @@ function EditModal({
             {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? '#1a5c2a' : '#dc2626' }}>{msg}</span>}
           </div>
 
-          <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.3)' }}>{ex.prereads.length} prereads</div>
+          {/* Agent 2 runs on pending shows too; this is where a blocked one gets unblocked. */}
+          <PrereadPanel
+            exhibitionId={ex.id}
+            venueType={ex.venue_type}
+            initialPrereads={ex.prereads}
+            initialStatus={ex.preread_status}
+            initialMissingFields={ex.missing_fields}
+          />
         </div>
       </div>
 

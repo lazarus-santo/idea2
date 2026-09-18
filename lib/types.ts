@@ -28,7 +28,22 @@ export interface Preread {
   // ISO-8601 datetime string (Exa's native publishedDate format), not a bare
   // date — see migration_v35 for why the column is timestamptz.
   published_date?: string | null
+  // migration_v53. Both optional here so the generators, which never set
+  // row_status (the database defaults it, and blanks any flagged row by
+  // trigger), don't have to spell it out.
+  quality_flag?: QualityFlag | null
+  row_status?: RowStatus
 }
+
+// migration_v53 — see lib/agent2.ts for what each value means and who sets it.
+export const PREREAD_STATUSES = ['pending_artists', 'pending_press_release', 'empty', 'error', 'success', 'needs_review'] as const
+export type PrereadStatus = (typeof PREREAD_STATUSES)[number]
+
+export const QUALITY_FLAGS = ['self_sourced', 'unverified', 'no_content', 'mismatched'] as const
+export type QualityFlag = (typeof QUALITY_FLAGS)[number]
+
+export const ROW_STATUSES = ['active', 'blanked'] as const
+export type RowStatus = (typeof ROW_STATUSES)[number]
 
 export interface CoverageItem {
   url: string

@@ -3,7 +3,7 @@ import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
 import { loggedExaSearch } from './exa-log'
 import { analyzeListingPage, sizingFor } from './listing-prepass'
-import type { ExhibitionRaw, Preread, CoverageItem, ExhibitionLink, ExhibitionDetailExtracted } from './types'
+import type { ExhibitionRaw, Preread, CoverageItem, ExhibitionLink, ExhibitionDetailExtracted, QualityFlag } from './types'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
@@ -252,11 +252,42 @@ interface VerifiedCandidate {
 // domain/name/aboutness check, because they ARE about the right artist — they're just
 // not press. Candidates that fail this gate are dropped entirely, even if that leaves
 // fewer results than the cap (or none): a sparse-but-real preread list beats a padded
-// one. Fails open only when verification itself errored (v missing), matching the
-// existing fail-open behavior for API errors.
-function passesQualityGate(v: VerifiedCandidate | undefined): boolean {
-  if (!v) return true
-  return v.substantiallyAbout && v.sourceType === 'editorial'
+// one.
+//
+// A candidate the check never judged is 'unverified' — not a pass. This used to
+// return true when verification errored, so a Haiku outage or an unparseable reply
+// published every candidate in the pool as if it had been checked. Now those
+// candidates are still kept (they were never rejected), but carry quality_flag
+// 'unverified', which the database blanks on insert (migration_v53) and Agent 2's
+// repair pass re-checks later. `verified` is null when the whole call failed; a URL
+// missing from a non-null map means the model skipped that one candidate.
+type GateResult = 'pass' | 'fail' | 'unverified'
+
+function qualityGate(verified: Map<string, VerifiedCandidate> | null, url: string): GateResult {
+  const v = verified?.get(url)
+  if (!v) return 'unverified'
+  return v.substantiallyAbout && v.sourceType === 'editorial' ? 'pass' : 'fail'
+}
+
+// Why a candidate the check judged was rejected, in quality_flag terms. Only used to
+// explain a failed repair — rejected candidates are never stored. A venue's or the
+// subject's own page is self-sourced; anything else that failed (not about the
+// subject, a listing/directory page, other non-press) is recorded as mismatched,
+// the closest of the four values. 'no_content' has no detector yet.
+function rejectionFlag(v: VerifiedCandidate): QualityFlag {
+  if (v.sourceType === 'venue' || v.sourceType === 'self') return 'self_sourced'
+  return 'mismatched'
+}
+
+// Drops rejected candidates and tags the ones the check never judged.
+function applyQualityGate<T extends PoolResult>(candidates: T[], verified: Map<string, VerifiedCandidate> | null): T[] {
+  const kept: T[] = []
+  for (const c of candidates) {
+    const gate = qualityGate(verified, c.url)
+    if (gate === 'fail') continue
+    kept.push(gate === 'unverified' ? { ...c, qualityFlag: 'unverified' as const } : c)
+  }
+  return kept
 }
 
 // Direct comprehension check, run unconditionally on every candidate pool (not just
@@ -277,16 +308,15 @@ function passesQualityGate(v: VerifiedCandidate | undefined): boolean {
 // available interview, purely because both were Tier 3 and the review was 4 days more
 // recent. Tier/recency alone can't express "this search wanted an interview."
 //
-// Returns a map from URL to verification result; on any failure (parse failure, API
-// error) marks every candidate as substantially-about with contentType 'other' rather
-// than over-rejecting — callers that don't care about content type can ignore that field.
+// Returns a map from URL to verification result, or null when the check itself failed
+// (API error, unparseable reply). Null used to be a map marking every candidate as a
+// pass — see qualityGate for why that is gone.
 async function verifySubstantiallyAbout(
   subjectLabel: string,
   sourceText: string | null,
   candidates: (PoolResult & { title: string })[]
-): Promise<Map<string, VerifiedCandidate>> {
-  const fallback = new Map(candidates.map((c) => [c.url, { substantiallyAbout: true, contentType: 'other' as CandidateContentType, sourceType: 'editorial' as CandidateSourceType }]))
-  if (candidates.length === 0) return fallback
+): Promise<Map<string, VerifiedCandidate> | null> {
+  if (candidates.length === 0) return new Map()
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -316,10 +346,16 @@ Return ONLY a JSON array, one entry per result:
     }],
   }).catch(() => null)
 
-  if (!response) return fallback
+  if (!response) {
+    console.error(`Quality check failed for ${subjectLabel}: API error — ${candidates.length} candidate(s) left unverified`)
+    return null
+  }
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   const parsed = extractJsonArray<{ url: string; substantially_about: boolean; content_type?: string; source_type?: string }>(text)
-  if (!parsed) return fallback
+  if (!parsed) {
+    console.error(`Quality check failed for ${subjectLabel}: unparseable reply — ${candidates.length} candidate(s) left unverified`)
+    return null
+  }
 
   const result = new Map<string, VerifiedCandidate>()
   for (const p of parsed) {
@@ -472,6 +508,8 @@ interface PoolResult {
   highlights: string[]
   image?: string
   contentPriority: 0 | 1 | 2
+  // Set only when the quality check never judged this candidate — see qualityGate.
+  qualityFlag?: 'unverified'
 }
 
 function sortByTierAndRecency<T extends { url: string; publishedDate?: string }>(items: T[]): T[] {
@@ -497,6 +535,7 @@ function toPrereadRow(r: PoolResult & { title: string; artistName?: string | nul
     author: r.author ?? null,
     published_date: r.publishedDate ?? null,
     artist_name: r.artistName ?? null,
+    quality_flag: r.qualityFlag ?? null,
   }
 }
 
@@ -559,7 +598,7 @@ async function searchShowReview(
 
   if (candidates.length > 0) {
     const verified = await verifySubstantiallyAbout(`the exhibition "${showTitle}" at ${venueName}`, pressRelease, candidates)
-    candidates = candidates.filter((r) => passesQualityGate(verified.get(r.url)))
+    candidates = applyQualityGate(candidates, verified)
   }
 
   return candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const }))
@@ -599,10 +638,10 @@ async function searchArtistProfile(
     .filter((r) => !isSelfSourcedByVenue(r.url, venueDomain ?? null))
     .filter((r) => !isSelfSourcedByArtistDomain(r.url, artistName))
 
-  let verified = new Map<string, VerifiedCandidate>()
+  let verified: Map<string, VerifiedCandidate> | null = new Map()
   if (candidates.length > 0) {
     verified = await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
-    candidates = candidates.filter((r) => passesQualityGate(verified.get(r.url)))
+    candidates = applyQualityGate(candidates, verified)
   }
 
   // Tier still wins first — a Tier-1 review shouldn't lose to a random blog's interview.
@@ -617,8 +656,8 @@ async function searchArtistProfile(
   const sorted = [...candidates].sort((a, b) => {
     const tierDiff = getResultTier(a.url) - getResultTier(b.url)
     if (tierDiff !== 0) return tierDiff
-    const rankA = CONTENT_TYPE_RANK[verified.get(a.url)?.contentType ?? 'other']
-    const rankB = CONTENT_TYPE_RANK[verified.get(b.url)?.contentType ?? 'other']
+    const rankA = CONTENT_TYPE_RANK[verified?.get(a.url)?.contentType ?? 'other']
+    const rankB = CONTENT_TYPE_RANK[verified?.get(b.url)?.contentType ?? 'other']
     if (rankA !== rankB) return rankA - rankB
     const dateA = a.publishedDate ? new Date(a.publishedDate).getTime() : 0
     const dateB = b.publishedDate ? new Date(b.publishedDate).getTime() : 0
@@ -960,11 +999,11 @@ export async function generatePrereads(
   // Run one comprehension check against the artist's own bio (preferred) or the
   // exhibition's press release to catch both that and same-named unrelated people —
   // also classifies content type (interview/profile/review/news/other) in the same call.
-  let verifiedSolo = new Map<string, VerifiedCandidate>()
+  let verifiedSolo: Map<string, VerifiedCandidate> | null = new Map()
   if (valid.length > 0) {
     const beforeCount = valid.length
     verifiedSolo = await verifySubstantiallyAbout(`the artist "${artistQuery}"`, bios.get(artistQuery) ?? exhibition.press_release, valid)
-    valid = valid.filter((r) => passesQualityGate(verifiedSolo.get(r.url)))
+    valid = applyQualityGate(valid, verifiedSolo)
     console.log(`Substantially-about verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
   }
 
@@ -983,8 +1022,8 @@ export async function generatePrereads(
     const tierDiff = getResultTier(a.url) - getResultTier(b.url)
     if (tierDiff !== 0) return tierDiff
     if (a.contentPriority !== b.contentPriority) return a.contentPriority - b.contentPriority
-    const typeRankA = SOLO_CONTENT_TYPE_RANK[verifiedSolo.get(a.url)?.contentType ?? 'other']
-    const typeRankB = SOLO_CONTENT_TYPE_RANK[verifiedSolo.get(b.url)?.contentType ?? 'other']
+    const typeRankA = SOLO_CONTENT_TYPE_RANK[verifiedSolo?.get(a.url)?.contentType ?? 'other']
+    const typeRankB = SOLO_CONTENT_TYPE_RANK[verifiedSolo?.get(b.url)?.contentType ?? 'other']
     if (typeRankA !== typeRankB) return typeRankA - typeRankB
     const aStandalone = isStandaloneArticle(a.title, artistQuery) ? 0 : 1
     const bStandalone = isStandaloneArticle(b.title, artistQuery) ? 0 : 1
@@ -1010,6 +1049,141 @@ export async function generatePrereads(
   console.log(`Exa selected [${showTitle}]:`, prereads.map((p) => ({ title: p.article_title, pub: p.publication, url: p.article_url })))
 
   return { prereads, hasShowCoverage: valid.some((r) => r.contentPriority === 0) }
+}
+
+// ─── Single-row repair (Agent 2 retry, admin Replace) ─────────────────────────
+// Everything above generates a whole set for a show. A repair works on ONE stored
+// row: first re-check the article already there (cheap — one Haiku call, no search),
+// and only if that fails look for a replacement. Both reuse the same gates the set
+// generators use (blocklist, self-sourced checks, verifySubstantiallyAbout), so a
+// repaired row clears exactly the bar a freshly generated one would.
+//
+// Gallery-path ('full') rows only. Museum and fair coverage has no quality check yet,
+// so there is nothing to re-check against and no flag it could ever have been given.
+
+export interface PrereadRepairContext {
+  exhibition_id: string
+  show_title: string
+  artists: string[]
+  press_release: string | null
+  venue_name: string
+  venue_url: string | null
+}
+
+/** What a row is about: one artist, or the show as a whole. */
+export type PrereadSubject = { kind: 'artist'; name: string } | { kind: 'show' }
+
+// A row's subject follows how it was generated: per-artist rows carry artist_name;
+// a solo show's rows don't, but every one of them is about that one artist; anything
+// else is a show-level (show review) row.
+export function prereadSubject(ctx: PrereadRepairContext, artistName: string | null | undefined): PrereadSubject {
+  if (artistName) return { kind: 'artist', name: artistName }
+  if (ctx.artists.length === 1) return { kind: 'artist', name: ctx.artists[0] }
+  return { kind: 'show' }
+}
+
+function subjectLabel(ctx: PrereadRepairContext, subject: PrereadSubject): string {
+  return subject.kind === 'artist' ? `the artist "${subject.name}"` : `the exhibition "${ctx.show_title}" at ${ctx.venue_name}`
+}
+
+async function subjectSourceText(ctx: PrereadRepairContext, subject: PrereadSubject): Promise<string | null> {
+  if (subject.kind === 'show') return ctx.press_release
+  const bios = await fetchArtistBios([subject.name])
+  return bios.get(subject.name) ?? ctx.press_release
+}
+
+function isSelfSourcedFor(url: string, ctx: PrereadRepairContext, subject: PrereadSubject): boolean {
+  const venueDomain = ctx.venue_url ? getResultDomain(ctx.venue_url) || null : null
+  if (isSelfSourcedByVenue(url, venueDomain)) return true
+  const names = subject.kind === 'artist' ? [subject.name] : ctx.artists
+  return names.some((n) => isSelfSourcedByArtistDomain(url, n))
+}
+
+/**
+ * Re-runs the quality check on an article already stored. 'pass' means the row is
+ * fine as it is; otherwise the flag it should carry. Throws only if the database
+ * lookup for the artist bio throws — a failed check is 'unverified', not an error.
+ */
+export async function recheckPreread(
+  ctx: PrereadRepairContext,
+  row: { article_url: string | null; article_title: string | null; summary: string | null; artist_name?: string | null }
+): Promise<'pass' | QualityFlag> {
+  if (!row.article_url) return 'mismatched'
+  const subject = prereadSubject(ctx, row.artist_name)
+  if (isSelfSourcedFor(row.article_url, ctx, subject)) return 'self_sourced'
+
+  const candidate: PoolResult & { title: string } = {
+    url: row.article_url,
+    title: row.article_title ?? row.article_url,
+    highlights: row.summary ? [row.summary] : [],
+    contentPriority: subject.kind === 'show' ? 0 : 1,
+  }
+  const verified = await verifySubstantiallyAbout(subjectLabel(ctx, subject), await subjectSourceText(ctx, subject), [candidate])
+  const gate = qualityGate(verified, candidate.url)
+  if (gate === 'pass') return 'pass'
+  if (gate === 'unverified') return 'unverified'
+  return rejectionFlag(verified!.get(candidate.url)!)
+}
+
+export type ReplacementResult =
+  | { ok: true; row: PrereadRow }
+  /** `flag` is why the best candidate failed, or null if the search found nothing usable at all. */
+  | { ok: false; flag: QualityFlag | null; query: string }
+
+/**
+ * Searches for one replacement article for `subject`. `customQuery`, when given, is
+ * used verbatim instead of the default query — the admin's "custom search" Replace
+ * mode. Only a candidate that PASSES the check is returned; an unverified one is a
+ * failed repair (flag 'unverified'), not a replacement, since swapping one unchecked
+ * article for another fixes nothing. Throws if the Exa search throws.
+ */
+export async function findReplacementPreread(
+  ctx: PrereadRepairContext,
+  subject: PrereadSubject,
+  excludeUrls: Set<string>,
+  customQuery?: string | null
+): Promise<ReplacementResult> {
+  const exa = new Exa(process.env.EXA_API_KEY!)
+  const query = customQuery?.trim()
+    || (subject.kind === 'artist'
+      ? `${subject.name} artist interview profile`
+      : `${ctx.show_title} ${ctx.venue_name} review exhibition`)
+
+  const res = await loggedExaSearch(exa, query, {
+    type: 'auto',
+    numResults: 8,
+    contents: { highlights: true },
+  }, { exhibitionId: ctx.exhibition_id, functionName: customQuery?.trim() ? 'replacePrereadCustom' : 'repairPreread' })
+
+  const galleryDomains = await buildGalleryBlocklist()
+  const results = (res.results as unknown as PoolResult[]).map((r) => ({ ...r, contentPriority: (subject.kind === 'show' ? 0 : 1) as 0 | 1 }))
+
+  let droppedAsSelfSourced = 0
+  const candidates: (PoolResult & { title: string })[] = []
+  for (const r of results) {
+    if (!r.title?.trim() || excludeUrls.has(r.url) || isBlockedUrl(r.url, galleryDomains)) continue
+    if (isSelfSourcedFor(r.url, ctx, subject)) { droppedAsSelfSourced++; continue }
+    // The name check is skipped for a custom query: the admin chose those terms on
+    // purpose, and the comprehension check below still guards aboutness.
+    if (!customQuery?.trim() && subject.kind === 'artist' && !isAboutArtist(r, subject.name)) continue
+    candidates.push(r as PoolResult & { title: string })
+  }
+
+  if (candidates.length === 0) {
+    return { ok: false, flag: droppedAsSelfSourced > 0 ? 'self_sourced' : null, query }
+  }
+
+  const ranked = sortByTierAndRecency(candidates)
+  const verified = await verifySubstantiallyAbout(subjectLabel(ctx, subject), await subjectSourceText(ctx, subject), ranked)
+  if (!verified) return { ok: false, flag: 'unverified', query }
+
+  const best = ranked.find((r) => qualityGate(verified, r.url) === 'pass')
+  if (best) {
+    return { ok: true, row: toPrereadRow({ ...best, artistName: subject.kind === 'artist' && ctx.artists.length > 1 ? subject.name : null }) }
+  }
+
+  const judged = ranked.map((r) => verified.get(r.url)).find((v): v is VerifiedCandidate => !!v)
+  return { ok: false, flag: judged ? rejectionFlag(judged) : 'unverified', query }
 }
 
 // ─── Location filter (Req #2) ─────────────────────────────────────────────────

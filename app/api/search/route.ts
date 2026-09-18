@@ -77,12 +77,15 @@ export async function GET(req: NextRequest) {
     sb
       .from('artists')
       .select('id, name, exhibition_artists(exhibitions(id, show_title, image_url, status, start_date, end_date, venues(name), prereads(id, article_title, article_url, publication, summary, thumbnail_url)))')
+      // Blanked prereads are admin-only (migration_v53).
+      .eq('exhibition_artists.exhibitions.prereads.row_status', 'active')
       .ilike('name', pattern)
       .limit(perCat),
 
     sb
       .from('institutions')
       .select('id, name, venues(exhibitions(id, show_title, image_url, status, start_date, end_date, prereads(id, article_title, article_url, publication, thumbnail_url)))')
+      .eq('venues.exhibitions.prereads.row_status', 'active')
       .ilike('name', pattern)
       .limit(perCat),
 

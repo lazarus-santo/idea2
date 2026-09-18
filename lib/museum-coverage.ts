@@ -1,21 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
-import { extractJsonObject, getResultDomain, publicationFromUrl } from './claude'
+import { extractJsonObject, publicationFromUrl } from './claude'
+import { MUSEUM_TARGET_DOMAINS, publicationImportanceRank } from './coverage-ranking'
 import { loggedExaSearch } from './exa-log'
 import type { CoverageItem, CoverageType } from './types'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const exa = new Exa(process.env.EXA_API_KEY!)
 
-// Order matters — also used as the publication-importance ranking for Type C-Large
-// (Artforum > Hyperallergic > NYT > ARTnews > The Art Newspaper > Artnet > New Yorker
-// > Frieze > Brooklyn Rail > FT).
-const MUSEUM_TARGET_DOMAINS = [
-  'artforum.com', 'hyperallergic.com', 'nytimes.com', 'artnews.com',
-  'theartnewspaper.com', 'news.artnet.com', 'newyorker.com', 'frieze.com',
-  'brooklynrail.org', 'ft.com',
-]
+// MUSEUM_TARGET_DOMAINS and publicationImportanceRank live in lib/coverage-ranking.ts,
+// shared with the public page so display order follows the same ranking.
 
 // nytimes.com is blocked from Exa's includeDomains on this plan — a domain-filtered
 // search naming it throws a 403 for the whole request, not an empty result for that
@@ -24,12 +19,6 @@ const MUSEUM_TARGET_DOMAINS = [
 // a genuine NYT piece just never gets found via any of these searches, structurally,
 // same limitation as the gallery pipeline.
 const EXA_QUERYABLE_MUSEUM_DOMAINS = MUSEUM_TARGET_DOMAINS.filter((d) => d !== 'nytimes.com')
-
-function publicationImportanceRank(url: string): number {
-  const host = getResultDomain(url)
-  const idx = MUSEUM_TARGET_DOMAINS.findIndex((d) => host === d || host.endsWith(`.${d}`))
-  return idx === -1 ? MUSEUM_TARGET_DOMAINS.length : idx
-}
 
 interface MuseumSearchResult {
   url: string

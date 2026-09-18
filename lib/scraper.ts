@@ -10,7 +10,6 @@ import {
   hintNamesNonNycCity,
   verifyExhibitionLocation,
   verifyTitleInHtml,
-  generatePrereads,
   classifyExhibitionUrls,
 } from './claude'
 import { geocodeVenueIfNeeded } from './geocoding'
@@ -33,7 +32,7 @@ import {
 } from './link-filters'
 import { decideArtists } from './artist-rules'
 import { isWarningMuted } from './venue-warnings'
-import { generateMuseumCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from './museum-coverage'
+import { runAgent2ForExhibition } from './agent2'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import { pickedReferenceIds } from './editor-picks'
 import {
@@ -51,7 +50,7 @@ import {
   type ScrapeClaim,
   type VenueScrapeOutcome,
 } from './venue-scrape-queue'
-import type { VenueRecord, ExhibitionRaw, ExhibitionLink, ExhibitionDetailExtracted } from './types'
+import type { VenueRecord, ExhibitionLink, ExhibitionDetailExtracted } from './types'
 
 // Stable identity key for an exhibition within a venue — used for upsert matching
 // instead of show_title, which is re-extracted by Claude on every scrape and can
@@ -1931,85 +1930,21 @@ export async function scrapeInstitution(
       }
     }
 
-    // Generate prereads / coverage only if not already present
+    // Agent 2 (Trigger 1). Whether it runs, skips, blocks or repairs is decided by
+    // the show's preread_status inside lib/agent2.ts — see the table at the top of
+    // that file. Failures land in `errors` and preread_status = 'error'; they never
+    // abort the scrape.
     if (!skipPrereads) {
-      const exhibitionRaw: ExhibitionRaw = {
-        show_title: cleanTitle,
-        // The stored set, so Agent 2 sees exactly what is in exhibition_artists —
-        // including on a show whose names are hidden from the public site.
-        artists: artistDecision.artists,
-        start_date: detail.start_date,
-        end_date: detail.end_date,
-        description: null,
-        press_release: prCleaned,
-        image_url: validatedImage,
-      }
-
-      if (!isMuseum) {
-        const { count: prereadCount } = await db
-          .from('prereads')
-          .select('id', { count: 'exact', head: true })
-          .eq('exhibition_id', exhibitionId)
-
-        if ((prereadCount ?? 0) === 0) {
-          try {
-            const { prereads, hasShowCoverage } = await generatePrereads({
-              ...exhibitionRaw,
-              venue_name: venue.name,
-              venue_url: venue.exhibitions_url,
-              exhibition_id: exhibitionId,
-            })
-            if (prereads.length > 0) {
-              await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: exhibitionId })))
-            }
-            if (!hasShowCoverage && !missingFields.includes('show_coverage')) {
-              await db
-                .from('exhibitions')
-                .update({ missing_fields: [...missingFields, 'show_coverage'] })
-                .eq('id', exhibitionId)
-            }
-          } catch (err) {
-            console.error(`[${vn}] Preread generation failed for "${cleanTitle}":`, err)
-            errors.push({
-              item: cleanTitle,
-              step: 'preread',
-              message: err instanceof Error ? err.message : String(err),
-            })
-          }
-        }
-      } else {
-        // Mirrors the gallery gate above exactly: a real row count against
-        // prereads, not a "has this ever been classified" flag. Coverage items
-        // now live in the same table galleries use (migration_v35) instead of
-        // exhibitions.coverage, so this can finally be a count like the gallery
-        // side always had, rather than the weaker coverage_type IS NULL check
-        // that couldn't tell "ran and found nothing" from "never ran."
-        const { count: coverageCount } = await db
-          .from('prereads')
-          .select('id', { count: 'exact', head: true })
-          .eq('exhibition_id', exhibitionId)
-
-        if ((coverageCount ?? 0) === 0) {
-          try {
-            const { coverage, coverageType } = await generateMuseumCoverage(cleanTitle, venue.name, detail.artists, exhibitionId)
-            // coverage_type (the Type A/B/C-small/C-large/D classification tier)
-            // still lives on the exhibition row — only the per-item array moves.
-            await db.from('exhibitions').update({ coverage_type: coverageType }).eq('id', exhibitionId)
-            if (coverage.length > 0) {
-              await db.from('prereads').insert(
-                coverage.map((c) => coverageItemToPrereadRow(exhibitionId, c))
-              )
-              await crossLinkCoverageToReadings(exhibitionId, coverage)
-            }
-          } catch (err) {
-            console.error(`[${vn}] Museum coverage generation failed for "${cleanTitle}":`, err)
-            errors.push({
-              item: cleanTitle,
-              step: 'coverage',
-              message: err instanceof Error ? err.message : String(err),
-            })
-          }
-        }
+      try {
+        const outcome = await runAgent2ForExhibition(exhibitionId, { mode: 'auto', errors })
+        console.log(`[${vn}] Agent 2 [${cleanTitle}]: ${outcome.action} — ${outcome.message}`)
+      } catch (err) {
+        console.error(`[${vn}] Agent 2 failed for "${cleanTitle}":`, err)
+        errors.push({
+          item: cleanTitle,
+          step: 'preread',
+          message: err instanceof Error ? err.message : String(err),
+        })
       }
     }
 

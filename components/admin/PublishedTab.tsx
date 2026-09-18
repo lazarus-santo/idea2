@@ -4,13 +4,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import TipTapEditor from './TipTapEditor'
 import ScrapedAddress, { type ResolvedLocationSource, type ShowLocationSource } from './ScrapedAddress'
 import { adminFetch } from '@/lib/admin-fetch'
+import PrereadPanel, { type AdminPreread } from './PrereadPanel'
+import type { PrereadStatus } from '@/lib/types'
 
-type Preread = {
-  id: string
-  article_title: string | null
-  publication: string | null
-  article_url: string | null
-}
+type Preread = AdminPreread
 
 type PublishedEx = {
   id: string
@@ -40,6 +37,7 @@ type PublishedEx = {
   resolved_addresses: string[]
   resolved_location_source: ResolvedLocationSource
   missing_fields: string[] | null
+  preread_status: PrereadStatus | null
   prereads: Preread[]
 }
 
@@ -137,7 +135,6 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
   const [neigh, setNeigh]           = useState(ex.address_override_neighborhood ?? '')
   const [adminNotes, setAdminNotes] = useState(ex.admin_notes ?? '')
   const [showPR, setShowPR]         = useState(false)
-  const [prereads, setPrereads]     = useState<Preread[]>(ex.prereads)
   const [showAdd, setShowAdd]       = useState(false)
   const [saving, setSaving]         = useState(false)
   const [unpublishing, setUnpublishing] = useState(false)
@@ -204,9 +201,11 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
     }
   }
 
+  // Throws on failure so the panel keeps the row and says so, instead of
+  // dropping it from the list while it survives in the database.
   async function deletePreread(prId: string) {
-    await adminFetch(`/api/admin/prereads/${prId}`, { method: 'DELETE' })
-    setPrereads(prev => prev.filter(p => p.id !== prId))
+    const res = await adminFetch(`/api/admin/prereads/${prId}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error(`Delete failed: ${res.status}`)
   }
 
   const dateDisplay = fmtDateRange(startDate || null, endDate || null, ex.is_ongoing)
@@ -321,61 +320,45 @@ function PublishedCard({ ex, onUnpublish }: { ex: PublishedEx; onUnpublish: (id:
         {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? '#1a5c2a' : '#dc2626' }}>{msg}</span>}
       </div>
 
-      {/* Prereads */}
+      {/* Prereads — Agent 2 status, Retrigger, and per-row Blank / Replace / Remove */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(0,0,0,0.4)', marginBottom: 10 }}>
-          Prereads ({prereads.length})
-        </div>
-        {prereads.length === 0 && (
-          <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.35)', marginBottom: 8 }}>No prereads yet.</div>
-        )}
-        {prereads.map((pr) => (
-          <div key={pr.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '5px 0', borderBottom: '1px solid rgba(0,0,0,0.06)' }}>
-            <div style={{ flex: 1, fontSize: 13 }}>
-              {pr.article_url ? (
-                <a href={pr.article_url} target="_blank" rel="noopener noreferrer"
-                  style={{ color: '#000', textDecoration: 'underline', textUnderlineOffset: 2 }}>
-                  {pr.article_title ?? pr.article_url}
-                </a>
-              ) : (pr.article_title ?? '(no title)')}
-              {pr.publication && (
-                <span style={{ fontSize: 11, color: 'rgba(0,0,0,0.4)', marginLeft: 8 }}>{pr.publication}</span>
+        <PrereadPanel
+          exhibitionId={ex.id}
+          venueType={ex.venue_type}
+          initialPrereads={ex.prereads}
+          initialStatus={ex.preread_status}
+          initialMissingFields={ex.missing_fields ?? []}
+          onRemove={deletePreread}
+          renderAdd={(onAdded) => (
+            <>
+              {!showAdd && (
+                <button
+                  onClick={() => setShowAdd(true)}
+                  style={{ marginTop: 10, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
+                >
+                  + Add preread
+                </button>
               )}
-            </div>
-            <button
-              onClick={() => deletePreread(pr.id)}
-              style={{ fontFamily: F, fontSize: 11, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: '#dc2626', padding: '0 4px', flexShrink: 0 }}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-
-        {!showAdd && (
-          <button
-            onClick={() => setShowAdd(true)}
-            style={{ marginTop: 10, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.5)', padding: 0, textDecoration: 'underline', textUnderlineOffset: 2 }}
-          >
-            + Add preread
-          </button>
-        )}
-        {showAdd && (
-          <>
-            <AddPrereadForm
-              exhibitionId={ex.id}
-              onAdded={(p) => {
-                setPrereads(prev => [...prev, p])
-                setShowAdd(false)
-              }}
-            />
-            <button
-              onClick={() => setShowAdd(false)}
-              style={{ marginTop: 8, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.4)', padding: 0 }}
-            >
-              Cancel
-            </button>
-          </>
-        )}
+              {showAdd && (
+                <>
+                  <AddPrereadForm
+                    exhibitionId={ex.id}
+                    onAdded={(p) => {
+                      onAdded(p)
+                      setShowAdd(false)
+                    }}
+                  />
+                  <button
+                    onClick={() => setShowAdd(false)}
+                    style={{ marginTop: 8, fontFamily: F, fontSize: 12, background: 'transparent', border: 'none', borderRadius: 999, cursor: 'pointer', color: 'rgba(0,0,0,0.4)', padding: 0 }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        />
       </div>
 
       <button

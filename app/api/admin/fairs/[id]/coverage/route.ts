@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 import { generateFairCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from '@/lib/museum-coverage'
+import { recomputePrereadStatus } from '@/lib/agent2'
 
 // POST /api/admin/fairs/[id]/coverage — run the fair coverage search for one fair.
 // [id] is the institution id. Spends Exa searches, so it is an explicit action
@@ -62,6 +63,10 @@ export async function POST(
   await crossLinkCoverageToReadings(exhibitionId, coverage).catch((err) =>
     console.error(`Fair coverage cross-link failed for ${inst.name}:`, err)
   )
+
+  // Keep Agent 2's status in step (migration_v53), or Run Now would treat this
+  // show as never attempted.
+  await recomputePrereadStatus(exhibitionId)
 
   return NextResponse.json({ ok: true, fair: inst.name, exhibition_id: exhibitionId, coverage_count: coverage.length, coverage })
 }
