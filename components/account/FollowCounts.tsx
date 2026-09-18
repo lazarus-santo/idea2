@@ -213,14 +213,19 @@ export default function FollowCounts({
    */
   const afterFollowChange = useCallback(
     (personId: string, direction: Direction) => (next: RowFollowState) => {
+      // Narrowed rather than asserted. 'signed-out' cannot arrive here — that
+      // state renders a link, which never reports back — but the map holds
+      // live follow statuses only, so anything that is not one means "no edge".
+      const edge = next === 'approved' || next === 'pending' ? next : null
+
       setFollowed(prev => {
         const map = new Map(prev)
-        if (next === 'none') map.delete(personId)
-        else map.set(personId, next)
+        if (edge) map.set(personId, edge)
+        else map.delete(personId)
         return map
       })
 
-      if (next === 'none' && isOwnProfile && direction === 'following') {
+      if (!edge && isOwnProfile && direction === 'following') {
         setPeople(prev => prev?.filter(p => p.id !== personId) ?? prev)
       }
 
@@ -324,26 +329,33 @@ export default function FollowCounts({
                       </span>
                     </Link>
 
-                    {/* No menu for signed-out visitors, and none on your own
-                        row: there is no version of muting or blocking yourself,
-                        and the database refuses both with a CHECK. */}
-                    {viewerId && viewerId !== p.id && (
+                    {/* Nothing at all on your own row: there is no version of
+                        following, muting or blocking yourself, and the database
+                        refuses all three. Everyone else gets a follow control —
+                        signed-out visitors included, where it is a link through
+                        sign-in rather than a dead name, the same as the button
+                        on a profile page. The MENU stays signed-in only: mute
+                        and block are decisions only an account can hold. */}
+                    {viewerId !== p.id && (
                       <span className="ac-person-actions">
                         <FollowToggle
                           targetId={p.id}
                           targetUsername={p.username}
-                          state={followed.get(p.id) ?? 'none'}
+                          state={viewerId ? (followed.get(p.id) ?? 'none') : 'signed-out'}
                           onChanged={afterFollowChange(p.id, open)}
+                          onNavigate={close}
                         />
-                        <RelationshipMenu
-                          targetId={p.id}
-                          targetUsername={p.username}
-                          muted={muted.has(p.id)}
-                          /* Their follow of you exists, and is yours to
-                             delete, only in your own followers list. */
-                          canRemoveFollower={isOwnProfile && open === 'followers'}
-                          onDone={afterAction(p.id)}
-                        />
+                        {viewerId && (
+                          <RelationshipMenu
+                            targetId={p.id}
+                            targetUsername={p.username}
+                            muted={muted.has(p.id)}
+                            /* Their follow of you exists, and is yours to
+                               delete, only in your own followers list. */
+                            canRemoveFollower={isOwnProfile && open === 'followers'}
+                            onDone={afterAction(p.id)}
+                          />
+                        )}
                       </span>
                     )}
                   </li>
