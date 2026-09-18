@@ -54,7 +54,9 @@ export async function GET() {
         venue_address: venueData.address ?? null,
         resolved_address: location.address,
         resolved_neighborhood: location.neighborhood,
-        artists: (exhibition_artists ?? [])
+        // Hidden from display only — the names stay in exhibition_artists.
+        // `*` in the select above already carries hide_artist_names.
+        artists: raw.hide_artist_names ? [] : (exhibition_artists ?? [])
           .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
           .filter(Boolean) as string[],
       }

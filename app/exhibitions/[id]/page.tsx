@@ -52,6 +52,7 @@ export default async function ExhibitionPage({ params }: PageProps) {
       show_location_longitude,
       preread_type,
       coverage,
+      hide_artist_names,
       venues!inner(name, address, neighborhood, institution_id, latitude, longitude, institutions(name, type, exhibitors)),
       exhibition_artists(artists!inner(name)),
       prereads(id, article_title, publication, article_url, thumbnail_url)
@@ -179,8 +180,10 @@ export default async function ExhibitionPage({ params }: PageProps) {
     address_override_neighborhood: raw.address_override_neighborhood,
     lat: location.lat,
     lng: location.lng,
+    // Hidden means not displayed, never not stored: the names are still in
+    // exhibition_artists, and Agent 2's coverage and preread matching still read them.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    artists: (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
+    artists: raw.hide_artist_names ? [] : (raw.exhibition_artists ?? []).map((ea: any) => ea.artists?.name).filter(Boolean) as string[],
     preread_type: prereadType,
     venue_type: (raw.venues.institutions?.type ?? 'gallery') as InstitutionType,
     exhibitors: normalizeExhibitors(raw.venues.institutions?.exhibitors),

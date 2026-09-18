@@ -13,7 +13,7 @@ export async function GET(request: Request) {
     .from('exhibitions')
     .select(`
       id, show_title, start_date, end_date, is_ongoing, description, press_release, image_url,
-      status, missing_fields, address_override, address_override_neighborhood,
+      status, missing_fields, hide_artist_names, address_override, address_override_neighborhood,
       show_location, show_location_2, show_location_3, show_location_neighborhood, show_location_source,
       admin_notes, created_at, updated_at,
       venues!inner(name, exhibitions_url, address, neighborhood, institutions!inner(name, type)),

@@ -40,6 +40,8 @@ type PendingEx = {
   resolved_addresses: string[]
   resolved_location_source: ResolvedLocationSource
   missing_fields: string[]
+  /** Display suppression only — the names are always stored in exhibition_artists. */
+  hide_artist_names: boolean
   created_at: string
   prereads: { id: string; article_title: string | null; publication: string | null; article_url: string | null }[]
 }
@@ -220,6 +222,10 @@ function EditModal({
   const [deleting, setDeleting]     = useState(false)
   const [confirmDel, setConfirmDel] = useState(false)
   const [msg, setMsg]               = useState('')
+  const [hideNames, setHideNames]   = useState(ex.hide_artist_names)
+  const [savingHide, setSavingHide] = useState(false)
+  const [venueMuted, setVenueMuted] = useState(false)
+  const [muting, setMuting]         = useState(false)
   const [notesSaveStatus, setNotesSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const notesRef = useRef(adminNotes)
   notesRef.current = adminNotes
@@ -289,6 +295,43 @@ function EditModal({
     }
   }
 
+  // The two review actions are independent by design. Hiding the names on this
+  // show says nothing about future shows at this venue, and muting the prompt says
+  // nothing about this show's names. In practice they're usually used together,
+  // but either one alone has to work.
+  async function toggleHideNames() {
+    const next = !hideNames
+    setSavingHide(true)
+    try {
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hide_artist_names: next }),
+      })
+      if (!res.ok) throw new Error()
+      setHideNames(next)
+      flash(next ? 'Artist names hidden' : 'Artist names shown')
+    } catch {
+      flash('Error saving')
+    } finally {
+      setSavingHide(false)
+    }
+  }
+
+  async function muteVenuePrompt() {
+    setMuting(true)
+    try {
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}/artist-warning-mute`, { method: 'POST' })
+      if (!res.ok) throw new Error()
+      setVenueMuted(true)
+      flash('Muted for this venue')
+    } catch {
+      flash('Error muting')
+    } finally {
+      setMuting(false)
+    }
+  }
+
   async function approve() {
     setApproving(true)
     try {
@@ -312,7 +355,16 @@ function EditModal({
   async function doDelete() {
     setDeleting(true)
     try {
-      await adminFetch(`/api/admin/exhibitions/${ex.id}`, { method: 'DELETE' })
+      // The route refuses (409) to delete a show an editor's pick points at. The
+      // response has to be checked: calling onRemove regardless would drop the card
+      // from the grid while the row survives, so the refusal would look like a
+      // successful delete until the next refresh.
+      const res = await adminFetch(`/api/admin/exhibitions/${ex.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        flash(body?.error ?? 'Error deleting')
+        return
+      }
       onRemove(ex.id)
     } finally {
       setDeleting(false)
@@ -366,7 +418,57 @@ function EditModal({
 
           <div>
             <label style={lbl}>Artist(s)</label>
-            <div style={readOnlyRow}>{ex.artists.length ? ex.artists.join(', ') : '—'}</div>
+            <div style={readOnlyRow}>
+              {ex.artists.length ? ex.artists.join(', ') : '—'}
+              {hideNames && ex.artists.length > 0 && (
+                <span style={{ color: 'rgba(0,0,0,0.45)' }}> — hidden on the site, still stored</span>
+              )}
+            </div>
+
+            {missing.has('artist_review') && (
+              <div style={{ fontFamily: F, fontSize: 12, color: AMBER, marginTop: 6 }}>
+                Artist names need a look — either they weren&apos;t found on the page, or this is a
+                group show whose names were read from the text rather than a credit line.
+              </div>
+            )}
+
+            {/* First credited group of 6+ at this venue — confirmed once, then muted. */}
+            {missing.has('artist_group_confirm') && (
+              <div style={{ marginTop: 10, padding: '10px 12px', border: `1px solid ${AMBER}`, borderRadius: 12 }}>
+                <div style={{ fontFamily: F, fontSize: 12, color: AMBER, marginBottom: 8 }}>
+                  First group show of 6 or more credited artists at {ex.venue_name}. Long lists publish
+                  with the names hidden; they stay stored either way. These two choices are separate.
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={toggleHideNames}
+                    disabled={savingHide}
+                    style={{
+                      fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
+                      textTransform: 'uppercase', padding: '6px 12px', borderRadius: 999,
+                      border: '1px solid #000', background: hideNames ? '#000' : 'transparent',
+                      color: hideNames ? '#FFFCEC' : '#000', cursor: savingHide ? 'default' : 'pointer',
+                      opacity: savingHide ? 0.5 : 1,
+                    }}
+                  >
+                    {savingHide ? 'Saving…' : hideNames ? 'Names hidden' : 'Hide artist names'}
+                  </button>
+                  <button
+                    onClick={muteVenuePrompt}
+                    disabled={muting || venueMuted}
+                    style={{
+                      fontFamily: F, fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
+                      textTransform: 'uppercase', padding: '6px 12px', borderRadius: 999,
+                      border: '1px solid rgba(0,0,0,0.3)', background: 'transparent',
+                      color: 'rgba(0,0,0,0.6)', cursor: muting || venueMuted ? 'default' : 'pointer',
+                      opacity: muting || venueMuted ? 0.5 : 1,
+                    }}
+                  >
+                    {venueMuted ? 'Muted for this venue' : muting ? 'Muting…' : "Don't ask again for this venue"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 16 }}>

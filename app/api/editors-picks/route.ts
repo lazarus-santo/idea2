@@ -25,7 +25,7 @@ export async function GET() {
     const { data: ex } = await supabase
       .from('exhibitions')
       .select(`
-        id, show_title, image_url,
+        id, show_title, image_url, hide_artist_names,
         venues!inner(name, institutions(name, type)),
         exhibition_artists(artists(name))
       `)
@@ -40,7 +40,8 @@ export async function GET() {
         reference_id: ex.id,
         image_url:    ex.image_url,
         show_title:   ex.show_title,
-        artists: (raw.exhibition_artists ?? [])
+        // Hidden from display only — the names stay in exhibition_artists.
+        artists: raw.hide_artist_names ? [] : (raw.exhibition_artists ?? [])
           .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
           .filter(Boolean) as string[],
         gallery_name: raw.venues?.institutions?.name ?? raw.venues?.name ?? '',

@@ -31,8 +31,11 @@ import {
   offsiteReason,
   selectWithinCap,
 } from './link-filters'
+import { decideArtists } from './artist-rules'
+import { isWarningMuted } from './venue-warnings'
 import { generateMuseumCoverage, crossLinkCoverageToReadings, coverageItemToPrereadRow } from './museum-coverage'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
+import { pickedReferenceIds } from './editor-picks'
 import {
   decideQueueEligibility,
   estimateVenueScrapeMs,
@@ -48,7 +51,7 @@ import {
   type ScrapeClaim,
   type VenueScrapeOutcome,
 } from './venue-scrape-queue'
-import type { VenueRecord, ExhibitionRaw, ExhibitionLink } from './types'
+import type { VenueRecord, ExhibitionRaw, ExhibitionLink, ExhibitionDetailExtracted } from './types'
 
 // Stable identity key for an exhibition within a venue — used for upsert matching
 // instead of show_title, which is re-extracted by Claude on every scrape and can
@@ -134,49 +137,14 @@ function cleanPressRelease(text: string | null): string | null {
 
 // ─── Validation helpers (Req #1, #3, #4, #5) ─────────────────────────────────
 
-// Req #3: the URL-level section page check (isSectionPageUrl) lives in
+// The URL-level section page check (isSectionPageUrl) lives in
 // listing-page-checks.ts, next to the title-level check that shares its list.
-
-// Req #3: HTML-level section page check — runs after Browserbase fetch.
-const SECTION_TITLE_RE = /\b(current\s+)?exhibitions?\s*[-–|:·]\s*(current|past|upcoming|on.?view|all)\b|\ball\s+exhibitions?\b|on\s+view\s*[-–|:·]\s*\w|current\s+exhibitions?\s*$/i
-
-// Generic H1 words that appear on listing/section pages — case-insensitive via regex flag
-const SECTION_H1_RE = /^(exhibitions?|galleries|gallery|current|on\s*view|upcoming|past|programs?|collection|all\s+shows?|archive|visit|about|news|events?|calendar)$/i
-
-// Short articles/prepositions that should be skipped when picking the institution
-// name word to match against H1 (e.g. "El Museo del Barrio" → use "museo", not "el")
-const SHORT_WORDS = new Set(['el', 'la', 'le', 'de', 'du', 'the', 'new', 'a', 'an'])
-
-function isSectionPageHtml(html: string, venueName?: string): boolean {
-  const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i)
-  const pageTitle = titleMatch?.[1] ?? ''
-  if (SECTION_TITLE_RE.test(pageTitle)) return true
-
-  // Positive signal: a single non-generic H1 strongly indicates a detail page.
-  // If H1 is a real show title (not a generic section word, not the institution name)
-  // we short-circuit and return false regardless of cross-link count.
-  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)
-  if (h1Match) {
-    const h1Text = h1Match[1].replace(/<[^>]+>/g, '').trim()
-
-    // Pick the first meaningful word from the institution name, skipping short articles
-    // e.g. "El Museo del Barrio" → "museo", "The Met" → "met", "New Museum" → "museum"
-    const words = (venueName ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-    const venueWord = words.find((w) => w.length >= 4 && !SHORT_WORDS.has(w)) ?? words[0] ?? ''
-
-    // Match is case-insensitive (venueWord already lowercased, h1Text also lowercased)
-    const matchesVenueName = venueWord.length > 2 && h1Text.toLowerCase().includes(venueWord)
-
-    if (h1Text.length > 3 && !SECTION_H1_RE.test(h1Text) && !matchesVenueName) {
-      return false
-    }
-  }
-
-  // Count UNIQUE exhibition cross-links — repeated nav/footer links inflate the count
-  const matches = html.match(/href="[^"]*\/(exhibitions?|shows?|on-view)\//g) ?? []
-  const unique = new Set(matches)
-  return unique.size >= 25
-}
+// Section 3 now applies both, along with the symmetric self-link/child-path
+// guard, so a link that reaches the detail stage has already passed them. The
+// HTML-level check that used to run here after the fetch — and its
+// SECTION_TITLE_RE / SECTION_H1_RE / SHORT_WORDS constants — went with it: a
+// second opinion on a question already settled upstream, paid for after the
+// page had been downloaded.
 
 // Req #1: Fast string check for title presence — avoids Claude call when possible.
 // Claude is inconsistent about preserving typographic punctuation verbatim —
@@ -240,8 +208,56 @@ function descriptionAppearsInHtml(description: string, html: string): boolean {
   return sample.length > 0 && decoded.includes(sample)
 }
 
+// Does this artist's name actually appear on the page? Same canonicalized
+// containment test the title and description use, so entity-encoded and
+// typographic differences ("Anastasya Pe&ntilde;a") don't read as absent.
+//
+// No partial-match fallback, unlike titles: a name is short enough that a prefix
+// of it is a different person, and accepting one would let a first name alone
+// confirm a full credit.
+// Galleries routinely link the press release rather than printing it. Finds the
+// first anchor whose visible text or href says "press release", so that one page
+// can be fetched. Returns an absolute URL, or null when the phrase appears on the
+// page but not inside a link — which is the "found, but not clickable" case that
+// deliberately does nothing.
+function findPressReleaseLink(html: string, baseUrl: string): string | null {
+  const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi
+  let m: RegExpExecArray | null
+  while ((m = anchorRe.exec(html)) !== null) {
+    const href = m[1]
+    if (/^(mailto:|tel:|javascript:|#)/i.test(href)) continue
+    const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    if (!/press\s*release/i.test(text) && !/press[-_]?release/i.test(href)) continue
+    try { return new URL(href, baseUrl).href } catch { continue }
+  }
+  return null
+}
+
+export function artistAppearsInHtml(name: string, html: string): boolean {
+  const decoded = canonicalizeForMatch(html)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+  const norm = canonicalizeForMatch(name).replace(/\s+/g, '').toLowerCase()
+  return norm.length > 2 && decoded.includes(norm)
+}
+
 // Req #5: Image URL validation — discards placeholders, logos, and relative URLs.
-const IMAGE_DISCARD_RE = /placeholder|default[^/]*\.(jpe?g|png|webp|gif|svg)|\/logo[^/]*\.(jpe?g|png|webp|svg)|\/icon[^/]*\.(jpe?g|png|webp|svg)|avatar|blank|spacer/i
+// Logos and icons arrive in two shapes, and they fail differently:
+//
+//   /logo/header.png            — the word is its own path segment
+//   Banner-Logo-2026-1024x234.jpg — the word is inside the filename
+//
+// Both need matching. The long-standing pattern only had the first form, so the
+// second went through as an exhibition image; replacing it with a form that
+// required the word and the extension in ONE segment then dropped the first,
+// because there "logo" and ".png" are in different segments. So: two alternatives.
+//
+// Neither fires on a real word that merely contains those letters. The segment
+// form demands a slash right after ("logogram-gallery/" does not qualify), and
+// the filename form cannot cross a slash, so logogram-gallery/show-view.jpg —
+// where the letters and the extension are in different segments — is left alone.
+const IMAGE_DISCARD_RE = /placeholder|default[^/]*\.(jpe?g|png|webp|gif|svg)|\/(?:logo|icon)s?\/|\/[^/]*(?:logo|icon)[^/]*\.(jpe?g|png|webp|svg)|avatar|blank|spacer/i
 
 function validateImageUrl(url: string | null, baseUrl: string): string | null {
   if (!url) return null
@@ -1295,50 +1311,71 @@ export async function scrapeInstitution(
   // delete with 23503 and the run carried on as though the wipe had worked.
   // migration_v34 changes that FK to ON DELETE SET NULL; this logging is what
   // makes a future regression visible instead of silent.
-  const { error: wipeError, count: wipedCount } = await db
-    .from('exhibitions')
-    .delete({ count: 'exact' })
-    .eq('venue_id', venue.id)
-    .eq('status', 'pending')
+  // An exhibition an editor's pick points at is never wiped — live pick or retired.
+  // editor_picks.reference_id is a bare uuid with no foreign key, so nothing at the
+  // database level stops this, and it has already cost one pick: the 2026-05-31
+  // exhibition pick pointed at a show that no longer existed. A pick usually points
+  // at a published show, which this wipe already spares, but unpublishing one puts
+  // it straight back in range.
+  const pickedExhibitions = await pickedReferenceIds('exhibition')
 
-  if (wipeError) {
-    console.error(`[${vn}] Stale-pending wipe FAILED — stale rows will survive this run:`, wipeError.message)
+  if (pickedExhibitions.error) {
+    // Skipping the wipe leaves stale pending rows for one run, and the next run
+    // clears them. Wiping without this list risks deleting a picked show, which
+    // nothing can restore.
+    console.error(`[${vn}] Stale-pending wipe SKIPPED — could not read editor_picks:`, pickedExhibitions.error)
     console.log(JSON.stringify({
-      tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE_FAILED',
-      error_code: wipeError.code, error_message: wipeError.message,
-      details: wipeError.details ?? null,
+      tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE_SKIPPED',
+      error_message: pickedExhibitions.error,
     }))
     errors.push({
       item: vn,
       step: 'upsert',
-      message: `Stale-pending wipe failed (${wipeError.code}): ${wipeError.message}`,
+      message: `Stale-pending wipe skipped — editor_picks lookup failed: ${pickedExhibitions.error}`,
     })
     diag.pending_wipe.failed = true
-    diag.pending_wipe.error_code = wipeError.code ?? null
   } else {
-    diag.pending_wipe.deleted = wipedCount ?? 0
-    console.log(JSON.stringify({
-      tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE',
-      deleted: wipedCount ?? 0,
-    }))
+    let wipeQuery = db
+      .from('exhibitions')
+      .delete({ count: 'exact' })
+      .eq('venue_id', venue.id)
+      .eq('status', 'pending')
+
+    if (pickedExhibitions.ids.length > 0) {
+      wipeQuery = wipeQuery.not('id', 'in', `(${pickedExhibitions.ids.join(',')})`)
+    }
+
+    const { error: wipeError, count: wipedCount } = await wipeQuery
+
+    if (wipeError) {
+      console.error(`[${vn}] Stale-pending wipe FAILED — stale rows will survive this run:`, wipeError.message)
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE_FAILED',
+        error_code: wipeError.code, error_message: wipeError.message,
+        details: wipeError.details ?? null,
+      }))
+      errors.push({
+        item: vn,
+        step: 'upsert',
+        message: `Stale-pending wipe failed (${wipeError.code}): ${wipeError.message}`,
+      })
+      diag.pending_wipe.failed = true
+      diag.pending_wipe.error_code = wipeError.code ?? null
+    } else {
+      diag.pending_wipe.deleted = wipedCount ?? 0
+      console.log(JSON.stringify({
+        tag: 'AGENT1', venue: vn, event: 'PENDING_WIPE',
+        deleted: wipedCount ?? 0,
+      }))
+    }
   }
 
   // ─── Step 2: detail pages ─────────────────────────────────────────────────
   let upsertedCount = 0
 
   for (const link of linksToProcess) {
-    // Req #3: URL-level section page check (free — no Browserbase session needed)
-    if (isSectionPageUrl(link.url)) {
-      console.log(`[${vn}] Skipping section page URL: ${link.url}`)
-      console.log(JSON.stringify({
-        tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
-        guard: 'isSectionPageUrl',
-        reason: 'URL last segment matches section terminal list',
-      }))
-      diag.discard_reasons.guard_failed++
-      continue
-    }
-
+    // No section-page check here any more, by URL or by content. Section 3 owns
+    // that question now and answers it before a page is ever fetched.
     console.log(`[${vn}] Detail: "${link.title}" — ${link.url}`)
 
     const detailFetchResult = await fetchDetailPage(link.url)
@@ -1366,22 +1403,6 @@ export async function scrapeInstitution(
 
     diag.shows_fetched++
 
-    // Req #3: HTML-level section page check
-    if (isSectionPageHtml(detailHtml, vn)) {
-      console.log(`[${vn}] section_page_skipped: ${link.url}`)
-      console.log(JSON.stringify({
-        tag: 'AGENT1', venue: vn, url: link.url, event: 'GUARD_FAILED',
-        guard: 'isSectionPageUrl',
-        reason: 'HTML-level section page detected',
-      }))
-      diag.discard_reasons.guard_failed++
-      await logDetailFetch(db, {
-        venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: link.title,
-        method: detailMethod, htmlLength: detailHtml.length, outcome: 'section_page_html',
-      })
-      continue
-    }
-
     let detail = await extractExhibitionDetail(detailHtml, link.url)
 
     // Some sites (JS-only SPAs like guggenheim.org) return a plain-HTTP response
@@ -1391,12 +1412,36 @@ export async function scrapeInstitution(
     // they only exist in the client-rendered DOM. That signature (a plain-HTTP
     // fetch with nothing dated or descriptive extracted) is worth one Browserbase
     // retry before accepting it as a genuinely dateless show.
-    if (detailMethod === 'http' && !detail.start_date && !detail.end_date && !detail.description) {
-      console.warn(`[${vn}] Plain HTTP detail page had no dates/description — retrying via Browserbase: ${link.url}`)
+    // Title and dates own this retry, and nothing else does. Artists are
+    // deliberately not part of the test: institutions label group shows too
+    // inconsistently for artist extraction to say anything reliable about whether
+    // the page was read properly.
+    //
+    // Installations are exempt from the DATES half only. An installation page
+    // saying "Ongoing" or "On Long-term View" has no dates by design, not because
+    // the read failed — four published shows (Camille Norment, Dyani White Hawk,
+    // Christopher Myers, Artist Installations) re-extract with a correct title and
+    // genuinely no dates, and this gate was discarding all four.
+    //
+    // Keyed on show_type === 'installation', the same test isInstallation/isOngoing
+    // already use further down, so this is that one rule applied earlier rather
+    // than a second carve-out with its own idea of what "ongoing" means. A
+    // dateless installation still lands in pending there, via start_date and
+    // end_date in missing_fields — exempt from being thrown away, not from review.
+    //
+    // The title half is unchanged: an installation whose title is missing or
+    // unverifiable is still discarded like anything else.
+    const coreMissing = (d: ExhibitionDetailExtracted) =>
+      !d.title?.trim() || (d.show_type !== 'installation' && !d.start_date && !d.end_date)
+
+    if (detailMethod === 'http' && coreMissing(detail)) {
+      console.warn(`[${vn}] Plain HTTP detail page had no title/dates — retrying via Browserbase: ${link.url}`)
       const retryFetch = await attemptBrowserbaseDetailFetch(link.url)
       if (retryFetch.success && retryFetch.html.length > detailHtml.length) {
         const retryDetail = await extractExhibitionDetail(retryFetch.html, link.url)
-        if (retryDetail.start_date || retryDetail.end_date || retryDetail.description) {
+        // Accept the retry whenever it recovered any of the three — a page that
+        // now has a description but still no dates is still a better record.
+        if (retryDetail.start_date || retryDetail.end_date || retryDetail.description || retryDetail.title?.trim()) {
           detail = retryDetail
           detailHtml = retryFetch.html
           detailMethod = retryFetch.method
@@ -1413,10 +1458,19 @@ export async function scrapeInstitution(
       description_length: detail.description ? detail.description.length : null,
     }))
 
-    if (!detail.title?.trim()) {
-      console.warn(`[${vn}] No title extracted for "${link.title}" — skipping`)
-      errors.push({ item: link.title || link.url, step: 'extraction', message: 'No title extracted from detail page' })
+    // Still no title, or still no dates at all, after the Browserbase retry above.
+    // Both are core: a record with neither a name nor a run is not an exhibition.
+    if (coreMissing(detail)) {
+      const why = !detail.title?.trim() ? 'no title' : 'no dates'
+      console.warn(`[${vn}] Extraction incomplete (${why}) for "${link.title}" — discarding`)
+      errors.push({ item: link.title || link.url, step: 'extraction', message: `Detail extraction incomplete: ${why}` })
       diag.discard_reasons.extraction_failed++
+      await db.from('agent1_discarded_items').insert({
+        institution_id: venue.institution_id ?? null,
+        title: detail.title?.trim() || link.title,
+        url: link.url,
+        content_type: `extraction_incomplete:${why.replace(/\s+/g, '_')}`,
+      })
       try {
         appendFileSync('/tmp/scrape-diag.jsonl', JSON.stringify({
           tag: 'AGENT1', venue: vn, url: link.url, event: 'EXTRACTION_FAILED',
@@ -1433,7 +1487,9 @@ export async function scrapeInstitution(
     }
 
     diag.shows_extracted++
-    const cleanTitle = detail.title.trim()
+    // coreMissing above already refused anything without a title; the fallback
+    // keeps this honest for the type checker rather than asserting non-null.
+    const cleanTitle = (detail.title ?? '').trim()
 
     // Req #1: Anti-hallucination — title must appear in the page HTML
     let titleConfirmed = titleAppearsInHtml(cleanTitle, detailHtml)
@@ -1461,21 +1517,10 @@ export async function scrapeInstitution(
 
     diag.shows_passed_hallucination++
 
-    // Content-type was 'unclear' at Step 1 (benefit of the doubt) — if Step 2 also
-    // finds no artist names and no dates, this reads like a generic event page
-    // rather than an exhibition. Flag it instead of silently creating a pending
-    // exhibition record with essentially no real content.
-    if (link.content_type === 'unclear' && detail.artists.length === 0 && !detail.start_date && !detail.end_date) {
-      console.warn(`[${vn}] Unclear link "${cleanTitle}" has no artists or dates — flagging instead of creating pending record`)
-      await db.from('agent1_discarded_items').insert({
-        institution_id: venue.institution_id ?? null,
-        title: cleanTitle,
-        url: link.url,
-        content_type: 'unclear_no_signal',
-      })
-      diag.discard_reasons.guard_failed++
-      continue
-    }
+    // The old "unclear + no artists + no dates" guard is gone. It used artist
+    // count as a discard signal, which the rebuilt artist handling explicitly
+    // rejects, and its dates half is now covered above — a record with no dates
+    // never gets this far.
 
     // Req #1: Description must appear in page HTML; null it out if it doesn't
     let verifiedDescription = detail.description
@@ -1527,12 +1572,26 @@ export async function scrapeInstitution(
       continue
     }
 
-    if (dateClass === 'past') {
-      console.log(`[${vn}] Skipping past show: "${cleanTitle}" (end: ${detail.end_date})`)
+    // Both directions discard now. A show that has closed is over; a show opening
+    // more than 90 days out is not yet worth a record. At a 7-day re-scrape
+    // cadence a show just past that line gets roughly a dozen more chances to be
+    // picked up before it matters, so dropping it now costs nothing and keeps
+    // pending review free of shows nobody can visit. This is what removed the
+    // held "upcoming" status entirely.
+    if (dateClass === 'past' || dateClass === 'upcoming') {
+      const which = dateClass === 'past' ? 'past' : 'far-future'
+      console.log(`[${vn}] Skipping ${which} show: "${cleanTitle}" (start: ${detail.start_date}, end: ${detail.end_date})`)
       diag.discard_reasons.temporal_discarded++
+      await db.from('agent1_discarded_items').insert({
+        institution_id: venue.institution_id ?? null,
+        title: cleanTitle,
+        url: link.url,
+        content_type: dateClass === 'past' ? 'temporal_past' : 'temporal_far_future',
+      })
       await logDetailFetch(db, {
         venueId: venue.id, institutionId: venue.institution_id, url: link.url, title: cleanTitle,
-        method: detailMethod, htmlLength: detailHtml.length, outcome: 'temporal_discarded_past',
+        method: detailMethod, htmlLength: detailHtml.length,
+        outcome: dateClass === 'past' ? 'temporal_discarded_past' : 'temporal_discarded_far_future',
       })
       continue
     }
@@ -1602,6 +1661,33 @@ export async function scrapeInstitution(
     // Req #5: Image URL validation — discard placeholders, logos, relative URLs
     const validatedImage = validateImageUrl(detail.image_url, link.url)
 
+    // Nothing on the page, but a link offering it. Follow that link ONCE and
+    // extract from what it returns. If that page links onward to yet another
+    // "press release" — a PDF landing page, a redirect — it is not followed:
+    // whatever this one hop yields is the answer, and an empty result leaves the
+    // field empty exactly as before.
+    //
+    // Galleries only. A museum's press material is usually a PDF, which this
+    // cannot read, so museums are left out rather than quietly half-served —
+    // whether they should get their own PDF handling is still open.
+    if (!verifiedDescription && !isMuseum) {
+      const prLink = findPressReleaseLink(detailHtml, link.url)
+      if (prLink && normalizeDetailUrl(prLink) !== normalizeDetailUrl(link.url)) {
+        console.log(JSON.stringify({
+          tag: 'AGENT1', venue: vn, url: link.url, event: 'PRESS_RELEASE_HOP', to: prLink,
+        }))
+        const hop = await attemptBrowserbaseDetailFetch(prLink)
+        if (hop.success) {
+          const hopDetail = await extractExhibitionDetail(hop.html, prLink)
+          // Same hallucination check as the page itself: the text has to be on the
+          // page it came from.
+          if (hopDetail.description && descriptionAppearsInHtml(hopDetail.description, hop.html)) {
+            verifiedDescription = hopDetail.description
+          }
+        }
+      }
+    }
+
     const prCleaned = cleanPressRelease(verifiedDescription)
 
     // Installations commonly run indefinitely ("on long-term view", "ongoing") —
@@ -1610,6 +1696,32 @@ export async function scrapeInstitution(
     const isInstallation = detail.show_type === 'installation'
     const isOngoing = isInstallation && !!detail.start_date && !detail.end_date
 
+    // ─── Artists ──────────────────────────────────────────────────────────────
+    // Every name is checked against the page, whatever its provenance — nothing
+    // skips verification. The decision table itself is in lib/artist-rules.ts;
+    // this only supplies the evidence and carries out the verdict.
+    const verifiedArtistNames = detail.artists.filter((n) => artistAppearsInHtml(n, detailHtml))
+    const groupWarningMuted = await isWarningMuted(venue.id)
+    const artistDecision = decideArtists({
+      extracted: detail.artists,
+      verified: verifiedArtistNames,
+      provenance: detail.artists_inferred ? 'inferred' : 'credited',
+      venueGroupWarningMuted: groupWarningMuted,
+    })
+
+    console.log(JSON.stringify({
+      tag: 'AGENT1', venue: vn, url: link.url, event: 'ARTIST_CHECK',
+      title: cleanTitle,
+      extracted: detail.artists.length,
+      verified: verifiedArtistNames.length,
+      provenance: detail.artists_inferred ? 'inferred' : 'credited',
+      stored: artistDecision.artists.length,
+      hide_names: artistDecision.hideNames,
+      venue_muted: groupWarningMuted,
+      first_large_group: artistDecision.recordGroupWarning,
+      pending_reason: artistDecision.pendingReason,
+    }))
+
     const missingFields: string[] = []
     // From resolveShowLocation: 'location_unverified' when nothing places the show
     // (no address, and a gallery with branches elsewhere; or an address no borough
@@ -1617,18 +1729,27 @@ export async function scrapeInstitution(
     // different addresses, when an extracted address is a corrupted merge, or when
     // an address placed only by its zip meets a page naming another city. Either
     // one holds the show in pending. Several clean addresses are never a flag.
+    // 'upcoming' is gone from this list: a far-future show is discarded above and
+    // never reaches here, so the flag had no way to be set and nothing to mean.
     missingFields.push(...location.flags)
-    if (dateClass === 'upcoming') missingFields.push('upcoming')
     if (!detail.start_date) missingFields.push('start_date')
     if (!detail.end_date && !isOngoing) missingFields.push('end_date')
     if (!prCleaned) missingFields.push('press_release')
     if (!validatedImage) missingFields.push('image_url')
+    // Artists are not a "missing field" — but an artist result that needs a
+    // person's eye holds the show, under its own value rather than borrowing one.
+    // 'artist_group_confirm' is the once-per-venue confirmation that hiding a big
+    // credited list is right here; 'artist_review' is everything else.
+    if (artistDecision.pendingReason) {
+      missingFields.push(artistDecision.recordGroupWarning ? 'artist_group_confirm' : 'artist_review')
+    }
 
-    // DB constraint only allows 'pending' | 'published'.
-    // Upcoming shows go to pending with 'upcoming' in missingFields so the admin
-    // can distinguish them. Only fully-complete current shows auto-publish.
-    const isUpcoming = dateClass === 'upcoming'
-    const status = (!isUpcoming && missingFields.length === 0) ? 'published' : 'pending'
+    // DB constraint only allows 'pending' | 'published'. Every show reaching here
+    // is current — past and far-future were both discarded above — so the gate is
+    // simply whether anything is missing. Artists are deliberately not in that
+    // list: a suppressed-but-stored artist list on a large group show is working
+    // as designed, not missing data.
+    const status = missingFields.length === 0 ? 'published' : 'pending'
 
     console.log(`[${vn}] "${cleanTitle}" — ${status}, missing: [${missingFields.join(', ')}]`)
 
@@ -1676,6 +1797,9 @@ export async function scrapeInstitution(
       status,
       is_ongoing: isOngoing,
       missing_fields: missingFields,
+      // Display only. The names are still written to exhibition_artists below and
+      // are still read by Agent 2's coverage and preread matching.
+      hide_artist_names: artistDecision.hideNames,
       preread_type: isMuseum ? 'coverage_only' : 'full',
       // Up to three locations; only the first is geocoded — it's the map pin.
       show_location: location.locations[0]?.address ?? null,
@@ -1778,8 +1902,9 @@ export async function scrapeInstitution(
       }
     }
 
-    // Sync artists
-    for (const artistName of detail.artists.slice(0, 20)) {
+    // Sync artists. The decided set, which is the extracted set unless verification
+    // failed — hiding names never means storing fewer of them.
+    for (const artistName of artistDecision.artists.slice(0, 20)) {
       if (!artistName?.trim()) continue
       const artistId = await upsertArtist(artistName.trim())
       if (!artistId) continue
@@ -1810,7 +1935,9 @@ export async function scrapeInstitution(
     if (!skipPrereads) {
       const exhibitionRaw: ExhibitionRaw = {
         show_title: cleanTitle,
-        artists: detail.artists,
+        // The stored set, so Agent 2 sees exactly what is in exhibition_artists —
+        // including on a show whose names are hidden from the public site.
+        artists: artistDecision.artists,
         start_date: detail.start_date,
         end_date: detail.end_date,
         description: null,

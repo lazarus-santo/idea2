@@ -234,18 +234,26 @@ export async function resolveShowLocation(input: {
   const borough = boroughForZip(zip)
 
   if (!borough) {
-    // An address nothing can place in a borough — no NYC zip, no Mapbox match.
-    // That isn't proof it's elsewhere, so it isn't discarded; it's held.
+    // A bare street address that nothing can place in a borough — no NYC zip, no
+    // Mapbox house-number match. That is not proof it is elsewhere.
     if (pageCheck.verdict === 'non_nyc') {
       return { verdict: 'non_nyc', city: pageCheck.city, flags: [], locations: [], source: null, trace: { ...trace, outcome: 'page_non_nyc' } }
     }
+    // Handled exactly like a page that gave no address at all: a single-location
+    // gallery printing a bare street is at its own address, so it takes the venue
+    // fallback instead of being held for review. Only a gallery with branches in
+    // other cities is genuinely ambiguous, and only that case is still flagged.
+    // Which specific seeded venue a multi-location institution's show belongs to
+    // is not decided here — that is the separate show-level address work.
+    if (pageCheck.verdict === 'unknown' && pageCheck.galleryMultiCity) flags.push('location_unverified')
+    const fallback = await venueFallback(venue)
     return {
-      verdict: 'unknown',
-      city: null,
-      flags: [...flags, 'location_unverified'],
-      locations: [],
-      source: null,
-      trace: { ...trace, outcome: 'address_unresolved' },
+      verdict: pageCheck.verdict,
+      city: pageCheck.city,
+      flags,
+      locations: fallback ? [fallback] : [],
+      source: fallback ? 'venue' : null,
+      trace: { ...trace, outcome: 'address_unresolved_venue_fallback' },
     }
   }
 

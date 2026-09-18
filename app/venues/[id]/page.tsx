@@ -38,7 +38,7 @@ export default async function VenueRoute({ params }: PageProps) {
     const { data: exData } = await supabase
       .from('exhibitions')
       .select(`
-        id, show_title, start_date, end_date, image_url,
+        id, show_title, start_date, end_date, image_url, hide_artist_names,
         exhibition_artists(artists!inner(name)),
         prereads(id, article_title, publication, article_url, created_at)
       `)
@@ -55,7 +55,8 @@ export default async function VenueRoute({ params }: PageProps) {
         start_date: raw.start_date,
         end_date: raw.end_date,
         image_url: raw.image_url,
-        artists: (raw.exhibition_artists ?? [])
+        // Hidden from display only — the names stay in exhibition_artists.
+        artists: raw.hide_artist_names ? [] : (raw.exhibition_artists ?? [])
           .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
           .filter(Boolean) as string[],
       })

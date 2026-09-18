@@ -1652,7 +1652,9 @@ export async function classifyExhibitionUrls(
 const EMPTY_DETAIL: ExhibitionDetailExtracted = {
   title: null, artists: [], start_date: null, end_date: null,
   date_notes: null, description: null, image_url: null, press_release_url: null,
-  show_type: 'exhibition', artist_bio: null, addresses: [],
+  // Inferred is the safe default: it is the reading that never lets a group show
+  // publish names that might not be the artist list.
+  show_type: 'exhibition', artist_bio: null, addresses: [], artists_inferred: true,
 }
 
 // Up to three non-empty, de-duplicated entries. A bare string is accepted too, in
@@ -1685,6 +1687,7 @@ CRITICAL RULES:
 - The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
 - show_type: "installation" when the page describes a site-specific, long-term, permanent, or on-view-indefinitely work/display (e.g. "long-term view", "permanent installation", "on view indefinitely", a commissioned site-specific work) — "exhibition" for a normal temporary show with a defined or expected run. Default to "exhibition" when unclear.
 - artist_bio: many exhibition pages have a separate biographical section about the artist(s), often under its own heading like "About the Artist," "More About [Name]," or "Biography" — distinct from the exhibition/show description above it. Extract this verbatim if present, separately from "description." If the page has bios for multiple artists, concatenate them, each preceded by the artist's name. Null if no such section exists on the page.
+- artists_inferred: where the names in "artists" came from. false ONLY when the page carries a dedicated artist list or credit line — an "Artists:" block, a byline under the show title, a list of artist names as links, a curated checklist. true when you read the names out of the exhibition title ("Andrea Bowers: Democracy Needs Our Courage") or out of the body prose. Return true when there are no artists, and true whenever you are unsure: a credit line is a specific thing to see on the page, and calling a prose mention "credited" lets a group show publish names that may not be its artist list at all.
 - addresses: every street address where THIS exhibition is on view, as a list of up to 3 entries in page order — one location per entry, never two street addresses in one entry.
   • Each entry is one complete address: house number and street, any floor/suite, then city, state and zip. Include the city, state and zip even when the page prints them on a separate line or in a separate element from the street — "533 West 19th Street" followed by "New York, New York 10011" becomes "533 West 19th Street, New York, New York 10011".
   • A show held at several locations: when the page lists them as separate blocks (e.g. a "Locations" section with one labelled address each), return one entry per block. When one line joins addresses ("22 Cortlandt Alley & 394 Broadway"), split it into one entry per address, each carrying the city, state and zip they share.
@@ -1695,6 +1698,7 @@ Return ONLY a JSON object (no markdown, no commentary):
 {
   "title": "exhibition title or null",
   "artists": ["artist name strings — empty array if none"],
+  "artists_inferred": true,
   "start_date": "YYYY-MM-DD or null",
   "end_date": "YYYY-MM-DD or null",
   "date_notes": "verbatim date text that could not be parsed as YYYY-MM-DD (e.g. 'On view through summer 2025') — null if dates were fully parsed or no date info exists",
@@ -1746,6 +1750,12 @@ ${nextDataJson}`,
   return {
     title: raw.title ?? null,
     artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
+    // Only an explicit false means the page had a real credit line. Anything else
+    // — omitted, null, unparseable — reads as inferred, which is the answer that
+    // never lets a group show publish names that may not be its artist list. The
+    // __NEXT_DATA__ path never asks for this field, and correctly lands here: a
+    // JSON blob has no visual credit line to have read.
+    artists_inferred: raw.artists_inferred !== false,
     start_date: raw.start_date ?? null,
     end_date: raw.end_date ?? null,
     date_notes: raw.date_notes ?? null,
@@ -1773,6 +1783,12 @@ async function callClaudeForDetail(content: string, url: string): Promise<Exhibi
   return {
     title: raw.title ?? null,
     artists: Array.isArray(raw.artists) ? raw.artists.filter(Boolean) : [],
+    // Only an explicit false means the page had a real credit line. Anything else
+    // — omitted, null, unparseable — reads as inferred, which is the answer that
+    // never lets a group show publish names that may not be its artist list. The
+    // __NEXT_DATA__ path never asks for this field, and correctly lands here: a
+    // JSON blob has no visual credit line to have read.
+    artists_inferred: raw.artists_inferred !== false,
     start_date: raw.start_date ?? null,
     end_date: raw.end_date ?? null,
     date_notes: raw.date_notes ?? null,

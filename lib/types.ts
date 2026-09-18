@@ -263,6 +263,18 @@ export interface ExhibitionDetailExtracted {
   /** Street addresses where this show is on view — up to 3, one location per
    *  entry, each with its city and zip — or []. */
   addresses: string[]
+  /**
+   * How the artist names were obtained.
+   *
+   * true  — read out of the title or body prose, with no credit line to back them
+   * false — taken from a dedicated artist list or credit line on the page
+   *
+   * Page-level rather than per-artist on purpose: the rules in lib/artist-rules.ts
+   * treat a show's artist list as one set, so per-name provenance would buy
+   * nothing and would change `artists` from string[] into objects across the
+   * scraper, museum coverage, the audit and six public read sites.
+   */
+  artists_inferred: boolean
 }
 
 export type VenueHours = {

@@ -16,6 +16,7 @@ export async function GET() {
       end_date,
       is_ongoing,
       image_url,
+      hide_artist_names,
       address_override,
       override_latitude,
       override_longitude,
@@ -102,7 +103,8 @@ export async function GET() {
       venue_lng: location.lng,
       venue_hours: venueData.hours ?? null,
       venue_address: location.address,
-      artists: (exhibition_artists ?? [])
+      // Hidden from display only — the names stay in exhibition_artists.
+      artists: rest.hide_artist_names ? [] : (exhibition_artists ?? [])
         .map((ea: { artists: { name: string } | null }) => ea.artists?.name)
         .filter(Boolean) as string[],
     } satisfies MapExhibition
