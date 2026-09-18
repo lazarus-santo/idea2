@@ -80,6 +80,46 @@ const TIER_2_DOMAINS = [
 const EXA_QUERYABLE_TIER_2_DOMAINS = TIER_2_DOMAINS.filter(
   (d) => !['nytimes.com', 'theguardian.com', 'wsj.com'].includes(d)
 )
+// Domains Exa refuses in `includeDomains` (see above). Any hard-filtered search strips
+// them first: loggedExaSearch swallows the 403, so leaving one in would silently turn
+// the whole search into "no results".
+const EXA_UNFILTERABLE_DOMAINS = ['nytimes.com', 'theguardian.com', 'wsj.com']
+function exaFilterable(domains: string[]): string[] {
+  return domains.filter((d) => !EXA_UNFILTERABLE_DOMAINS.includes(d))
+}
+
+// The 22 outlets the gallery solo ladder cares about. S1/S2 only SORT by it (the search
+// itself is unrestricted); S3 uses it as a hard filter.
+const SOLO_PRESS_DOMAINS = [
+  'artforum.com', 'artnews.com', 'brooklynrail.org', 'hyperallergic.com',
+  'theartnewspaper.com', 'news.artnet.com', 'bombmagazine.org', 'frieze.com',
+  'artsy.net', 'elephant.art', 'culturedmag.com', 'e-flux.com', 'newyorker.com',
+  'ft.com', 'nytimes.com', 'theguardian.com', 'wsj.com', 'i-d.vice.com',
+  'dazeddigital.com', 'wallpaper.com', 'interviewmagazine.com', 'anothermag.com',
+]
+
+// S5's hard filter: music, fashion and general-culture press, for artists whose
+// coverage lives outside the art world.
+const SOLO_CROSSOVER_DOMAINS = [
+  'pitchfork.com', 'stereogum.com', 'vogue.com', 'highsnobiety.com', 'hypebeast.com',
+  'thefader.com', 'culturedmag.com', 'newyorker.com', 'ft.com', 'nytimes.com',
+  'theguardian.com', 'wsj.com', 'i-d.vice.com', 'dazeddigital.com', 'wallpaper.com',
+  'interviewmagazine.com', 'anothermag.com',
+]
+
+function isOnDomainList(url: string, domains: string[]): boolean {
+  const host = getResultDomain(url)
+  return domains.some((d) => host === d || host.endsWith(`.${d}`))
+}
+
+// Rolling search window, computed at call time — the old ladder hardcoded
+// '2024-01-01', which silently widens every year.
+function rollingWindowStart(years: number, now: Date = new Date()): string {
+  const d = new Date(now)
+  d.setUTCFullYear(d.getUTCFullYear() - years)
+  return d.toISOString().slice(0, 10)
+}
+
 const DOMAIN_TO_PUBLICATION: Record<string, string> = {
   'artforum.com': 'Artforum',
   'frieze.com': 'Frieze',
@@ -311,19 +351,46 @@ function applyQualityGate<T extends PoolResult>(candidates: T[], verified: Map<s
 // Returns a map from URL to verification result, or null when the check itself failed
 // (API error, unparseable reply). Null used to be a map marking every candidate as a
 // pass — see qualityGate for why that is gone.
-async function verifySubstantiallyAbout(
+//
+// `opts.descriptor` (the gallery solo ladder's disambiguator, e.g. "musician, composer")
+// goes into the subject itself — "the artist "Klein", described as musician, composer" —
+// so the check asks about THAT person, not anyone with the name. It used to reach only
+// the search query, which is how a same-named stranger passed.
+//
+// `opts.sourceKind: 'press_release'` marks the source text as an exhibition press
+// release used only to identify the subject: an artist-level check must not reject an
+// article for not being about this particular show. A press release also gets a much
+// longer excerpt than a bio (PRESS_RELEASE_GROUNDING_CHARS), since it is the only
+// identity evidence when there is no disambiguator.
+const BIO_GROUNDING_CHARS = 3000
+const PRESS_RELEASE_GROUNDING_CHARS = 12000
+
+export interface VerificationOptions {
+  descriptor?: string | null
+  sourceKind?: 'bio' | 'press_release' | 'show_press_release'
+}
+
+export function describeSubject(subjectLabel: string, descriptor?: string | null): string {
+  return descriptor?.trim() ? `${subjectLabel}, described as ${descriptor.trim()}` : subjectLabel
+}
+
+function groundingPreamble(subject: string, sourceText: string | null, sourceKind: VerificationOptions['sourceKind']): string {
+  if (!sourceText) return ''
+  if (sourceKind === 'press_release') {
+    return `The following exhibition press release is context for identifying ${subject} — use it only to tell them apart from other people with the same name. A result does NOT need to be about this exhibition; it only needs to be substantially about this same person:\n\n${sourceText.slice(0, PRESS_RELEASE_GROUNDING_CHARS)}\n\n`
+  }
+  const limit = sourceKind === 'show_press_release' ? PRESS_RELEASE_GROUNDING_CHARS : BIO_GROUNDING_CHARS
+  return `The following text describes ${subject}:\n\n${sourceText.slice(0, limit)}\n\n`
+}
+
+export function buildVerificationPrompt(
   subjectLabel: string,
   sourceText: string | null,
-  candidates: (PoolResult & { title: string })[]
-): Promise<Map<string, VerifiedCandidate> | null> {
-  if (candidates.length === 0) return new Map()
-
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1500,
-    messages: [{
-      role: 'user',
-      content: `${sourceText ? `The following text describes ${subjectLabel}:\n\n${sourceText.slice(0, 3000)}\n\n` : ''}Below are web search results that may or may not be genuinely, substantially about ${subjectLabel}.
+  candidates: (PoolResult & { title: string })[],
+  opts: VerificationOptions = {}
+): string {
+  const subject = describeSubject(subjectLabel, opts.descriptor)
+  return `${groundingPreamble(subject, sourceText, opts.sourceKind)}Below are web search results that may or may not be genuinely, substantially about ${subject}.
 
 Reject a result (substantially_about: false) if any of these apply:
 - It's about a different, unrelated person or thing that merely shares a name (common names can belong to multiple people/things)
@@ -342,7 +409,23 @@ Results:
 ${JSON.stringify(candidates.map((c) => ({ url: c.url, title: c.title, highlight: c.highlights?.[0] ?? '' })))}
 
 Return ONLY a JSON array, one entry per result:
-[{"url": "...", "substantially_about": true, "content_type": "interview", "source_type": "editorial"}]`,
+[{"url": "...", "substantially_about": true, "content_type": "interview", "source_type": "editorial"}]`
+}
+
+async function verifySubstantiallyAbout(
+  subjectLabel: string,
+  sourceText: string | null,
+  candidates: (PoolResult & { title: string })[],
+  opts: VerificationOptions = {}
+): Promise<Map<string, VerifiedCandidate> | null> {
+  if (candidates.length === 0) return new Map()
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1500,
+    messages: [{
+      role: 'user',
+      content: buildVerificationPrompt(subjectLabel, sourceText, candidates, opts),
     }],
   }).catch(() => null)
 
@@ -494,6 +577,9 @@ export interface GeneratePrereadsResult {
   // Set when the show can't be searched at all. Nothing ran; the caller records the
   // status on the exhibition and stops — it must not treat this as an empty result.
   blocked: 'pending_artists' | null
+  // Gallery solo only: whether S4 ran this time and what it found. Absent on the
+  // group tiers, which run their show review unconditionally.
+  showReview?: ShowReviewAttempt
 }
 
 // contentPriority: 0 = show review (S2), 1 = artist profile/interview (S1), 2 = general press (S3/S4)
@@ -553,6 +639,41 @@ function classifyGalleryShow(artistCount: number): GalleryShowType | null {
   return 'large_group'
 }
 
+// ─── Show-review pre-filter (gallery solo S4) ─────────────────────────────────
+// Lowercase, accents stripped, punctuation collapsed to single spaces — so
+// "Vásquez de la Horra: Reading the Waves" and "vasquez de la horra reading the waves"
+// compare equal.
+export function normalizeForMatch(s: string): string {
+  return ` ${s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `
+}
+
+function containsPhrase(normalizedText: string, phrase: string): boolean {
+  const p = normalizeForMatch(phrase)
+  return p.trim().length > 0 && normalizedText.includes(p)
+}
+
+// The ways a review can name the show: the full title, or — for a title that bundles
+// the artist's name ("Sandra Vásquez de la Horra: Reading the Waves") — the part that
+// isn't the name. A bare artist-name title ("Yoshitomo Nara") has no such part, and
+// matching the name alone would let any article about the artist through, so it
+// only matches in full.
+function showTitleVariants(showTitle: string, artists: string[]): string[] {
+  const segments = showTitle.split(/\s*[:|–—]\s*/).map((p) => p.trim())
+  if (segments.length < 2) return [showTitle]
+  const names = new Set(artists.map((a) => normalizeForMatch(a)))
+  return [showTitle, ...segments.filter((p) => p.length >= 4 && !names.has(normalizeForMatch(p)))]
+}
+
+// Mechanical check before any AI call: the candidate's title/highlights must name the
+// exhibition AND at least one of its real artists. No venue-name check — a review
+// often names the gallery only in a byline or not at all.
+export function mentionsShowAndArtist(r: { title: string | null; highlights?: string[] }, showTitle: string, artists: string[]): boolean {
+  const text = normalizeForMatch([r.title ?? '', ...(r.highlights ?? [])].join(' '))
+  const hasTitle = showTitleVariants(showTitle, artists).some((t) => containsPhrase(text, t))
+  const hasArtist = artists.some((a) => containsPhrase(text, a))
+  return hasTitle && hasArtist
+}
+
 // Runs the shared "show review" search used by both group tiers: a single,
 // once-per-show query (not per-artist), domain-filtered to major press first,
 // falling back to an unfiltered retry when the filtered pool is too thin. Unlike the
@@ -568,15 +689,22 @@ async function searchShowReview(
   minDomainFilteredResults: number,
   pressRelease: string | null,
   venueDomain: string | null,
-  exhibitionId: string | null
-): Promise<(PoolResult & { title: string })[]> {
-  const query = `${showTitle} ${venueName} review exhibition 2025 OR 2026`
+  exhibitionId: string | null,
+  // Gallery solo's S4 only (for now): the mechanical title + artist pre-filter, run
+  // before any AI call. The group tiers don't pass it and behave as before.
+  requireTitleAndArtist?: { artists: string[] }
+): Promise<{ rows: (PoolResult & { title: string })[]; searchFailed: boolean }> {
+  // Last year and this year, computed per run (was a hardcoded "2025 OR 2026").
+  const year = new Date().getUTCFullYear()
+  const query = `${showTitle} ${venueName} review exhibition ${year - 1} OR ${year}`
 
   // Self-sourced check (a) folded into the same validity predicate as isValid — a
   // candidate on the exhibition's own venue domain is rejected here, before either
   // the retry-count check below or verifySubstantiallyAbout ever sees it.
   const isValidCandidate = (r: PoolResult): r is PoolResult & { title: string } =>
     isValid(r) && !isSelfSourcedByVenue(r.url, venueDomain)
+      && !(requireTitleAndArtist?.artists ?? []).some((a) => isSelfSourcedByArtistDomain(r.url, a))
+      && (!requireTitleAndArtist || mentionsShowAndArtist(r, showTitle, requireTitleAndArtist.artists))
 
   const filtered = await loggedExaSearch(exa, query, {
     type: 'auto',
@@ -585,6 +713,8 @@ async function searchShowReview(
     contents: { highlights: true },
   }, { exhibitionId, functionName: 'searchShowReview' })
 
+  // True if either Exa call never got an answer (not the same as an empty answer).
+  let searchFailed = !!filtered.error
   let candidates = sortByTierAndRecency((filtered.results as unknown as PoolResult[]).filter(isValidCandidate))
 
   if (candidates.length < minDomainFilteredResults) {
@@ -594,6 +724,7 @@ async function searchShowReview(
       numResults: 5,
       contents: { highlights: true },
     }, { exhibitionId, functionName: 'searchShowReview' })
+    searchFailed ||= !!unfiltered.error
 
     const seen = new Set(candidates.map((r) => r.url))
     const extra = (unfiltered.results as unknown as PoolResult[]).filter(isValidCandidate).filter((r) => !seen.has(r.url))
@@ -603,11 +734,16 @@ async function searchShowReview(
   }
 
   if (candidates.length > 0) {
-    const verified = await verifySubstantiallyAbout(`the exhibition "${showTitle}" at ${venueName}`, pressRelease, candidates)
+    const verified = await verifySubstantiallyAbout(
+      `the exhibition "${showTitle}" at ${venueName}`,
+      pressRelease,
+      candidates,
+      requireTitleAndArtist ? { sourceKind: 'show_press_release' } : {}
+    )
     candidates = applyQualityGate(candidates, verified)
   }
 
-  return candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const }))
+  return { rows: candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const })), searchFailed }
 }
 
 // Single artist profile/interview search, no domain filter — shared by both group tiers.
@@ -779,6 +915,25 @@ Return ONLY a JSON object mapping each artist name to a comma-separated list of 
   return context
 }
 
+// The one way an artist-level candidate is checked — the gallery solo ladder, and the
+// repair / Replace paths for solo and group rows alike, so a repaired row clears
+// exactly the bar a freshly generated one did. With a disambiguator, it goes into the
+// subject ("the artist "Klein", described as composer, …"), backed by the artist's own
+// bio when there is one. Without one, the full press release is the identity evidence.
+async function verifyArtistCandidates<T extends PoolResult & { title: string }>(
+  artistName: string,
+  disambiguator: string | null,
+  bio: string | null,
+  pressRelease: string | null,
+  candidates: T[]
+): Promise<Map<string, VerifiedCandidate> | null> {
+  const label = `the artist "${artistName}"`
+  if (disambiguator) return verifySubstantiallyAbout(label, bio, candidates, { descriptor: disambiguator, sourceKind: 'bio' })
+  return pressRelease
+    ? verifySubstantiallyAbout(label, pressRelease, candidates, { sourceKind: 'press_release' })
+    : verifySubstantiallyAbout(label, bio, candidates, { sourceKind: 'bio' })
+}
+
 // Orders artists for Large Group per-artist search priority: artists without an
 // existing bio on file first (higher information value to fill in), then alphabetical.
 async function orderArtistsBySearchPriority(artistNames: string[]): Promise<string[]> {
@@ -805,7 +960,7 @@ async function generateSmallGroupPrereads(
   venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
   const exhibitionId = exhibition.exhibition_id ?? null
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId)
+  const { rows: showReview } = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId)
 
   // Zipped with the artist name here, before Promise.all resolves — this is the only
   // point where "which artist produced this result" and the result itself are both in
@@ -849,7 +1004,7 @@ async function generateLargeGroupPrereads(
   venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
   const exhibitionId = exhibition.exhibition_id ?? null
-  const showReview = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release, venueDomain, exhibitionId)
+  const { rows: showReview } = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release, venueDomain, exhibitionId)
 
   const seenUrls = new Set(showReview.map((r) => r.url))
   const rows: (PoolResult & { title: string; artistName?: string })[] = [...showReview]
@@ -875,15 +1030,20 @@ async function generateLargeGroupPrereads(
 }
 
 export async function generatePrereads(
-  exhibition: ExhibitionRaw & { venue_name: string; venue_url?: string | null; exhibition_id?: string | null }
+  exhibition: ExhibitionRaw & {
+    venue_name: string
+    venue_url?: string | null
+    exhibition_id?: string | null
+    // Gallery solo only: whether S4 (show review) may run now — see isShowReviewDue.
+    // Absent means not due; the daily show-review cron runs it later.
+    show_review_due?: boolean
+  }
 ): Promise<GeneratePrereadsResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
-  const showTitle = exhibition.show_title
   const showType = classifyGalleryShow(exhibition.artists.length)
   // Checked before anything that costs money — the blocklist, bio and disambiguator
   // calls below all run for every show that gets past here.
   if (showType === null) return { prereads: [], hasShowCoverage: false, blocked: 'pending_artists' }
-  const exhibitionId = exhibition.exhibition_id ?? null
 
   // This exhibition's own venue domain — computed once, threaded down to
   // searchShowReview/searchArtistProfile for the mechanical self-sourced check (a).
@@ -919,145 +1079,255 @@ export async function generatePrereads(
   }
 
   // ─── Solo path (1 artist) ─────────────────────────────────────────────────
-  const artistQuery = exhibition.artists.join(', ')
-  const disambiguator = searchContext.get(artistQuery)
-  const artistQueryWithContext = disambiguator ? `${artistQuery} ${disambiguator}` : artistQuery
+  return generateSoloPrereads(exa, exhibition, isValid, searchContext, bios, venueDomain)
+}
 
-  // S1: broad recent coverage — not limited to interviews so reviews, essays, and features all qualify
-  const search1 = await loggedExaSearch(exa, `${artistQueryWithContext} artist`, {
-    type: 'auto',
-    numResults: 5,
-    startPublishedDate: '2024-01-01',
-    contents: { highlights: true },
-  }, { exhibitionId, functionName: 'S1' })
-  console.log(`Exa S1 [${artistQueryWithContext}]:`, (search1.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+// ─── Gallery solo ladder (S1-S5) ─────────────────────────────────────────────
+//
+//   S1  broad recent coverage       rolling 2 years, unrestricted, 22 domains sort first
+//   S2  body of work / interview    same window and sort; checked against the artist's
+//                                   practice, never the current show
+//   S3  prominent outlet            22 domains as a HARD filter; only with a real
+//                                   disambiguator
+//   S4  show review                 the shared searchShowReview, gated 14 days after
+//                                   opening (showReviewDue); otherwise the daily
+//                                   show-review cron runs it later
+//   S5  non-art crossover           only if S1 and S2 both came back empty after the
+//                                   check AND the disambiguator names a non-fine-art
+//                                   role; hard-filtered to music/fashion/culture press
+//
+// Every stage: self-sourced checks (venue domain, artist-name domain) before any AI
+// call; then verifySubstantiallyAbout with the disambiguator in the subject when there
+// is one, else the full press release as grounding. A candidate the check never judged
+// is kept with quality_flag 'unverified' (the database blanks it).
 
-  const search2 = await loggedExaSearch(exa, `${artistQueryWithContext} artwork practice critical essay`, {
-    type: 'auto',
-    numResults: 5,
-    startPublishedDate: '2022-01-01',
-    contents: { highlights: true },
-  }, { exhibitionId, functionName: 'S2' })
-  console.log(`Exa S2 [body of work / ${artistQueryWithContext}]:`, (search2.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+const SOLO_WINDOW_YEARS = 2
+export const SHOW_REVIEW_DELAY_DAYS = 14
 
-  // S3: explicitly target Tier 1 art press + major general press — ensures The Art Newspaper,
-  // Artforum, Frieze, Hyperallergic etc. are always in the candidate pool
-  const search3 = await loggedExaSearch(exa, `${artistQueryWithContext} artist`, {
-    type: 'auto',
-    numResults: 5,
-    startPublishedDate: '2024-01-01',
-    includeDomains: [...TIER_1_DOMAINS, 'newyorker.com', 'ft.com', 'vulture.com', 'nymag.com'],
-    contents: { highlights: true },
-  }, { exhibitionId, functionName: 'S3' })
-  console.log(`Exa S3 [art + major press / ${artistQueryWithContext}]:`, (search3.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+/** show_review_pending_until for a show: its opening plus 14 days (today + 14 if no opening date). */
+export function showReviewPendingUntil(startDate: string | null, now: Date = new Date()): string {
+  const base = startDate ? new Date(`${startDate.slice(0, 10)}T00:00:00Z`) : new Date(now.toISOString().slice(0, 10) + 'T00:00:00Z')
+  base.setUTCDate(base.getUTCDate() + SHOW_REVIEW_DELAY_DAYS)
+  return base.toISOString().slice(0, 10)
+}
 
-  const seenUrls = new Set<string>()
-  const pool: PoolResult[] = []
+/**
+ * What one S4 run produced. 'empty' means the search answered and nothing passed;
+ * 'error' means a search call never got an answer (or the run threw).
+ */
+export type ShowReviewResult = 'found' | 'empty' | 'error'
 
-  const addToPool = (results: unknown[], contentPriority: 0 | 1 | 2) => {
-    for (const r of results as unknown as PoolResult[]) {
-      if (seenUrls.has(r.url)) continue
-      seenUrls.add(r.url)
-      pool.push({ ...r, contentPriority })
+/**
+ * exhibitions.show_review_status (migration_v55). Errors climb error1 → error2 →
+ * error3, the same ladder as a venue's scrape_status: error1/error2 are retried on
+ * the next run, error3 is the hard wall. 'found' and 'empty' are final on the first
+ * clean result — an empty search is never retried.
+ */
+export type ShowReviewStatus = 'found' | 'empty' | 'error1' | 'error2' | 'error3'
+export const MAX_SHOW_REVIEW_ERRORS = 3
+
+/** The status to store after a run, given the status before it. */
+export function nextShowReviewStatus(previous: ShowReviewStatus | null, result: ShowReviewResult): ShowReviewStatus {
+  if (result !== 'error') return result
+  const failures = previous === 'error1' ? 1 : previous === 'error2' ? 2 : previous === 'error3' ? 3 : 0
+  return `error${Math.min(failures + 1, MAX_SHOW_REVIEW_ERRORS)}` as ShowReviewStatus
+}
+
+/**
+ * Whether a show's S4 search may run now: its 14 days are up, and it has never been
+ * attempted — or it has errored fewer than 3 times.
+ */
+export function isShowReviewDue(
+  pendingUntil: string | null,
+  attemptedAt: string | null,
+  status: ShowReviewStatus | null,
+  now: Date = new Date()
+): boolean {
+  if (!pendingUntil) return false
+  if (pendingUntil.slice(0, 10) > now.toISOString().slice(0, 10)) return false
+  return attemptedAt === null || status === 'error1' || status === 'error2'
+}
+
+// A disambiguator that places the artist outside fine art — the only case S5's
+// music/fashion/culture outlets are worth searching.
+const NON_FINE_ART_ROLE_RE = /\b(musician|singer|songwriter|rapper|composer|dj|producer|band|vocalist|guitarist|drummer|pianist|bassist|record label|album|fashion|designer|stylist|model|streetwear|actor|actress|filmmaker|film director|director|screenwriter|comedian|dancer|choreographer|writer|novelist|poet|author|chef|architect|skateboarder|tattoo|creative director)s?\b/i
+
+export function isNonFineArtDisambiguator(disambiguator: string | null | undefined): boolean {
+  return !!disambiguator && NON_FINE_ART_ROLE_RE.test(disambiguator)
+}
+
+/** What the solo path did about S4 this run — the caller writes it to the show_review_* columns. */
+export interface ShowReviewAttempt {
+  ran: boolean
+  result: ShowReviewResult | null
+}
+
+type SoloStage = 'S1' | 'S2' | 'S3' | 'S5'
+
+// contentPriority for the solo pool: 0 = show review (S4), 1 = body of work (S2),
+// 2 = everything else. Kept as a sort signal below the domain list.
+const SOLO_STAGE_PRIORITY: Record<SoloStage, 1 | 2> = { S1: 2, S2: 1, S3: 2, S5: 2 }
+
+async function generateSoloPrereads(
+  exa: Exa,
+  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null; show_review_due?: boolean },
+  isValid: (r: PoolResult) => r is PoolResult & { title: string },
+  context: Map<string, string>,
+  bios: Map<string, string>,
+  venueDomain: string | null
+): Promise<GeneratePrereadsResult> {
+  const exhibitionId = exhibition.exhibition_id ?? null
+  const showTitle = exhibition.show_title
+  const artist = exhibition.artists[0]
+  const disambiguator = context.get(artist)?.trim() || null
+  const withContext = disambiguator ? `${artist} ${disambiguator}` : artist
+  const windowStart = rollingWindowStart(SOLO_WINDOW_YEARS)
+
+  // Grounding for every artist-level check. With a disambiguator, it goes into the
+  // subject ("…described as …"), backed by the artist's own bio when there is one.
+  // Without one, the full press release is the only identity evidence available.
+  const verifyArtist = (candidates: (PoolResult & { title: string })[]) =>
+    verifyArtistCandidates(artist, disambiguator, bios.get(artist) ?? null, exhibition.press_release, candidates)
+
+  // Name present, not blocked, not the venue's or the artist's own site — all before
+  // any AI call.
+  const passesMechanical = (r: PoolResult): r is PoolResult & { title: string } =>
+    isValid(r)
+    && isAboutArtist(r, artist)
+    && !isSelfSourcedByVenue(r.url, venueDomain)
+    && !isSelfSourcedByArtistDomain(r.url, artist)
+
+  const search = async (stage: SoloStage, query: string, opts: { startPublishedDate?: string; includeDomains?: string[] }) => {
+    const res = await loggedExaSearch(exa, query, {
+      type: 'auto',
+      numResults: 5,
+      ...opts,
+      contents: { highlights: true },
+    }, { exhibitionId, functionName: stage })
+    const results = res.results as unknown as PoolResult[]
+    console.log(`Exa ${stage} [${query}]:`, results.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
+    return results.map((r) => ({ ...r, contentPriority: SOLO_STAGE_PRIORITY[stage], stage }))
+  }
+
+  const [s1, s2, s3] = await Promise.all([
+    search('S1', `${withContext} artist`, { startPublishedDate: windowStart }),
+    search('S2', `${withContext} artist practice body of work critical essay interview`, { startPublishedDate: windowStart }),
+    disambiguator
+      ? search('S3', `${withContext} artist`, { startPublishedDate: windowStart, includeDomains: exaFilterable(SOLO_PRESS_DOMAINS) })
+      : Promise.resolve([]),
+  ])
+  if (!disambiguator) console.log(`Exa S3 skipped [${artist}]: no disambiguator`)
+
+  // One pool, first stage wins a duplicate URL (S2 is listed first so an article both
+  // searches found keeps S2's higher priority).
+  type SoloCandidate = PoolResult & { title: string; stage: SoloStage }
+  const seen = new Set<string>()
+  const dedupe = (rows: (PoolResult & { stage: SoloStage })[]): SoloCandidate[] => {
+    const out: SoloCandidate[] = []
+    for (const r of rows) {
+      if (seen.has(r.url) || !passesMechanical(r)) continue
+      seen.add(r.url)
+      out.push(r as SoloCandidate)
     }
+    return out
   }
 
-  addToPool(search2.results, 0)
-  addToPool(search1.results, 1)
-  addToPool(search3.results, 2)
-
-  // S1/S2/S3's fixed wording ("artwork," "critical essay," an art-press-only domain
-  // list) systematically under-recalls a crossover artist whose real coverage lives in
-  // general culture/lifestyle press (music, fashion, etc.) — verified directly: Dazed
-  // and Vogue pieces about a musician-artist never appeared in any of S1-S3's candidates,
-  // even though a neutrally-worded query surfaces them immediately. Only runs when a real
-  // disambiguator was found, so standard single-domain visual artists are unaffected.
-  if (disambiguator) {
-    const search5 = await loggedExaSearch(exa, `${artistQuery} ${disambiguator} interview profile`, {
-      type: 'auto',
-      numResults: 5,
-      contents: { highlights: true },
-    }, { exhibitionId, functionName: 'S5' })
-    console.log(`Exa S5 [broader recall / ${artistQuery} ${disambiguator}]:`, (search5.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
-    addToPool(search5.results, 1)
+  let pool = dedupe([...s2, ...s1, ...s3])
+  const verified = new Map<string, VerifiedCandidate>()
+  const checkAndKeep = async (candidates: SoloCandidate[]): Promise<SoloCandidate[]> => {
+    if (candidates.length === 0) return []
+    const v = await verifyArtist(candidates)
+    for (const [url, verdict] of v ?? []) verified.set(url, verdict)
+    const kept = applyQualityGate(candidates, v)
+    console.log(`Substantially-about verification [${artist}${disambiguator ? `, described as ${disambiguator}` : ''}]: ${kept.length} of ${candidates.length} kept`)
+    return kept
   }
+  pool = await checkAndKeep(pool)
 
-  const isValidAndRelevant = (r: PoolResult): r is PoolResult & { title: string } =>
-    isValid(r) && isAboutArtist(r, artistQuery)
-
-  let valid = pool.filter(isValidAndRelevant)
-
-  if (valid.length < 2) {
-    const search4 = await loggedExaSearch(exa, `${artistQueryWithContext} art review profile`, {
-      type: 'auto',
-      numResults: 5,
-      startPublishedDate: '2023-01-01',
-      contents: { highlights: true },
-    }, { exhibitionId, functionName: 'S4' })
-    console.log(`Exa S4 [fallback]:`, (search4.results as unknown as PoolResult[]).map((r) => ({ title: r.title, url: r.url, date: r.publishedDate })))
-    addToPool(search4.results, 2)
-    valid = pool.filter(isValidAndRelevant)
+  // S4 — only once the show has been open 14 days. Otherwise the daily cron runs it.
+  let showReview: (PoolResult & { title: string })[] = []
+  const showReviewAttempt: ShowReviewAttempt = { ran: false, result: null }
+  if (exhibition.show_review_due) {
+    showReviewAttempt.ran = true
+    try {
+      const s4 = await searchShowReview(exa, showTitle, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId, { artists: exhibition.artists })
+      showReview = s4.rows
+      showReviewAttempt.result = showReviewResult(s4)
+    } catch (err) {
+      console.error(`S4 show review failed [${showTitle}]:`, err)
+      showReviewAttempt.result = 'error'
+    }
   } else {
-    console.log(`Exa S4 skipped (${valid.length} valid results after filtering)`)
+    console.log(`Exa S4 skipped [${showTitle}]: show review not due yet (14 days after opening)`)
   }
 
-  // Name-presence alone (isAboutArtist above) can't tell "genuinely about this artist"
-  // from "artist gets a passing mention in something bigger" — proven live: an Artforum
-  // events index page and a Frieze multi-artist roundup both legitimately contained an
-  // artist's name and passed that check, despite neither being about them specifically.
-  // Run one comprehension check against the artist's own bio (preferred) or the
-  // exhibition's press release to catch both that and same-named unrelated people —
-  // also classifies content type (interview/profile/review/news/other) in the same call.
-  let verifiedSolo: Map<string, VerifiedCandidate> | null = new Map()
-  if (valid.length > 0) {
-    const beforeCount = valid.length
-    verifiedSolo = await verifySubstantiallyAbout(`the artist "${artistQuery}"`, bios.get(artistQuery) ?? exhibition.press_release, valid)
-    valid = applyQualityGate(valid, verifiedSolo)
-    console.log(`Substantially-about verification [${artistQuery}]: ${valid.length} of ${beforeCount} candidates confirmed`)
+  // S5 — S1 and S2 both empty after the check, and a non-fine-art disambiguator.
+  const s1s2Kept = pool.filter((r) => r.stage === 'S1' || r.stage === 'S2').length
+  if (s1s2Kept === 0 && isNonFineArtDisambiguator(disambiguator)) {
+    const s5 = await search('S5', `${withContext} interview profile`, { includeDomains: exaFilterable(SOLO_CROSSOVER_DOMAINS) })
+    pool = [...pool, ...await checkAndKeep(dedupe(s5))]
+  } else {
+    console.log(`Exa S5 skipped [${artist}]: ${s1s2Kept > 0 ? `S1/S2 kept ${s1s2Kept}` : 'no non-fine-art disambiguator'}`)
   }
 
-  // Sort: tier → which search found it → content type → standalone-artist signal → recency
-  // Tier wins first: Artforum always beats a Tier 3 blog regardless of content type.
-  // contentPriority next: S2's critical-essay search is intentionally ranked above S1's
-  // general search, and that's still a real signal worth keeping. Content type (from the
-  // verification pass above) then breaks ties WITHIN the same priority tier — proven live:
-  // two same-priority Pitchfork pieces (an interview and an album review) were tied on
-  // everything above, and recency alone picked the review over the clearly-better-fit
-  // interview by 4 days. This only kicks in on that kind of tie, not as an override.
-  const SOLO_CONTENT_TYPE_RANK: Record<CandidateContentType, number> = {
+  // Sort: on the 22-domain list first → which search found it → content type →
+  // standalone-artist signal → recency.
+  const CONTENT_TYPE_RANK: Record<CandidateContentType, number> = {
     interview: 0, profile: 0, review: 1, news: 2, other: 2,
   }
-  valid.sort((a, b) => {
-    const tierDiff = getResultTier(a.url) - getResultTier(b.url)
-    if (tierDiff !== 0) return tierDiff
+  pool.sort((a, b) => {
+    const listDiff = (isOnDomainList(a.url, SOLO_PRESS_DOMAINS) ? 0 : 1) - (isOnDomainList(b.url, SOLO_PRESS_DOMAINS) ? 0 : 1)
+    if (listDiff !== 0) return listDiff
     if (a.contentPriority !== b.contentPriority) return a.contentPriority - b.contentPriority
-    const typeRankA = SOLO_CONTENT_TYPE_RANK[verifiedSolo?.get(a.url)?.contentType ?? 'other']
-    const typeRankB = SOLO_CONTENT_TYPE_RANK[verifiedSolo?.get(b.url)?.contentType ?? 'other']
-    if (typeRankA !== typeRankB) return typeRankA - typeRankB
-    const aStandalone = isStandaloneArticle(a.title, artistQuery) ? 0 : 1
-    const bStandalone = isStandaloneArticle(b.title, artistQuery) ? 0 : 1
+    const typeDiff = CONTENT_TYPE_RANK[verified.get(a.url)?.contentType ?? 'other'] - CONTENT_TYPE_RANK[verified.get(b.url)?.contentType ?? 'other']
+    if (typeDiff !== 0) return typeDiff
+    const aStandalone = isStandaloneArticle(a.title, artist) ? 0 : 1
+    const bStandalone = isStandaloneArticle(b.title, artist) ? 0 : 1
     if (aStandalone !== bStandalone) return aStandalone - bStandalone
     const dateA = a.publishedDate ? new Date(a.publishedDate).getTime() : 0
     const dateB = b.publishedDate ? new Date(b.publishedDate).getTime() : 0
     return dateB - dateA
   })
 
-  // Pick up to 3 results, one per registrable domain (avoids e.g. 3 Hyperallergic pieces)
+  // Up to 3 artist pieces, one per registrable domain (avoids e.g. 3 Hyperallergic
+  // pieces), plus the show review when S4 found one.
   const seenDomains = new Set<string>()
-  const top3: typeof valid = []
-  for (const r of valid) {
+  const top3: SoloCandidate[] = []
+  for (const r of pool) {
     const domain = registrableDomain(r.url)
-    if (!seenDomains.has(domain)) {
-      seenDomains.add(domain)
-      top3.push(r)
-      if (top3.length === 3) break
-    }
+    if (seenDomains.has(domain)) continue
+    seenDomains.add(domain)
+    top3.push(r)
+    if (top3.length === 3) break
   }
-  const prereads = top3.map(toPrereadRow)
+  const reviewRows = showReview.filter((r) => !top3.some((t) => t.url === r.url))
+  const prereads = [...reviewRows, ...top3].map(toPrereadRow)
 
   console.log(`Exa selected [${showTitle}]:`, prereads.map((p) => ({ title: p.article_title, pub: p.publication, url: p.article_url })))
 
-  return { prereads, hasShowCoverage: valid.some((r) => r.contentPriority === 0), blocked: null }
+  return { prereads, hasShowCoverage: showReview.length > 0, blocked: null, showReview: showReviewAttempt }
+}
+
+/**
+ * Gallery solo S4 on its own — what the daily show-review cron runs for a show whose
+ * 14 days are up. Same search, pre-filter and check as the inline S4. Throws if the
+ * venue blocklist can't be read.
+ */
+export async function searchSoloShowReview(ctx: PrereadRepairContext): Promise<{ rows: PrereadRow[]; result: ShowReviewResult }> {
+  const exa = new Exa(process.env.EXA_API_KEY!)
+  const galleryDomains = await buildGalleryBlocklist()
+  const isValid = (r: PoolResult): r is PoolResult & { title: string } =>
+    !!r.title?.trim() && !isBlockedUrl(r.url, galleryDomains)
+  const venueDomain = ctx.venue_url ? getResultDomain(ctx.venue_url) || null : null
+  const s4 = await searchShowReview(exa, ctx.show_title, ctx.venue_name, isValid, 1, 1, ctx.press_release, venueDomain, ctx.exhibition_id, { artists: ctx.artists })
+  return { rows: s4.rows.map(toPrereadRow), result: showReviewResult(s4) }
+}
+
+// Anything stored is 'found' — even if a later call failed. Nothing stored is an
+// error only if a search call never answered; a clean empty answer is 'empty'.
+function showReviewResult(s4: { rows: unknown[]; searchFailed: boolean }): ShowReviewResult {
+  if (s4.rows.length > 0) return 'found'
+  return s4.searchFailed ? 'error' : 'empty'
 }
 
 // ─── Single-row repair (Agent 2 retry, admin Replace) ─────────────────────────
@@ -1077,6 +1347,42 @@ export interface PrereadRepairContext {
   press_release: string | null
   venue_name: string
   venue_url: string | null
+  // Filled in on first use by artistIdentity, so a repair pass over several rows of
+  // one show extracts each artist's disambiguator once, not once per row.
+  identityCache?: Map<string, Promise<ArtistIdentity>>
+}
+
+interface ArtistIdentity {
+  disambiguator: string | null
+  bio: string | null
+}
+
+// The same disambiguator the generators use: from the artist's bio when there is one
+// (Haiku), else the press release (Sonnet). One call per artist per repair pass.
+function artistIdentity(ctx: PrereadRepairContext, name: string): Promise<ArtistIdentity> {
+  ctx.identityCache ??= new Map()
+  let pending = ctx.identityCache.get(name)
+  if (!pending) {
+    pending = (async () => {
+      const bios = await fetchArtistBios([name])
+      const context = await extractArtistSearchContext(ctx.press_release, [name], bios)
+      return { disambiguator: context.get(name)?.trim() || null, bio: bios.get(name) ?? null }
+    })()
+    ctx.identityCache.set(name, pending)
+  }
+  return pending
+}
+
+// Checks repair candidates against a row's subject: an artist exactly as the ladder
+// does (verifyArtistCandidates); a show against its press release, as before.
+async function verifyForSubject<T extends PoolResult & { title: string }>(
+  ctx: PrereadRepairContext,
+  subject: PrereadSubject,
+  candidates: T[]
+): Promise<Map<string, VerifiedCandidate> | null> {
+  if (subject.kind === 'show') return verifySubstantiallyAbout(subjectLabel(ctx, subject), ctx.press_release, candidates)
+  const { disambiguator, bio } = await artistIdentity(ctx, subject.name)
+  return verifyArtistCandidates(subject.name, disambiguator, bio, ctx.press_release, candidates)
 }
 
 /** What a row is about: one artist, or the show as a whole. */
@@ -1093,12 +1399,6 @@ export function prereadSubject(ctx: PrereadRepairContext, artistName: string | n
 
 function subjectLabel(ctx: PrereadRepairContext, subject: PrereadSubject): string {
   return subject.kind === 'artist' ? `the artist "${subject.name}"` : `the exhibition "${ctx.show_title}" at ${ctx.venue_name}`
-}
-
-async function subjectSourceText(ctx: PrereadRepairContext, subject: PrereadSubject): Promise<string | null> {
-  if (subject.kind === 'show') return ctx.press_release
-  const bios = await fetchArtistBios([subject.name])
-  return bios.get(subject.name) ?? ctx.press_release
 }
 
 function isSelfSourcedFor(url: string, ctx: PrereadRepairContext, subject: PrereadSubject): boolean {
@@ -1127,7 +1427,7 @@ export async function recheckPreread(
     highlights: row.summary ? [row.summary] : [],
     contentPriority: subject.kind === 'show' ? 0 : 1,
   }
-  const verified = await verifySubstantiallyAbout(subjectLabel(ctx, subject), await subjectSourceText(ctx, subject), [candidate])
+  const verified = await verifyForSubject(ctx, subject, [candidate])
   const gate = qualityGate(verified, candidate.url)
   if (gate === 'pass') return 'pass'
   if (gate === 'unverified') return 'unverified'
@@ -1183,7 +1483,7 @@ export async function findReplacementPreread(
   }
 
   const ranked = sortByTierAndRecency(candidates)
-  const verified = await verifySubstantiallyAbout(subjectLabel(ctx, subject), await subjectSourceText(ctx, subject), ranked)
+  const verified = await verifyForSubject(ctx, subject, ranked)
   if (!verified) return { ok: false, flag: 'unverified', query }
 
   const best = ranked.find((r) => qualityGate(verified, r.url) === 'pass')

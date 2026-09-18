@@ -31,7 +31,13 @@ import {
   recheckPreread,
   findReplacementPreread,
   prereadSubject,
+  searchSoloShowReview,
+  showReviewPendingUntil,
+  isShowReviewDue,
+  nextShowReviewStatus,
   type PrereadRepairContext,
+  type ShowReviewResult,
+  type ShowReviewStatus,
 } from './claude'
 import {
   generateMuseumCoverage,
@@ -69,7 +75,8 @@ export interface Agent2Outcome {
 // ─── Loading ──────────────────────────────────────────────────────────────────
 
 const EXHIBITION_SELECT = `
-  id, show_title, press_release, preread_status, missing_fields,
+  id, show_title, press_release, preread_status, missing_fields, start_date,
+  show_review_pending_until, show_review_attempted_at, show_review_status,
   venues!inner(name, exhibitions_url, institutions(name, type)),
   exhibition_artists(artists!inner(name))
 `
@@ -80,6 +87,9 @@ interface LoadedExhibition {
   status: PrereadStatus | null
   missingFields: string[]
   institutionName: string
+  startDate: string | null
+  /** migration_v55 — gallery solo S4 gate. */
+  showReview: { pendingUntil: string | null; attemptedAt: string | null; status: ShowReviewStatus | null }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,7 +112,18 @@ function toLoaded(raw: any): LoadedExhibition {
     status: (raw.preread_status ?? null) as PrereadStatus | null,
     missingFields: (raw.missing_fields ?? []) as string[],
     institutionName: raw.venues.institutions?.name ?? raw.venues.name,
+    startDate: raw.start_date ?? null,
+    showReview: {
+      pendingUntil: raw.show_review_pending_until ?? null,
+      attemptedAt: raw.show_review_attempted_at ?? null,
+      status: (raw.show_review_status ?? null) as ShowReviewStatus | null,
+    },
   }
+}
+
+/** Gallery-path solo shows are the only ones on the 14-day show-review gate (S4). */
+function isGallerySolo(ex: LoadedExhibition): boolean {
+  return ex.path === 'gallery' && ex.ctx.artists.length === 1
 }
 
 async function loadExhibition(exhibitionId: string): Promise<LoadedExhibition> {
@@ -195,10 +216,12 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
   const have = await existingUrls(id)
 
   if (ex.path === 'gallery') {
-    const { prereads, hasShowCoverage, blocked } = await generatePrereads({
+    const solo = isGallerySolo(ex)
+    const pendingUntil = solo ? (ex.showReview.pendingUntil ?? showReviewPendingUntil(ex.startDate)) : null
+    const { prereads, hasShowCoverage, blocked, showReview } = await generatePrereads({
       show_title: ex.ctx.show_title,
       artists: ex.ctx.artists,
-      start_date: null,
+      start_date: ex.startDate,
       end_date: null,
       description: null,
       press_release: ex.ctx.press_release,
@@ -206,6 +229,7 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       venue_name: ex.ctx.venue_name,
       venue_url: ex.ctx.venue_url,
       exhibition_id: id,
+      show_review_due: solo && isShowReviewDue(pendingUntil, ex.showReview.attemptedAt, ex.showReview.status),
     })
     if (blocked) return blocked
     const fresh = prereads.filter((p) => !p.article_url || !have.has(p.article_url))
@@ -213,9 +237,21 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: id })))
       if (error) throw new Error(`Failed to insert prereads: ${error.message}`)
     }
-    // Carried over unchanged from Agent 1's old inline block: a gallery show with no
-    // show-level review gets 'show_coverage' in missing_fields.
-    if (!hasShowCoverage && !ex.missingFields.includes('show_coverage')) {
+    if (solo) {
+      const { error } = await db.from('exhibitions').update({
+        show_review_pending_until: pendingUntil,
+        ...(showReview?.ran && showReview.result ? {
+          show_review_attempted_at: new Date().toISOString(),
+          show_review_status: nextShowReviewStatus(ex.showReview.status, showReview.result),
+        } : {}),
+      }).eq('id', id)
+      if (error) throw new Error(`Failed to record show-review gate: ${error.message}`)
+    }
+    // Carried over from Agent 1's old inline block: a gallery show with no show-level
+    // review gets 'show_coverage' in missing_fields. A solo show whose S4 hasn't run
+    // yet isn't missing it — it's waiting for it.
+    const showReviewPending = solo && !showReview?.ran
+    if (!hasShowCoverage && !showReviewPending && !ex.missingFields.includes('show_coverage')) {
       await db.from('exhibitions').update({ missing_fields: [...ex.missingFields, 'show_coverage'] }).eq('id', id)
     }
     return fresh.length
@@ -558,6 +594,115 @@ export async function runAgent2AcrossExhibitions(
       outcomes.push(await runAgent2ForExhibition(id, { mode: 'auto', errors }))
     } catch (err) {
       errors.push({ item: id, step: 'agent2', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  return { eligible: ids.length, outcomes, deferred: ids.length - attempted }
+}
+
+// ─── Gallery solo S4: the daily show-review cron ──────────────────────────────
+
+export interface ShowReviewOutcome {
+  exhibitionId: string
+  showTitle: string
+  status: ShowReviewStatus | 'skipped'
+  rowsAdded: number
+  message: string
+}
+
+/**
+ * Runs S4 (show review) for one gallery solo show whose 14 days are up. Stores what
+ * it finds alongside the show's existing rows, records the attempt, and recomputes
+ * preread_status (a stored row may be flagged 'unverified'). Never throws for a
+ * search failure — that climbs show_review_status error1 → error2 → error3; the
+ * first two are retried by the next run, error3 never is. A clean empty result is
+ * 'empty' and is never retried.
+ */
+export async function runSoloShowReview(exhibitionId: string, errors: AgentRunError[] = []): Promise<ShowReviewOutcome> {
+  const db = getSupabaseAdmin()
+  const ex = await loadExhibition(exhibitionId)
+  const base = { exhibitionId, showTitle: ex.ctx.show_title, rowsAdded: 0 }
+
+  if (!isGallerySolo(ex)) return { ...base, status: 'skipped', message: 'Not a gallery solo show.' }
+  if (!isShowReviewDue(ex.showReview.pendingUntil, ex.showReview.attemptedAt, ex.showReview.status)) {
+    return { ...base, status: 'skipped', message: `Not due (pending until ${ex.showReview.pendingUntil ?? 'unset'}).` }
+  }
+  // The same block Agent 2 applies: the check is grounded in the press release.
+  const block = blockingStatus(ex)
+  if (block) return { ...base, status: 'skipped', message: `Blocked (${block}).` }
+
+  let result: ShowReviewResult
+  let rowsAdded = 0
+  try {
+    const have = await existingUrls(exhibitionId)
+    const s4 = await searchSoloShowReview(ex.ctx)
+    const fresh = s4.rows.filter((p) => !p.article_url || !have.has(p.article_url))
+    if (fresh.length > 0) {
+      const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: exhibitionId })))
+      if (error) throw new Error(`Failed to insert show review: ${error.message}`)
+    }
+    rowsAdded = fresh.length
+    // A review the show already has (same URL) still counts as found.
+    result = s4.result
+    if (result === 'error') errors.push({ item: ex.ctx.show_title, step: 'show_review', message: 'An Exa search call failed' })
+  } catch (err) {
+    result = 'error'
+    errors.push({ item: ex.ctx.show_title, step: 'show_review', message: err instanceof Error ? err.message : String(err) })
+  }
+  const status = nextShowReviewStatus(ex.showReview.status, result)
+
+  const missing = status === 'found'
+    ? ex.missingFields.filter((f) => f !== 'show_coverage')
+    : status === 'empty' && !ex.missingFields.includes('show_coverage') ? [...ex.missingFields, 'show_coverage'] : ex.missingFields
+  const { error } = await db.from('exhibitions').update({
+    show_review_attempted_at: new Date().toISOString(),
+    show_review_status: status,
+    missing_fields: missing,
+  }).eq('id', exhibitionId)
+  if (error) throw new Error(`Failed to record show-review attempt: ${error.message}`)
+
+  // Only a show that already ran keeps a derived status; a never-attempted or blocked
+  // show's status belongs to the main Agent 2 run.
+  if (rowsAdded > 0 && ex.status !== null && ex.status !== 'error') await recomputePrereadStatus(exhibitionId)
+
+  const message = status === 'found' ? `Added ${rowsAdded} show review.`
+    : status === 'empty' ? 'Searched; no review passed. Not retried.'
+      : status === 'error3' ? 'Search failed a third time; no more automatic retries.'
+        : `Search failed (${status}); will retry next run.`
+  return { ...base, status, rowsAdded, message }
+}
+
+/**
+ * Every published gallery solo show whose S4 is due. Shows Agent 2 hasn't run yet
+ * (preread_status NULL / error) are left to it — its own run does S4 inline once due.
+ * Stops starting new shows once `budgetMs` has elapsed.
+ */
+export async function runShowReviewsDue(
+  errors: AgentRunError[],
+  budgetMs: number
+): Promise<{ eligible: number; outcomes: ShowReviewOutcome[]; deferred: number }> {
+  const started = Date.now()
+  const today = new Date().toISOString().slice(0, 10)
+  const { data, error } = await getSupabaseAdmin()
+    .from('exhibitions')
+    .select('id')
+    .eq('status', 'published')
+    .lte('show_review_pending_until', today)
+    .or('show_review_attempted_at.is.null,show_review_status.in.(error1,error2)')
+    .or(`end_date.is.null,end_date.gte.${today}`)
+    .in('preread_status', ['success', 'needs_review', 'empty'])
+    .order('show_review_pending_until', { ascending: true })
+  if (error) throw new Error(error.message)
+
+  const ids = (data ?? []).map((r) => r.id as string)
+  const outcomes: ShowReviewOutcome[] = []
+  let attempted = 0
+  for (const id of ids) {
+    if (Date.now() - started > budgetMs) break
+    attempted++
+    try {
+      outcomes.push(await runSoloShowReview(id, errors))
+    } catch (err) {
+      errors.push({ item: id, step: 'show_review', message: err instanceof Error ? err.message : String(err) })
     }
   }
   return { eligible: ids.length, outcomes, deferred: ids.length - attempted }

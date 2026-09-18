@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { generatePrereads } from '@/lib/claude'
+import { generatePrereads, isShowReviewDue, showReviewPendingUntil } from '@/lib/claude'
 import type { ExhibitionRaw } from '@/lib/types'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
       .map((r: { artists: { name: string } | null }) => r.artists?.name)
       .filter(Boolean) as string[]
 
-    const raw: ExhibitionRaw & { venue_name: string; venue_url: string; exhibition_id: string } = {
+    const raw: ExhibitionRaw & { venue_name: string; venue_url: string; exhibition_id: string; show_review_due: boolean } = {
       show_title: ex.show_title,
       artists,
       start_date: ex.start_date,
@@ -55,6 +55,8 @@ export async function POST(request: NextRequest) {
       venue_name: venueRaw.name,
       venue_url: venueRaw.exhibitions_url,
       exhibition_id: ex.id,
+      // A dev rerun: S4 runs if the show has been open 14 days, whatever the cron did.
+      show_review_due: artists.length === 1 && isShowReviewDue(showReviewPendingUntil(ex.start_date), null, null),
     }
 
     // Generate before deleting: a blocked show keeps the rows it already has.

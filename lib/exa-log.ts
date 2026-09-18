@@ -34,6 +34,10 @@ export interface LoggedExaSearchContext {
 // call site itself.
 export interface LoggedExaSearchResult {
   results: unknown[]
+  // Set only when the search call itself failed. Lets a caller tell "searched,
+  // found nothing" from "never got an answer" — the show-review retry cap
+  // (lib/agent2.ts) treats only the second as an error.
+  error?: string
 }
 
 // Logging must never break search functionality — this is the one function in
@@ -98,6 +102,6 @@ export async function loggedExaSearch(
       requestId: null,
       error: message,
     })
-    return { results: [] }
+    return { results: [], error: message }
   }
 }
