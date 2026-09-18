@@ -187,14 +187,15 @@ async function existingUrls(exhibitionId: string): Promise<Set<string>> {
 // Runs the generator for the show's path and inserts what it found. Rows already
 // stored for the show (an admin's manual additions, or a partial earlier run) are
 // kept and never duplicated. Throws on generator or insert failure; the caller turns
-// that into preread_status = 'error'.
-async function generate(ex: LoadedExhibition): Promise<number> {
+// that into preread_status = 'error'. Returns the generator's block instead of a
+// count when it refused to search (blockingStatus should have caught it first).
+async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists'> {
   const db = getSupabaseAdmin()
   const id = ex.ctx.exhibition_id
   const have = await existingUrls(id)
 
   if (ex.path === 'gallery') {
-    const { prereads, hasShowCoverage } = await generatePrereads({
+    const { prereads, hasShowCoverage, blocked } = await generatePrereads({
       show_title: ex.ctx.show_title,
       artists: ex.ctx.artists,
       start_date: null,
@@ -206,6 +207,7 @@ async function generate(ex: LoadedExhibition): Promise<number> {
       venue_url: ex.ctx.venue_url,
       exhibition_id: id,
     })
+    if (blocked) return blocked
     const fresh = prereads.filter((p) => !p.article_url || !have.has(p.article_url))
     if (fresh.length > 0) {
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: id })))
@@ -414,6 +416,10 @@ export async function runAgent2ForExhibition(
   // NULL, error, or (retrigger only) pending_* / empty — run the generator.
   try {
     const added = await generate(ex)
+    if (added === 'pending_artists') {
+      await setStatus(exhibitionId, added)
+      return { ...base, action: 'blocked', statusAfter: added, message: 'Blocked — this show has no artists. Add them, then Retrigger.' }
+    }
     const statusAfter = await recomputePrereadStatus(exhibitionId)
     const message = statusAfter === 'empty' ? 'Ran and found nothing.'
       : statusAfter === 'needs_review' ? `Added ${added} row(s); at least one is flagged and hidden.`

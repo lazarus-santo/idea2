@@ -57,8 +57,15 @@ export async function POST(request: NextRequest) {
       exhibition_id: ex.id,
     }
 
+    // Generate before deleting: a blocked show keeps the rows it already has.
+    const { prereads, hasShowCoverage, blocked } = await generatePrereads(raw)
+    if (blocked) {
+      await db.from('exhibitions').update({ preread_status: blocked }).eq('id', ex.id)
+      results.push({ show_title: ex.show_title, venue: venueRaw.name, blocked, prereads_generated: 0 })
+      continue
+    }
+
     await db.from('prereads').delete().eq('exhibition_id', ex.id)
-    const { prereads, hasShowCoverage } = await generatePrereads(raw)
 
     if (prereads.length > 0) {
       await db.from('prereads').insert(prereads.map((p) => ({ ...p, exhibition_id: ex.id })))

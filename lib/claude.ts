@@ -491,6 +491,9 @@ type PrereadRow = Omit<Preread, 'id' | 'exhibition_id' | 'created_at'>
 export interface GeneratePrereadsResult {
   prereads: PrereadRow[]
   hasShowCoverage: boolean
+  // Set when the show can't be searched at all. Nothing ran; the caller records the
+  // status on the exhibition and stops — it must not treat this as an empty result.
+  blocked: 'pending_artists' | null
 }
 
 // contentPriority: 0 = show review (S2), 1 = artist profile/interview (S1), 2 = general press (S3/S4)
@@ -541,8 +544,11 @@ function toPrereadRow(r: PoolResult & { title: string; artistName?: string | nul
 
 type GalleryShowType = 'solo' | 'small_group' | 'large_group'
 
-function classifyGalleryShow(artistCount: number): GalleryShowType {
-  if (artistCount <= 1) return 'solo'
+// null = no artists: there is no one to search for. This used to fall through to
+// 'solo', which ran the solo ladder on an empty name.
+function classifyGalleryShow(artistCount: number): GalleryShowType | null {
+  if (artistCount === 0) return null
+  if (artistCount === 1) return 'solo'
   if (artistCount <= 5) return 'small_group'
   return 'large_group'
 }
@@ -827,7 +833,7 @@ async function generateSmallGroupPrereads(
   }
 
   console.log(`Exa selected [Small Group / ${exhibition.show_title}]:`, combined.map((r) => ({ title: r.title, url: r.url })))
-  return { prereads: combined.map(toPrereadRow), hasShowCoverage: showReview.length > 0 }
+  return { prereads: combined.map(toPrereadRow), hasShowCoverage: showReview.length > 0, blocked: null }
 }
 
 // ─── Large Group (6+ artists) ───────────────────────────────────────────────
@@ -865,7 +871,7 @@ async function generateLargeGroupPrereads(
   }
 
   console.log(`Exa selected [Large Group / ${exhibition.show_title}]:`, rows.map((r) => ({ title: r.title, url: r.url })))
-  return { prereads: rows.slice(0, 5).map(toPrereadRow), hasShowCoverage: showReview.length > 0 }
+  return { prereads: rows.slice(0, 5).map(toPrereadRow), hasShowCoverage: showReview.length > 0, blocked: null }
 }
 
 export async function generatePrereads(
@@ -874,6 +880,9 @@ export async function generatePrereads(
   const exa = new Exa(process.env.EXA_API_KEY!)
   const showTitle = exhibition.show_title
   const showType = classifyGalleryShow(exhibition.artists.length)
+  // Checked before anything that costs money — the blocklist, bio and disambiguator
+  // calls below all run for every show that gets past here.
+  if (showType === null) return { prereads: [], hasShowCoverage: false, blocked: 'pending_artists' }
   const exhibitionId = exhibition.exhibition_id ?? null
 
   // This exhibition's own venue domain — computed once, threaded down to
@@ -1048,7 +1057,7 @@ export async function generatePrereads(
 
   console.log(`Exa selected [${showTitle}]:`, prereads.map((p) => ({ title: p.article_title, pub: p.publication, url: p.article_url })))
 
-  return { prereads, hasShowCoverage: valid.some((r) => r.contentPriority === 0) }
+  return { prereads, hasShowCoverage: valid.some((r) => r.contentPriority === 0), blocked: null }
 }
 
 // ─── Single-row repair (Agent 2 retry, admin Replace) ─────────────────────────
