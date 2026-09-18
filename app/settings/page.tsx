@@ -1,7 +1,9 @@
 import Link from 'next/link'
 import { getCurrentUser, requireOnboardedProfile } from '@/lib/auth'
 import { profilePath } from '@/lib/profile'
+import { getBlockedProfiles, getMutedProfiles } from '@/lib/relationships'
 import SettingsForm from '@/components/account/SettingsForm'
+import RelationshipLists from '@/components/account/RelationshipLists'
 import '@/app/account.css'
 
 export const metadata = {
@@ -15,6 +17,15 @@ export default async function SettingsPage() {
   const profile = await requireOnboardedProfile()
   const user = await getCurrentUser()
 
+  // Settings is where an unblock has to live: blocking removes the profile
+  // page you would otherwise undo it from. Both functions answer only about
+  // their caller and take no id, so there is no version of this page that can
+  // be pointed at somebody else's lists.
+  const [blocked, muted] = await Promise.all([
+    getBlockedProfiles(),
+    getMutedProfiles(),
+  ])
+
   return (
     <div className="ac-page">
       <div className="ac-shell">
@@ -24,7 +35,9 @@ export default async function SettingsPage() {
           <Link href={profilePath(profile.username!)}>View your profile</Link>
         </p>
 
-        <SettingsForm profile={profile} email={user?.email ?? null} />
+        <SettingsForm profile={profile} email={user?.email ?? null}>
+          <RelationshipLists blocked={blocked} muted={muted} />
+        </SettingsForm>
       </div>
     </div>
   )

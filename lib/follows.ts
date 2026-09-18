@@ -1,6 +1,5 @@
 import 'server-only'
 
-import { getSupabase } from '@/lib/supabase'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import type { ProfilePrivacy } from '@/lib/profile'
 
@@ -50,17 +49,23 @@ export interface PendingRequest {
 /**
  * Approved followers and approved follows, for any profile.
  *
- * Read as plain `anon` — the counts are public for every profile, private ones
- * included, so a session would not change the answer. A pending request is
- * never counted: a number that ticks up the moment somebody asks would
- * announce that they asked.
+ * Counts are public for every profile, private ones included — a pending
+ * request is never among them, because a number that ticks up the moment
+ * somebody asks would announce that they asked.
+ *
+ * READ THROUGH THE VISITOR'S SESSION, which it did not need to be before
+ * migration_v48. Counts used to be the same for everybody, so this went out as
+ * plain `anon`; a block made them not the same — follow_counts() now returns
+ * zeroes across a block, matching the profile page that 404s for that visitor.
+ * Sent without a session, auth.uid() is NULL and no block is ever found.
  *
  * Never throws. Counts failing should cost a profile page its two numbers, not
  * the whole page.
  */
 export async function getFollowCounts(profileId: string): Promise<FollowCounts> {
   try {
-    const { data, error } = await getSupabase()
+    const supabase = await getSupabaseServer()
+    const { data, error } = await supabase
       .rpc('follow_counts', { profile_id: profileId })
       .maybeSingle<FollowCounts>()
 

@@ -29,9 +29,21 @@ import { friendlyError } from '@/components/account/OnboardingForm'
 export default function SettingsForm({
   profile,
   email,
+  children,
 }: {
   profile: Profile
   email: string | null
+  /**
+   * Sections that belong to Settings but are not part of the profile form —
+   * the blocked and muted lists.
+   *
+   * A slot rather than an import, because they are server-rendered and this is
+   * a client component. It sits here, BETWEEN the profile form and Account,
+   * on purpose: those lists are ordinary management, and putting them after
+   * "Delete account" meant scrolling past the one irreversible button on the
+   * page to reach them. The danger zone goes last.
+   */
+  children?: React.ReactNode
 }) {
   const [username, setUsername] = useState(profile.username ?? '')
   const [displayName, setDisplayName] = useState(profile.display_name ?? '')
@@ -187,6 +199,8 @@ export default function SettingsForm({
           {busy ? 'Saving…' : 'Save changes'}
         </button>
       </form>
+
+      {children}
 
       <section className="ac-section">
         <h2 className="ac-section-title">Account</h2>

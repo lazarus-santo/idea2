@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
+import { follow as followWrite, unfollow as unfollowWrite } from '@/lib/follow-writes'
 import type { FollowRelationship } from '@/lib/follows'
 
 /**
@@ -80,29 +81,23 @@ export default function FollowButton({
 
   const supabase = () => getSupabaseBrowser()
 
+  // Both statements live in lib/follow-writes.ts, shared with the row button in
+  // the follower and following lists. They are one-liners each, and the reason
+  // they are not written out here is that unfollow and remove-follower differ
+  // only in which column holds whose id — a copy per component is a copy that
+  // can drift into deleting the wrong direction.
   const follow = () =>
     run(async () => {
       const { data: auth } = await supabase().auth.getUser()
       if (!auth.user) return { error: { message: 'Sign in to follow people.' } }
-
-      // status is omitted on purpose — see the note at the top.
-      return supabase()
-        .from('follows')
-        .insert({ follower_id: auth.user.id, followed_id: targetId })
+      return followWrite(supabase(), auth.user.id, targetId)
     })
 
-  // One statement covers unfollowing and cancelling a request: the row goes,
-  // whatever state it was in. RLS narrows the match to this person's own edge.
   const unfollow = () =>
     run(async () => {
       const { data: auth } = await supabase().auth.getUser()
       if (!auth.user) return { error: { message: 'Sign in to follow people.' } }
-
-      return supabase()
-        .from('follows')
-        .delete()
-        .eq('follower_id', auth.user.id)
-        .eq('followed_id', targetId)
+      return unfollowWrite(supabase(), auth.user.id, targetId)
     })
 
   const label =

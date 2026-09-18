@@ -1,4 +1,6 @@
-import { getSupabase } from '@/lib/supabase'
+import 'server-only'
+
+import { getSupabaseServer } from '@/lib/supabase-server'
 import { profileDisplayName, type ProfileCard } from '@/lib/profile'
 
 /**
@@ -32,10 +34,17 @@ import { profileDisplayName, type ProfileCard } from '@/lib/profile'
  * refuses anything under two characters and caps its own result, so there is no
  * single request that returns the user list.
  *
- * Still queried as `anon` with no session (getSupabase(), never the visitor's
- * cookies and never the service role). The function returns the same rows to
- * everyone, so a session would change nothing — but reaching for one would
- * invite the service role in later, and that WOULD change something.
+ * BLOCKS ARE THE SECOND GATE, added in v48, and they are the reason this now
+ * runs through the visitor's own session instead of the shared anon client.
+ * Until then the function returned the same rows to everybody, so a session
+ * would have changed nothing. A block is about one named person, so the
+ * function has to know who is asking: it drops any account on the other side of
+ * a block in EITHER direction — the person who blocked you and the person you
+ * blocked both disappear from your results. Called without a session, auth.uid()
+ * is NULL, nothing matches, and every block silently stops applying to search.
+ *
+ * Still never the service role. That would bypass the policies underneath
+ * along with the point of asking.
  */
 
 export interface UserResult {
@@ -80,7 +89,8 @@ export async function searchPeople(rawQuery: string, limit: number): Promise<Use
     // used to need a query each — a single PostgREST .or() string breaks on
     // user input containing a comma or a parenthesis — but inside the function
     // it is an ordinary OR, and the wildcard escaping happens there too.
-    const { data, error } = await getSupabase()
+    const supabase = await getSupabaseServer()
+    const { data, error } = await supabase
       .rpc('search_profile_cards', { q, max_rows: FETCH_LIMIT })
 
     if (error) {

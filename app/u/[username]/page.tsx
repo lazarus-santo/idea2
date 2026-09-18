@@ -1,6 +1,5 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { getSupabase } from '@/lib/supabase'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { getCurrentUser } from '@/lib/auth'
 import {
@@ -8,6 +7,7 @@ import {
   getFollowRelationship,
   getPendingRequests,
 } from '@/lib/follows'
+import { isMuted } from '@/lib/relationships'
 import {
   PROFILE_COLUMNS,
   normalizePrivacy,
@@ -19,6 +19,7 @@ import {
 import FollowButton from '@/components/account/FollowButton'
 import FollowCounts from '@/components/account/FollowCounts'
 import FollowRequests from '@/components/account/FollowRequests'
+import RelationshipMenu from '@/components/account/RelationshipMenu'
 import '@/app/account.css'
 
 interface Props {
@@ -56,16 +57,27 @@ interface ProfileView {
  * view was GRANTed, so PostgREST let anyone page through the whole of it in one
  * request; a function answers one handle at a time.
  *
- * A username nobody has claimed still 404s, because it has no card.
+ * BOTH READS NOW GO THROUGH THE VISITOR'S SESSION. The card used to be fetched
+ * as plain `anon` because the function returned the same row to everybody.
+ * migration_v48 ended that: it withholds a profile from anyone on the other
+ * side of a block, which it can only do by reading auth.uid(). Fetched without
+ * a session that is NULL, no block ever matches, and the gate is silently off
+ * for every visitor.
+ *
+ * A username nobody has claimed 404s because it has no card. A BLOCKED profile
+ * 404s through the same path, and that is deliberate: privacy shows a locked
+ * state because there is something the visitor can do about it, and a block
+ * shows nothing at all because there is not — a page saying "you are blocked"
+ * would be the announcement this feature exists to avoid.
  */
 async function loadProfile(username: string): Promise<ProfileView | null> {
   const handle = normalizeUsername(username)
 
   const supabase = await getSupabaseServer()
   const [cardRes, profileRes] = await Promise.all([
-    // The function returns the same row to everyone, so this one is read as
-    // plain `anon` rather than through the visitor's session.
-    getSupabase().rpc('profile_card', { handle }),
+    // Through the visitor's session, not the shared anon client: since
+    // migration_v48 this function's answer depends on who is asking.
+    supabase.rpc('profile_card', { handle }),
     supabase
       .from('profiles')
       .select(PROFILE_COLUMNS)
@@ -73,10 +85,11 @@ async function loadProfile(username: string): Promise<ProfileView | null> {
       .maybeSingle(),
   ])
 
-  // A locked profile and an unclaimed username both arrive as no row from the
-  // TABLE, which is why the card is what decides whether the page exists. A
-  // FAILURE must not look like either: without these lines, a dropped view or
-  // a broken policy reads as "no such person" and nobody finds out.
+  // A locked profile, a blocked one and an unclaimed username all arrive as no
+  // row from the TABLE, which is why the card is what decides whether the page
+  // exists. A FAILURE must not look like any of them: without these lines, a
+  // dropped function or a broken policy reads as "no such person" and nobody
+  // finds out.
   if (cardRes.error) {
     console.error('[profile] card lookup failed for', username, cardRes.error.message)
     return null
@@ -129,10 +142,16 @@ export default async function ProfilePage({ params }: Props) {
 
   // The approval queue is only ever fetched for your own profile, and the
   // function behind it answers only about whoever is calling it.
-  const [counts, relationship, requests] = await Promise.all([
+  //
+  // The mute state is read here rather than in the menu because it decides a
+  // word — Mute or Unmute — and a client fetch for one boolean would show the
+  // wrong one first. There is no matching block read: a blocked profile never
+  // reaches this line, having 404'd above.
+  const [counts, relationship, requests, muted] = await Promise.all([
     getFollowCounts(card.id),
     getFollowRelationship(viewer?.id ?? null, card.id),
     isOwnProfile ? getPendingRequests() : Promise.resolve([]),
+    isMuted(viewer?.id ?? null, card.id),
   ])
 
   return (
@@ -154,7 +173,13 @@ export default async function ProfilePage({ params }: Props) {
             <p className="ac-profile-handle">@{card.username}</p>
             {/* Counts sit above the fold on every profile, locked or not. The
                 lists behind them open only when this visitor got the contents. */}
-            <FollowCounts profileId={card.id} counts={counts} listsOpen={!locked} />
+            <FollowCounts
+              profileId={card.id}
+              counts={counts}
+              listsOpen={!locked}
+              viewerId={viewer?.id ?? null}
+              isOwnProfile={isOwnProfile}
+            />
           </div>
 
           <div className="ac-profile-action">
@@ -163,6 +188,20 @@ export default async function ProfilePage({ params }: Props) {
               targetUsername={card.username}
               relationship={relationship}
             />
+            {/* Mute and block sit behind the "···" rather than beside Follow,
+                because neither is an everyday action and one of them is
+                irreversible from this page — blocking makes the page 404, so
+                the undo lives in Settings. Signed-out visitors get nothing:
+                both are decisions only an account can make. Your own profile
+                gets nothing either; the database refuses self-mutes and
+                self-blocks with a CHECK. */}
+            {viewer && !isOwnProfile && (
+              <RelationshipMenu
+                targetId={card.id}
+                targetUsername={card.username}
+                muted={muted}
+              />
+            )}
           </div>
         </div>
 

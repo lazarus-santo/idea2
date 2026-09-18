@@ -479,7 +479,20 @@
 /* The head becomes avatar | name+counts | button. ac-profile-id takes the
    slack so the button stays pinned right at every width. */
 .ac-profile-id { flex: 1 1 auto; min-width: 0; }
-.ac-profile-action { flex: 0 0 auto; }
+/*
+ * Holds the follow button and the "···" menu side by side. The button arrives
+ * either wrapped in .ac-follow (signed in, a <button> plus its error line) or
+ * bare as an .ac-btn link (signed out), so both spellings are named wherever
+ * this cell has something to say about its children.
+ */
+.ac-profile-action {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ac-profile-action > * { flex: 0 0 auto; }
 
 .ac-counts {
   display: flex;
@@ -611,6 +624,114 @@
   color: var(--ac-ink-soft);
 }
 
+/* ── The "···" relationship menu: mute, block, unfollow, remove ── */
+
+.ac-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.ac-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ac-ink);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.ac-menu-trigger:hover:not(:disabled) { background: rgba(0, 0, 0, 0.05); }
+.ac-menu-trigger:disabled { opacity: 0.4; cursor: default; }
+
+/*
+ * FIXED, not absolute, and positioned from JavaScript against the trigger's
+ * rect — see the note in RelationshipMenu.tsx. One of the two places this menu
+ * opens is the followers sheet, which scrolls its own contents, and an
+ * absolutely-positioned panel would be clipped by it on the bottom rows.
+ *
+ * Right-aligned because the trigger is the last thing on its row, on a profile
+ * head and on a person row alike, so a panel opening leftwards stays inside
+ * the page instead of pushing it sideways.
+ *
+ * Above the sheet (z-index 100) and its backdrop.
+ */
+.ac-menu-panel {
+  position: fixed;
+  z-index: 200;
+  width: 260px;
+  padding: 6px;
+  box-sizing: border-box;
+  background: #FFFCEC;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  text-align: left;
+}
+
+.ac-menu-item {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--ac-ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ac-menu-item:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
+.ac-menu-item:disabled { opacity: 0.4; cursor: default; }
+.ac-menu-item--danger { color: #b3261e; }
+
+/* The one-line explanation under Mute. Present because "mute" and "block"
+   are the two words people most often assume mean each other's behaviour. */
+.ac-menu-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--ac-ink-soft);
+}
+
+.ac-menu-confirm { padding: 4px 6px 6px; }
+
+.ac-menu-confirm-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ac-menu-confirm-note {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--ac-ink-soft);
+}
+
+.ac-menu-confirm-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ac-menu-error {
+  margin: 6px 4px 2px;
+  font-size: 12.5px;
+}
+
 @media (max-width: 600px) {
   .ac-page { padding: 24px 16px 64px; }
   .ac-back { margin-bottom: 28px; }
@@ -620,5 +741,13 @@
      name rather than squeezing it. */
   .ac-profile-head { flex-wrap: wrap; }
   .ac-profile-action { width: 100%; }
+
+  /* Follow takes the width it can get; the menu stays a circle beside it. */
+  .ac-profile-action > .ac-follow,
+  .ac-profile-action > .ac-btn { flex: 1 1 auto; }
   .ac-profile-action .ac-btn { width: 100%; text-align: center; }
+
+  /* Narrower than the phone gutters allow at 260px inside a 16px-padded
+     sheet. */
+  .ac-menu-panel { width: 232px; }
 }
