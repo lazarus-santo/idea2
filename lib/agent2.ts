@@ -385,7 +385,7 @@ export async function runAgent2ForExhibition(
     const block = blockingStatus(ex)
     if (block) {
       await setStatus(exhibitionId, block)
-      const what = block === 'pending_artists' ? 'artists' : 'a press release'
+      const what = block === 'pending_artists' ? 'artists' : 'press release'
       return { ...base, action: 'blocked', statusAfter: block, message: `Blocked — this show has no ${what}. Add it, then Retrigger.` }
     }
   }
