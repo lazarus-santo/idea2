@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
 import { follow, unfollow } from '@/lib/follow-writes'
 import type { FollowStatus } from '@/lib/follows'
@@ -9,11 +8,11 @@ import type { FollowStatus } from '@/lib/follows'
 /**
  * Where the viewer stands with one person in a list.
  *
- * 'signed-out' is a state rather than a reason to render nothing, mirroring
- * FollowRelationship on the profile page. A visitor with no account still sees
- * an invitation; it just leads through sign-in first.
+ * There is no signed-out case. A visitor with no account cannot open a
+ * follower or following list at all since v51 — the sheet is never rendered
+ * for them, so no row inside it is either.
  */
-export type RowFollowState = FollowStatus | 'none' | 'signed-out'
+export type RowFollowState = FollowStatus | 'none'
 
 /**
  * Follow, unfollow, or withdraw a request — from a row in a list.
@@ -41,21 +40,15 @@ export type RowFollowState = FollowStatus | 'none' | 'signed-out'
  * the status from the target's privacy and the client cannot name the column.
  * See lib/follow-writes.ts.
  *
- * SIGNED OUT, IT IS A LINK TO SIGN IN. The database would refuse the write
- * either way, so this is not what protects anything — it is that a visitor
- * reading somebody's followers had no route onwards at all, while the very same
- * person on their own profile page got a Follow button leading to sign-in. Two
- * spellings of one control is the kind of gap nobody decides on; it just
- * happens. The link points at the TARGET's profile rather than back at the list,
- * because after signing in the thing they wanted was to follow that person, and
- * their profile is where the button is.
+ * SIGNED-OUT VISITORS NEVER REACH THIS. The sign-in prompt for them lives on
+ * the counts in FollowCounts, one level up, because since v51 they cannot open
+ * the list at all — there is no row to put a button on.
  */
 export default function FollowToggle({
   targetId,
   targetUsername,
   state,
   onChanged,
-  onNavigate,
 }: {
   targetId: string
   targetUsername: string
@@ -67,31 +60,9 @@ export default function FollowToggle({
    * reason to be there.
    */
   onChanged: (next: RowFollowState) => void
-  /**
-   * Called when the signed-out link is followed, so the list can close itself
-   * on the way out. The sheet locks body scrolling while it is open and its
-   * effect cleanup would restore that on unmount anyway — this is so the
-   * modal does not sit over the page during the navigation.
-   */
-  onNavigate?: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  // Signed out: the database would refuse the insert, so ask them to sign in
-  // first and land them on the profile of the person they were reaching for.
-  if (state === 'signed-out') {
-    return (
-      <Link
-        className="ac-btn ac-btn--inline ac-btn--small"
-        href={`/login?next=${encodeURIComponent(`/u/${targetUsername}`)}`}
-        onClick={onNavigate}
-        aria-label={`Sign in to follow @${targetUsername}`}
-      >
-        Follow
-      </Link>
-    )
-  }
 
   async function act() {
     setBusy(true)

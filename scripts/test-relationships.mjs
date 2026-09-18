@@ -373,6 +373,84 @@ async function main() {
       .insert({ blocker_id: A.id, blocked_id: T.id, created_at: '2000-01-01T00:00:00Z' })
     check('a client cannot set created_at on a block',
       refusedWith(backdated, '42501'), backdated.error?.code ?? 'no error')
+
+    // ---------------------------------------------------------------- 8
+    section('8. FOLLOWER AND FOLLOWING LISTS NEED AN ACCOUNT (v51)')
+    // Probed with the anon key and NO session, which is the only probe that
+    // means anything here: the anon key ships in every browser, so a gate that
+    // lives in the UI is not a gate. The numbers stay public; the names do not.
+    const outsider = createClient(URL, ANON, { auth: { persistSession: false } })
+
+    const anonFollowers = await outsider.rpc('profile_followers', { profile_id: T.id })
+    check('a signed-out caller cannot read a follower list',
+      refusedWith(anonFollowers, '42501'),
+      anonFollowers.error?.code ?? `returned ${(anonFollowers.data ?? []).length} rows`)
+
+    const anonFollowing = await outsider.rpc('profile_following', { profile_id: T.id })
+    check('a signed-out caller cannot read a following list',
+      refusedWith(anonFollowing, '42501'),
+      anonFollowing.error?.code ?? `returned ${(anonFollowing.data ?? []).length} rows`)
+
+    // The three things v51 deliberately did NOT close. Each is load-bearing:
+    // counts are public by decision (v44), and a profile that cannot be found
+    // signed-out breaks search and every shared link.
+    const anonCounts = await outsider.rpc('follow_counts', { profile_id: T.id })
+    check('…but the counts are still public',
+      !anonCounts.error && anonCounts.data != null, anonCounts.error?.code)
+
+    const anonCard = await outsider.rpc('profile_card', { handle: T.username })
+    check('…and a profile is still findable by handle signed-out',
+      !anonCard.error && (anonCard.data ?? []).length === 1, anonCard.error?.code)
+
+    const anonSearch = await outsider.rpc('search_profile_cards', { q: T.username })
+    check('…and still findable in search signed-out',
+      !anonSearch.error && (anonSearch.data ?? []).some(r => r.id === T.id),
+      anonSearch.error?.code)
+
+    // THE WHOLE ANON BOUNDARY, CHECKED AS A TABLE rather than one line per
+    // feature. Three migrations in a row shipped `REVOKE ... FROM anon` and
+    // left the function callable anyway — the grant also existed through
+    // PUBLIC, which that line does not touch (see migration_v52). A per-feature
+    // assertion would have caught only the feature being written that day, and
+    // did not catch the other four. This asserts the boundary itself.
+    const anonShouldBeRefused = [
+      ['profile_followers',       { profile_id: T.id }],
+      ['profile_following',       { profile_id: T.id }],
+      ['pending_follow_requests', {}],
+      ['blocked_profiles',        {}],
+      ['muted_profiles',          {}],
+      ['feed_events',             {}],
+    ]
+    for (const [fn, args] of anonShouldBeRefused) {
+      const r = await outsider.rpc(fn, args)
+      check(`anon cannot call ${fn}()`,
+        refusedWith(r, '42501'),
+        r.error?.code ?? `answered ${JSON.stringify(r.data).slice(0, 30)}`)
+    }
+
+    // And the ones that must STAY open, so tightening the boundary later
+    // cannot quietly take search or a shared profile link with it.
+    const anonMustReach = [
+      ['profile_card',         { handle: T.username }],
+      ['search_profile_cards', { q: T.username }],
+      ['follow_counts',        { profile_id: T.id }],
+      ['can_view_profile',     { target: T.id }],
+    ]
+    for (const [fn, args] of anonMustReach) {
+      const r = await outsider.rpc(fn, args)
+      check(`anon can still call ${fn}()`, !r.error, r.error?.code)
+    }
+
+    // And the older gates still stand in front of the new one for signed-in
+    // callers: an account is necessary, not sufficient.
+    const signedInFollowers = await B.client.rpc('profile_followers', { profile_id: T.id })
+    check('a signed-in caller still gets a public profile\'s list',
+      !signedInFollowers.error, signedInFollowers.error?.code)
+
+    const privateList = await B.client.rpc('profile_followers', { profile_id: P.id })
+    check('…but still not a private profile\'s list they were not let into',
+      !privateList.error && (privateList.data ?? []).length === 0,
+      privateList.error?.code ?? `returned ${(privateList.data ?? []).length} rows`)
   } finally {
     console.log('\nCleaning up…')
     for (const a of accounts) {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
 import RelationshipMenu, { type RelationshipAction } from '@/components/account/RelationshipMenu'
@@ -24,6 +24,13 @@ type Direction = 'followers' | 'following'
  * again regardless — profile_followers() and profile_following() each refuse a
  * caller who cannot see the profile — so this flag only decides whether the
  * numbers look pressable, never whether the data is safe.
+ *
+ * AND SINCE v51, SEEING EITHER LIST AT ALL NEEDS AN ACCOUNT. The counts stay
+ * public for everyone; the names behind them do not. A signed-out visitor gets
+ * the numbers as a link to sign in rather than a button, and the migration
+ * revokes both functions from `anon` so that this is a description of what the
+ * database will do rather than a substitute for it — the anon key is in every
+ * browser, so a UI-only gate would not be one.
  *
  * Fetched when a list is first opened rather than with the page: most people
  * looking at a profile never open either one.
@@ -74,6 +81,10 @@ export default function FollowCounts({
   isOwnProfile: boolean
 }) {
   const router = useRouter()
+  // Signing in should return you to the profile you were reading, not to the
+  // home page. Read from the router rather than passed down, so this component
+  // does not need the handle it is already standing on.
+  const pathname = usePathname()
   const [open, setOpen] = useState<Direction | null>(null)
   const [people, setPeople] = useState<FollowPerson[] | null>(null)
   const [muted, setMuted] = useState<Set<string>>(new Set())
@@ -267,7 +278,33 @@ export default function FollowCounts({
             ? label(counts.followers, 'follower', 'followers')
             : `${counts.following} following`
 
-          return listsOpen ? (
+          // Three states, and they are different facts rather than degrees
+          // of one:
+          //   locked      — a private profile this visitor was not let into.
+          //                 The number shows; nothing is pressable, because
+          //                 signing in is not what would help.
+          //   signed out  — the list exists and is not theirs to see yet.
+          //                 Pressing it is the thing that helps, so it leads
+          //                 to sign-in rather than doing nothing.
+          //   signed in   — opens the sheet.
+          if (!listsOpen) {
+            return <span key={dir} className="ac-count-static">{text}</span>
+          }
+
+          if (!viewerId) {
+            return (
+              <Link
+                key={dir}
+                className="ac-count-link"
+                href={`/login?next=${encodeURIComponent(pathname)}`}
+                aria-label={`Sign in to see ${dir}`}
+              >
+                {text}
+              </Link>
+            )
+          }
+
+          return (
             <button
               key={dir}
               type="button"
@@ -276,8 +313,6 @@ export default function FollowCounts({
             >
               {text}
             </button>
-          ) : (
-            <span key={dir} className="ac-count-static">{text}</span>
           )
         })}
       </p>
@@ -329,33 +364,28 @@ export default function FollowCounts({
                       </span>
                     </Link>
 
-                    {/* Nothing at all on your own row: there is no version of
-                        following, muting or blocking yourself, and the database
-                        refuses all three. Everyone else gets a follow control —
-                        signed-out visitors included, where it is a link through
-                        sign-in rather than a dead name, the same as the button
-                        on a profile page. The MENU stays signed-in only: mute
-                        and block are decisions only an account can hold. */}
+                    {/* Everyone in this sheet is signed in — the counts above
+                        do not open for anybody else — so the only row without
+                        controls is your own: there is no version of following,
+                        muting or blocking yourself, and the database refuses
+                        all three. */}
                     {viewerId !== p.id && (
                       <span className="ac-person-actions">
                         <FollowToggle
                           targetId={p.id}
                           targetUsername={p.username}
-                          state={viewerId ? (followed.get(p.id) ?? 'none') : 'signed-out'}
+                          state={followed.get(p.id) ?? 'none'}
                           onChanged={afterFollowChange(p.id, open)}
-                          onNavigate={close}
                         />
-                        {viewerId && (
-                          <RelationshipMenu
-                            targetId={p.id}
-                            targetUsername={p.username}
-                            muted={muted.has(p.id)}
-                            /* Their follow of you exists, and is yours to
-                               delete, only in your own followers list. */
-                            canRemoveFollower={isOwnProfile && open === 'followers'}
-                            onDone={afterAction(p.id)}
-                          />
-                        )}
+                        <RelationshipMenu
+                          targetId={p.id}
+                          targetUsername={p.username}
+                          muted={muted.has(p.id)}
+                          /* Their follow of you exists, and is yours to
+                             delete, only in your own followers list. */
+                          canRemoveFollower={isOwnProfile && open === 'followers'}
+                          onDone={afterAction(p.id)}
+                        />
                       </span>
                     )}
                   </li>
