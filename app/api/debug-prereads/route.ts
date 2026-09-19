@@ -56,14 +56,19 @@ export async function POST(request: NextRequest) {
       venue_url: venueRaw.exhibitions_url,
       exhibition_id: ex.id,
       // A dev rerun: S4 runs if the show has been open 14 days, whatever the cron did.
-      show_review_due: artists.length === 1 && isShowReviewDue(showReviewPendingUntil(ex.start_date), null, null),
+      show_review_due: artists.length >= 1 && isShowReviewDue(showReviewPendingUntil(ex.start_date), null, null),
     }
 
     // Generate before deleting: a blocked show keeps the rows it already has.
-    const { prereads, hasShowCoverage, blocked } = await generatePrereads(raw)
+    const { prereads, hasShowCoverage, blocked, retryArtists, searchErrors } = await generatePrereads(raw)
     if (blocked) {
       await db.from('exhibitions').update({ preread_status: blocked }).eq('id', ex.id)
       results.push({ show_title: ex.show_title, venue: venueRaw.name, blocked, prereads_generated: 0 })
+      continue
+    }
+    // An incomplete run (a group-show artist search failed) must not replace the rows.
+    if (retryArtists?.length) {
+      results.push({ show_title: ex.show_title, venue: venueRaw.name, search_errors: searchErrors, prereads_generated: 0 })
       continue
     }
 

@@ -31,7 +31,7 @@ import {
   recheckPreread,
   findReplacementPreread,
   prereadSubject,
-  searchSoloShowReview,
+  searchGalleryShowReview,
   showReviewPendingUntil,
   isShowReviewDue,
   nextShowReviewStatus,
@@ -77,6 +77,7 @@ export interface Agent2Outcome {
 const EXHIBITION_SELECT = `
   id, show_title, press_release, preread_status, missing_fields, start_date,
   show_review_pending_until, show_review_attempted_at, show_review_status,
+  preread_retry_artists,
   venues!inner(name, exhibitions_url, institutions(name, type)),
   exhibition_artists(artists!inner(name))
 `
@@ -88,8 +89,10 @@ interface LoadedExhibition {
   missingFields: string[]
   institutionName: string
   startDate: string | null
-  /** migration_v55 — gallery solo S4 gate. */
+  /** migration_v55/v56 — the 14-day show-review gate (gallery solo + small group). */
   showReview: { pendingUntil: string | null; attemptedAt: string | null; status: ShowReviewStatus | null }
+  /** migration_v58 — group-show artists whose search failed last run; the retry searches only them. */
+  retryArtists: string[]
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -118,12 +121,29 @@ function toLoaded(raw: any): LoadedExhibition {
       attemptedAt: raw.show_review_attempted_at ?? null,
       status: (raw.show_review_status ?? null) as ShowReviewStatus | null,
     },
+    retryArtists: (raw.preread_retry_artists ?? []) as string[],
   }
 }
 
-/** Gallery-path solo shows are the only ones on the 14-day show-review gate (S4). */
-function isGallerySolo(ex: LoadedExhibition): boolean {
-  return ex.path === 'gallery' && ex.ctx.artists.length === 1
+/**
+ * Thrown by generate() AFTER it has stored what it found, when some group-show artist
+ * searches never got an answer. The caller marks the show 'error'; the next run
+ * searches only those artists (preread_retry_artists).
+ */
+class ArtistRetryPending extends Error {
+  constructor(public rowsAdded: number, public artists: string[], searchErrors: string[]) {
+    super(`${artists.length} artist search(es) failed and will be retried (${artists.join(', ')}): ${searchErrors.join(' | ')}`)
+  }
+}
+
+const GROUP_ARTIST_CAP = 5
+
+/**
+ * Every gallery-path show with artists — solo, small group and large group — is on the
+ * 14-day show-review gate.
+ */
+function isOnShowReviewGate(ex: LoadedExhibition): boolean {
+  return ex.path === 'gallery' && ex.ctx.artists.length >= 1
 }
 
 async function loadExhibition(exhibitionId: string): Promise<LoadedExhibition> {
@@ -199,6 +219,18 @@ export async function recomputePrereadStatus(exhibitionId: string): Promise<Prer
 
 // ─── Generation ───────────────────────────────────────────────────────────────
 
+// Artist pieces already stored, counted cautiously: every stored row, minus one only
+// when the show review is known to be among them. artist_name can't be used — rows
+// from before it was recorded have it NULL (all 3 of Fiber Thinks!' on 2026-09-18),
+// which would make a retry think every slot was open. Over-counting only ever leaves a
+// slot unused; under-counting could push a show past 1 + 5.
+async function storedArtistRowCount(ex: LoadedExhibition): Promise<number> {
+  const { count, error } = await getSupabaseAdmin().from('prereads').select('id', { count: 'exact', head: true })
+    .eq('exhibition_id', ex.ctx.exhibition_id)
+  if (error) throw new Error(`Failed to count stored pieces: ${error.message}`)
+  return Math.max(0, (count ?? 0) - (ex.showReview.status === 'found' ? 1 : 0))
+}
+
 async function existingUrls(exhibitionId: string): Promise<Set<string>> {
   const { data, error } = await getSupabaseAdmin().from('prereads').select('article_url').eq('exhibition_id', exhibitionId)
   if (error) throw new Error(`Failed to read prereads: ${error.message}`)
@@ -216,9 +248,17 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
   const have = await existingUrls(id)
 
   if (ex.path === 'gallery') {
-    const solo = isGallerySolo(ex)
-    const pendingUntil = solo ? (ex.showReview.pendingUntil ?? showReviewPendingUntil(ex.startDate)) : null
-    const { prereads, hasShowCoverage, blocked, showReview } = await generatePrereads({
+    const gated = isOnShowReviewGate(ex)
+    const pendingUntil = gated ? (ex.showReview.pendingUntil ?? showReviewPendingUntil(ex.startDate)) : null
+    // A group show left in 'error' by failed artist searches: search only those artists,
+    // for only the artist slots still open (large group's 5).
+    const retryArtists = ex.status === 'error' && ex.ctx.artists.length >= 2
+      ? ex.retryArtists.filter((a) => ex.ctx.artists.includes(a))
+      : []
+    const retry = retryArtists.length > 0
+      ? { artists: retryArtists, artistSlots: Math.max(0, GROUP_ARTIST_CAP - await storedArtistRowCount(ex)) }
+      : undefined
+    const { prereads, hasShowCoverage, blocked, showReview, retryArtists: stillFailing, searchErrors } = await generatePrereads({
       show_title: ex.ctx.show_title,
       artists: ex.ctx.artists,
       start_date: ex.startDate,
@@ -229,7 +269,8 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       venue_name: ex.ctx.venue_name,
       venue_url: ex.ctx.venue_url,
       exhibition_id: id,
-      show_review_due: solo && isShowReviewDue(pendingUntil, ex.showReview.attemptedAt, ex.showReview.status),
+      show_review_due: gated && isShowReviewDue(pendingUntil, ex.showReview.attemptedAt, ex.showReview.status),
+      retry,
     })
     if (blocked) return blocked
     const fresh = prereads.filter((p) => !p.article_url || !have.has(p.article_url))
@@ -237,7 +278,7 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: id })))
       if (error) throw new Error(`Failed to insert prereads: ${error.message}`)
     }
-    if (solo) {
+    if (gated) {
       const { error } = await db.from('exhibitions').update({
         show_review_pending_until: pendingUntil,
         ...(showReview?.ran && showReview.result ? {
@@ -248,12 +289,20 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       if (error) throw new Error(`Failed to record show-review gate: ${error.message}`)
     }
     // Carried over from Agent 1's old inline block: a gallery show with no show-level
-    // review gets 'show_coverage' in missing_fields. A solo show whose S4 hasn't run
+    // review gets 'show_coverage' in missing_fields. A gated show whose review hasn't run
     // yet isn't missing it — it's waiting for it.
-    const showReviewPending = solo && !showReview?.ran
+    const showReviewPending = gated && !showReview?.ran
     if (!hasShowCoverage && !showReviewPending && !ex.missingFields.includes('show_coverage')) {
       await db.from('exhibitions').update({ missing_fields: [...ex.missingFields, 'show_coverage'] }).eq('id', id)
     }
+    // Everything found is stored above. Artists whose search never got an answer are
+    // recorded for the retry (cleared when none are left), and the show goes to 'error'.
+    const pendingRetry = stillFailing ?? []
+    if (pendingRetry.length > 0 || ex.retryArtists.length > 0) {
+      const { error } = await db.from('exhibitions').update({ preread_retry_artists: pendingRetry.length > 0 ? pendingRetry : null }).eq('id', id)
+      if (error) throw new Error(`Failed to record artists to retry: ${error.message}`)
+    }
+    if (pendingRetry.length > 0) throw new ArtistRetryPending(fresh.length, pendingRetry, searchErrors ?? [])
     return fresh.length
   }
 
@@ -466,6 +515,12 @@ export async function runAgent2ForExhibition(
     console.error(`[Agent 2] Generation failed for "${ex.ctx.show_title}":`, err)
     errors.push({ item: ex.ctx.show_title, step: ex.path === 'gallery' ? 'preread' : 'coverage', message })
     await setStatus(exhibitionId, 'error')
+    if (err instanceof ArtistRetryPending) {
+      return {
+        ...base, action: 'failed', statusAfter: 'error', rowsAdded: err.rowsAdded,
+        message: `Added ${err.rowsAdded} row(s); search failed for ${err.artists.join(', ')} — only they will be retried on the next run.`,
+      }
+    }
     return { ...base, action: 'failed', statusAfter: 'error', message: `Failed: ${message}` }
   }
 }
@@ -599,7 +654,7 @@ export async function runAgent2AcrossExhibitions(
   return { eligible: ids.length, outcomes, deferred: ids.length - attempted }
 }
 
-// ─── Gallery solo S4: the daily show-review cron ──────────────────────────────
+// ─── Show review (gallery solo S4 + small group): the daily cron ──────────────
 
 export interface ShowReviewOutcome {
   exhibitionId: string
@@ -610,7 +665,7 @@ export interface ShowReviewOutcome {
 }
 
 /**
- * Runs S4 (show review) for one gallery solo show whose 14 days are up. Stores what
+ * Runs the show review for one gallery show (any tier) whose 14 days are up. Stores what
  * it finds alongside the show's existing rows, records the attempt, and recomputes
  * preread_status (a stored row may be flagged 'unverified'). Never throws for a
  * search failure — that climbs show_review_status error1 → error2 → error3; the
@@ -622,7 +677,7 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   const ex = await loadExhibition(exhibitionId)
   const base = { exhibitionId, showTitle: ex.ctx.show_title, rowsAdded: 0 }
 
-  if (!isGallerySolo(ex)) return { ...base, status: 'skipped', message: 'Not a gallery solo show.' }
+  if (!isOnShowReviewGate(ex)) return { ...base, status: 'skipped', message: 'Not a gallery show with artists.' }
   if (!isShowReviewDue(ex.showReview.pendingUntil, ex.showReview.attemptedAt, ex.showReview.status)) {
     return { ...base, status: 'skipped', message: `Not due (pending until ${ex.showReview.pendingUntil ?? 'unset'}).` }
   }
@@ -634,7 +689,7 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   let rowsAdded = 0
   try {
     const have = await existingUrls(exhibitionId)
-    const s4 = await searchSoloShowReview(ex.ctx)
+    const s4 = await searchGalleryShowReview(ex.ctx)
     const fresh = s4.rows.filter((p) => !p.article_url || !have.has(p.article_url))
     if (fresh.length > 0) {
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: exhibitionId })))
@@ -672,7 +727,7 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
 }
 
 /**
- * Every published gallery solo show whose S4 is due. Shows Agent 2 hasn't run yet
+ * Every published gallery show (any tier) whose show review is due. Shows Agent 2 hasn't run yet
  * (preread_status NULL / error) are left to it — its own run does S4 inline once due.
  * Stops starting new shows once `budgetMs` has elapsed.
  */

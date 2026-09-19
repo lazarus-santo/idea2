@@ -158,9 +158,12 @@ function registrableDomain(url: string): string {
 // "hyperallergic" is safe — it doesn't contain these substrings.
 const GALLERY_HOSTNAME_RE = /gallery|galerie|galleria|gallerie/i
 
-// Pulls all known venue domains from the DB once per preread generation call.
+// Pulls all known venue domains from the DB once per preread generation call. Throws
+// if the read fails: an empty blocklist would let every gallery's own pages through
+// as if they were press.
 async function buildGalleryBlocklist(): Promise<Set<string>> {
-  const { data } = await getSupabaseAdmin().from('venues').select('exhibitions_url')
+  const { data, error } = await getSupabaseAdmin().from('venues').select('exhibitions_url')
+  if (error) throw new Error(`Venue blocklist read failed: ${error.message}`)
   const domains = new Set<string>()
   for (const v of data ?? []) {
     const d = registrableDomain(v.exhibitions_url as string)
@@ -569,9 +572,26 @@ export interface GeneratePrereadsResult {
   // Set when the show can't be searched at all. Nothing ran; the caller records the
   // status on the exhibition and stops — it must not treat this as an empty result.
   blocked: 'pending_artists' | null
-  // Gallery solo only: whether S4 ran this time and what it found. Absent on the
-  // group tiers, which run their show review unconditionally.
+  // Gallery shows (solo, small and large group): whether the show review ran this
+  // time and what it found.
   showReview?: ShowReviewAttempt
+  // Small and large group: artists whose search never got an answer (not the same as
+  // finding nothing) and who still have no piece. Agent 2 stores everything that was
+  // found, records these names on the show (preread_retry_artists, migration_v58),
+  // marks it 'error', and its next run searches only them (see ArtistRetry).
+  retryArtists?: string[]
+  // The failed-search messages behind retryArtists, for the run's error log.
+  searchErrors?: string[]
+}
+
+/**
+ * A retry run (migration_v58): search only these artists — the ones whose search
+ * failed last time — and, for large group, fill at most `artistSlots` artist pieces
+ * (5 minus the artist pieces already stored), so the show still can't pass 1 + 5.
+ */
+export interface ArtistRetry {
+  artists: string[]
+  artistSlots: number
 }
 
 // contentPriority: 0 = show review (S2), 1 = artist profile/interview (S1), 2 = general press (S3/S4)
@@ -682,8 +702,8 @@ async function searchShowReview(
   pressRelease: string | null,
   venueDomain: string | null,
   exhibitionId: string | null,
-  // Gallery solo's S4 only (for now): the mechanical title + artist pre-filter, run
-  // before any AI call. The group tiers don't pass it and behave as before.
+  // Every gallery tier (solo's S4, small and large group): the mechanical title +
+  // artist pre-filter, run before any AI call.
   requireTitleAndArtist?: { artists: string[] }
 ): Promise<{ rows: (PoolResult & { title: string })[]; searchFailed: boolean }> {
   // Last year and this year, computed per run (was a hardcoded "2025 OR 2026").
@@ -738,13 +758,13 @@ async function searchShowReview(
   return { rows: candidates.slice(0, wantCount).map((r) => ({ ...r, contentPriority: 0 as const })), searchFailed }
 }
 
-// Single artist profile/interview search, no domain filter — shared by both group tiers.
-// `disambiguator`, when present, is a short phrase (from the artist's bio, or the
-// exhibition's press release as fallback) appended to the query to widen recall toward
-// the right person — helpful even if imprecise, since the verification pass below (not
-// this query) is what actually guarantees precision. `sourceText` is the artist's own
-// bio when one exists, else the shared press release — passed through to that
-// verification pass as the grounding text to reason against.
+// Single artist profile/interview search, no domain filter unless the caller passes
+// one — shared by both group tiers. `disambiguator`, when present, is a short phrase
+// (from the artist's bio, or the exhibition's press release as fallback) appended to
+// the query to widen recall toward the right person — helpful even if imprecise, since
+// the verification pass below (not this query) is what actually guarantees precision.
+// `sourceText` is the artist's own bio when one exists, else the shared press release —
+// passed through to that verification pass as the grounding text to reason against.
 async function searchArtistProfile(
   exa: Exa,
   artistName: string,
@@ -752,7 +772,14 @@ async function searchArtistProfile(
   disambiguator?: string,
   sourceText?: string | null,
   venueDomain?: string | null,
-  exhibitionId?: string | null
+  exhibitionId?: string | null,
+  // Small and large group pass verifyArtistCandidates here so the check itself says
+  // "described as {disambiguator}". Without it, the bare-name check is grounded in
+  // sourceText.
+  verify?: (candidates: (PoolResult & { title: string })[]) => Promise<Map<string, VerifiedCandidate> | null>,
+  // Large group's Pass 1: a hard domain filter, and a hook for a search that never got
+  // an answer (so it isn't mistaken for a clean empty result).
+  searchOpts: { includeDomains?: string[]; onSearchFailed?: (error: string) => void } = {}
 ): Promise<(PoolResult & { title: string }) | null> {
   const query = disambiguator
     ? `${artistName} ${disambiguator} artist interview profile`
@@ -761,20 +788,29 @@ async function searchArtistProfile(
   const results = await loggedExaSearch(exa, query, {
     type: 'auto',
     numResults: 5,
+    ...(searchOpts.includeDomains ? { includeDomains: searchOpts.includeDomains } : {}),
     contents: { highlights: true },
   }, { exhibitionId: exhibitionId ?? null, functionName: 'searchArtistProfile' })
+  if (results.error) searchOpts.onSearchFailed?.(results.error)
 
   // Self-sourced checks (a) and (b) — same "reject before any Claude call" placement
   // as isValid/isAboutArtist right next to them, not a separate pass afterward.
-  let candidates = (results.results as unknown as PoolResult[])
+  const named = (results.results as unknown as PoolResult[])
     .filter(isValid)
     .filter((r) => isAboutArtist(r, artistName))
+  let candidates = named
     .filter((r) => !isSelfSourcedByVenue(r.url, venueDomain ?? null))
     .filter((r) => !isSelfSourcedByArtistDomain(r.url, artistName))
+  if (candidates.length < named.length) {
+    const dropped = named.filter((r) => !candidates.includes(r)).map((r) => r.url)
+    console.log(`Self-sourced rejected [${artistName}]: ${dropped.join(', ')}`)
+  }
 
   let verified: Map<string, VerifiedCandidate> | null = new Map()
   if (candidates.length > 0) {
-    verified = await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
+    verified = verify
+      ? await verify(candidates)
+      : await verifySubstantiallyAbout(`the artist "${artistName}"`, sourceText ?? null, candidates)
     candidates = applyQualityGate(candidates, verified)
   }
 
@@ -804,9 +840,11 @@ async function searchArtistProfile(
 // own "About the Artist" section (solo shows only; see scraper.ts). A bio is
 // single-subject text, so it's a safer disambiguation source than a press release,
 // which can describe other people too (collaborators, curators, characters).
+// Throws if the read fails, rather than carrying on as if no artist had a bio.
 async function fetchArtistBios(artistNames: string[]): Promise<Map<string, string>> {
   if (artistNames.length === 0) return new Map()
-  const { data } = await getSupabaseAdmin().from('artists').select('name, bio').in('name', artistNames)
+  const { data, error } = await getSupabaseAdmin().from('artists').select('name, bio').in('name', artistNames)
+  if (error) throw new Error(`Artist bio read failed: ${error.message}`)
   const bios = new Map<string, string>()
   for (const row of data ?? []) {
     const bio = (row.bio as string | null)?.trim()
@@ -823,7 +861,9 @@ async function fetchArtistBios(artistNames: string[]): Promise<Map<string, strin
 // disambiguator that happened to land on "composer and artist based in London" (true,
 // but missing "musician") meant Dazed and Vogue — outlets that frame her specifically as
 // a musician — never surfaced in any query, run after run.
-async function extractDisambiguatorFromBio(artistName: string, bio: string): Promise<string> {
+//
+// null = the call failed (retried once by the caller); '' = nothing distinctive stated.
+async function extractDisambiguatorFromBio(artistName: string, bio: string): Promise<string | null> {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 128,
@@ -839,8 +879,23 @@ ${bio.slice(0, 2000)}
 Return ONLY a comma-separated list of the distinguishing terms, nothing else. If nothing distinctive is stated, return an empty string.`,
     }],
   }).catch(() => null)
-  if (!response) return ''
+  if (!response) return null
   return response.content.find((b) => b.type === 'text')?.text?.trim() ?? ''
+}
+
+// A failed extraction doesn't stop the search — it only loses the name-clash
+// protection — so it used to fail silently. Now: one retry, and a loud log if both fail.
+async function withOneRetry<T>(label: string, attempt: () => Promise<T | null>): Promise<T | null> {
+  const first = await attempt()
+  if (first !== null) return first
+  console.warn(`Disambiguator extraction failed [${label}] — retrying once`)
+  const second = await attempt()
+  if (second !== null) {
+    console.log(`Disambiguator extraction recovered on retry [${label}]`)
+    return second
+  }
+  console.error(`Disambiguator extraction FAILED twice [${label}] — searching WITHOUT name-clash protection`)
+  return null
 }
 
 // Extracts a short disambiguating phrase per artist — from their own bio when one
@@ -860,7 +915,7 @@ async function extractArtistSearchContext(
   const context = new Map<string, string>()
 
   const bioResults = await Promise.all(
-    [...bios.entries()].map(async ([name, bio]) => [name, await extractDisambiguatorFromBio(name, bio)] as const)
+    [...bios.entries()].map(async ([name, bio]) => [name, await withOneRetry(`bio / ${name}`, () => extractDisambiguatorFromBio(name, bio))] as const)
   )
   for (const [name, phrase] of bioResults) {
     if (phrase) context.set(name, phrase)
@@ -874,12 +929,14 @@ async function extractArtistSearchContext(
   // "the Canadian artist, LA Timpa" — someone else in the same sentence — to the artist
   // "Klein" even with explicit instructions not to; Sonnet got it right). One call per
   // exhibition, so the cost difference from Haiku is negligible.
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 512,
-    messages: [{
-      role: 'user',
-      content: `From this exhibition press release, extract ALL distinctive roles or professions for each artist listed below — every one stated or clearly implied for that artist, not just the single most prominent one. A single pick is a lottery on which facet of a multi-hyphenate artist gets used, and that facet is what actually drives whether the right web search results get found later.
+  // An API error or an unparseable reply counts as a failure (retried once).
+  const parsed = await withOneRetry(`press release / ${remaining.length} artist(s)`, async () => {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 512,
+      messages: [{
+        role: 'user',
+        content: `From this exhibition press release, extract ALL distinctive roles or professions for each artist listed below — every one stated or clearly implied for that artist, not just the single most prominent one. A single pick is a lottery on which facet of a multi-hyphenate artist gets used, and that facet is what actually drives whether the right web search results get found later.
 
 Press releases often mention OTHER people too — collaborators, curators, actors, or characters in a work. Only extract details stated about the named artist THEMSELF, never a detail that actually describes someone else mentioned in the text. Read carefully to confirm who a given description's subject really is before attributing it — do not assume the nearest adjective or nationality in the text belongs to the artist just because it appears near their name.
 
@@ -892,12 +949,11 @@ ${pressRelease.slice(0, 4000)}
 
 Return ONLY a JSON object mapping each artist name to a comma-separated list of their distinguishing terms:
 {"${remaining[0]}": "..."}`,
-    }],
-  }).catch(() => null)
-
-  if (!response) return context
-  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
-  const parsed = extractJsonObject<Record<string, string>>(text)
+      }],
+    }).catch(() => null)
+    if (!response) return null
+    return extractJsonObject<Record<string, string>>(response.content.find((b) => b.type === 'text')?.text ?? '')
+  })
   if (!parsed) return context
 
   for (const name of remaining) {
@@ -926,41 +982,76 @@ async function verifyArtistCandidates<T extends PoolResult & { title: string }>(
     : verifySubstantiallyAbout(label, bio, candidates, { sourceKind: 'bio' })
 }
 
-// Orders artists for Large Group per-artist search priority: artists without an
-// existing bio on file first (higher information value to fill in), then alphabetical.
-async function orderArtistsBySearchPriority(artistNames: string[]): Promise<string[]> {
-  const { data } = await getSupabaseAdmin().from('artists').select('name, bio').in('name', artistNames)
-  const hasBio = new Map((data ?? []).map((a) => [a.name as string, !!(a.bio as string | null)?.trim()]))
-  return [...artistNames].sort((a, b) => {
-    const aHasBio = hasBio.get(a) ?? false
-    const bHasBio = hasBio.get(b) ?? false
-    if (aHasBio !== bHasBio) return aHasBio ? 1 : -1
-    return a.localeCompare(b)
-  })
+// Large group's search order: shuffled, then every artist with a real disambiguator
+// ahead of every artist without one (the shuffle holds within each half). Random so
+// the same alphabetical front of a big roster doesn't win every show's slots; a
+// disambiguator first because it's what makes a same-named stranger checkable.
+export function orderLargeGroupArtists(
+  artistNames: string[],
+  context: Map<string, string>,
+  random: () => number = Math.random
+): string[] {
+  const shuffled = [...artistNames]
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1))
+    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+  const hasContext = (a: string) => !!context.get(a)?.trim()
+  return [...shuffled.filter(hasContext), ...shuffled.filter((a) => !hasContext(a))]
 }
 
 // ─── Small Group (2-5 artists) ─────────────────────────────────────────────
-// 1 show-review result (once per show) + 1 per-artist result each, capped at 5
-// stored total. If assembly exceeds the cap, the show-review result is kept and
-// per-artist results are trimmed worst-tier-first.
+// One result per artist (every artist is searched), plus the show review once the
+// show has been open 14 days — the same gate, pre-filter and check as gallery solo's
+// S4, run later by the daily show-review cron when not yet due. No overall cap: 5 is
+// already the most artists this tier can have, so the review is a 6th slot rather
+// than displacing an artist's piece.
 async function generateSmallGroupPrereads(
   exa: Exa,
-  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null },
+  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null; show_review_due?: boolean; retry?: ArtistRetry },
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   context: Map<string, string>,
   bios: Map<string, string>,
   venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
   const exhibitionId = exhibition.exhibition_id ?? null
-  const { rows: showReview } = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId)
+  const showTitle = exhibition.show_title
+
+  let showReview: (PoolResult & { title: string })[] = []
+  const showReviewAttempt: ShowReviewAttempt = { ran: false, result: null }
+  if (exhibition.show_review_due) {
+    showReviewAttempt.ran = true
+    try {
+      const s4 = await searchShowReview(exa, showTitle, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId, { artists: exhibition.artists })
+      showReview = s4.rows
+      showReviewAttempt.result = showReviewResult(s4)
+    } catch (err) {
+      console.error(`Show review failed [Small Group / ${showTitle}]:`, err)
+      showReviewAttempt.result = 'error'
+    }
+  } else {
+    console.log(`Exa show-review skipped [Small Group / ${showTitle}]: not due yet (14 days after opening)`)
+  }
 
   // Zipped with the artist name here, before Promise.all resolves — this is the only
   // point where "which artist produced this result" and the result itself are both in
   // scope together; once results flatten into perArtist/combined below, only the
   // artistName carried on each object survives.
+  // A retry run searches only the artists whose search failed last time.
+  const toSearch = exhibition.retry?.artists ?? exhibition.artists
+  if (exhibition.retry) console.log(`Exa per-artist [Small Group / ${showTitle}]: retry run — searching only ${toSearch.join(', ')}`)
+  const failedSearches = new Map<string, string>()
   const perArtistResults = await Promise.all(
-    exhibition.artists.map(async (artist) => {
-      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain, exhibitionId)
+    toSearch.map(async (artist) => {
+      const disambiguator = context.get(artist)?.trim() || null
+      const result = await searchArtistProfile(exa, artist, isValid, disambiguator ?? undefined, bios.get(artist) ?? exhibition.press_release, venueDomain, exhibitionId,
+        (candidates) => verifyArtistCandidates(artist, disambiguator, bios.get(artist) ?? null, exhibition.press_release, candidates),
+        {
+          onSearchFailed: (error) => {
+            failedSearches.set(artist, error)
+            console.error(`Exa per-artist search FAILED [Small Group / ${artist}]: ${error}`)
+          },
+        })
       return result ? { ...result, artistName: artist } : null
     })
   )
@@ -973,52 +1064,161 @@ async function generateSmallGroupPrereads(
     perArtist.push(result)
   }
 
-  let combined = [...showReview, ...perArtist]
-  if (combined.length > 5) {
-    const allowedPerArtist = Math.max(0, 5 - showReview.length)
-    combined = [...showReview, ...sortByTierAndRecency(perArtist).slice(0, allowedPerArtist)]
+  const combined = [...showReview, ...perArtist]
+  console.log(`Exa selected [Small Group / ${showTitle}]:`, combined.map((r) => ({ title: r.title, url: r.url })))
+  // A failed search returns no results, so every artist here has no piece.
+  const retryArtists = [...failedSearches.keys()]
+  return {
+    prereads: combined.map(toPrereadRow), hasShowCoverage: showReview.length > 0, blocked: null, showReview: showReviewAttempt,
+    ...(retryArtists.length > 0 ? { retryArtists, searchErrors: retryArtists.map((a) => `${a}: ${failedSearches.get(a)}`) } : {}),
   }
-
-  console.log(`Exa selected [Small Group / ${exhibition.show_title}]:`, combined.map((r) => ({ title: r.title, url: r.url })))
-  return { prereads: combined.map(toPrereadRow), hasShowCoverage: showReview.length > 0, blocked: null }
 }
 
 // ─── Large Group (6+ artists) ───────────────────────────────────────────────
-// Show-review search first (2-3 results), then per-artist searches fill any
-// remaining slots up to a hard cap of 5 — stopping as soon as the cap is hit
-// so searches never run for every artist in a large show.
+// Up to 1 show review + 5 artist pieces (6 total). The show review is on the same
+// 14-day gate, pre-filter and check as gallery solo's S4.
+//
+// Artists are searched in orderLargeGroupArtists' order, in two passes:
+//   Pass 1  the 22 outlets as a HARD filter, until 5 artists have a verified piece or
+//           the whole roster has been tried
+//   Pass 2  only if Pass 1 fell short: the Pass-1 misses (empty, unverified, failed
+//           search, or a URL another artist already took), unfiltered, until 5
+// A verified Pass-1 artist is never searched again. Each round launches only as many
+// searches as there are slots left, so a big roster isn't searched past the cap.
+// Fewer than 5 is a normal outcome, not a failure. A piece the check never judged
+// ('unverified') only fills a slot no verified piece could, and is blanked on insert.
+//
+// All 22 outlets are passed to Exa. The old note (above TIER_2_DOMAINS's filtered subset) that
+// nytimes.com, theguardian.com and wsj.com make the whole filtered search 403 did not
+// reproduce on 2026-09-18: each of the three alone, and all 22 together, returned
+// results. If Exa starts refusing them again, loggedExaSearch reports the error.
+//
+// An artist whose LAST search never got an answer, and who ended with no piece while
+// slots were still open, is returned in retryArtists. Agent 2 stores what was found,
+// marks the show 'error', and the retry searches only those artists, for only the
+// slots still open. A failure that didn't cost anything (Pass 2 recovered the artist,
+// or all 5 slots filled anyway) is logged but isn't an error.
+const LARGE_GROUP_ARTIST_CAP = 5
+const LARGE_GROUP_PASS1_DOMAINS = SOLO_PRESS_DOMAINS
+
 async function generateLargeGroupPrereads(
   exa: Exa,
-  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null },
+  exhibition: ExhibitionRaw & { venue_name: string; exhibition_id?: string | null; show_review_due?: boolean; retry?: ArtistRetry },
   isValid: (r: PoolResult) => r is PoolResult & { title: string },
   context: Map<string, string>,
   bios: Map<string, string>,
   venueDomain: string | null
 ): Promise<GeneratePrereadsResult> {
   const exhibitionId = exhibition.exhibition_id ?? null
-  const { rows: showReview } = await searchShowReview(exa, exhibition.show_title, exhibition.venue_name, isValid, 3, 2, exhibition.press_release, venueDomain, exhibitionId)
+  const showTitle = exhibition.show_title
 
+  let showReview: (PoolResult & { title: string })[] = []
+  const showReviewAttempt: ShowReviewAttempt = { ran: false, result: null }
+  if (exhibition.show_review_due) {
+    showReviewAttempt.ran = true
+    try {
+      const s4 = await searchShowReview(exa, showTitle, exhibition.venue_name, isValid, 1, 1, exhibition.press_release, venueDomain, exhibitionId, { artists: exhibition.artists })
+      showReview = s4.rows
+      showReviewAttempt.result = showReviewResult(s4)
+    } catch (err) {
+      console.error(`Show review failed [Large Group / ${showTitle}]:`, err)
+      showReviewAttempt.result = 'error'
+    }
+  } else {
+    console.log(`Exa show-review skipped [Large Group / ${showTitle}]: not due yet (14 days after opening)`)
+  }
+
+  type Hit = PoolResult & { title: string; artistName: string }
   const seenUrls = new Set(showReview.map((r) => r.url))
-  const rows: (PoolResult & { title: string; artistName?: string })[] = [...showReview]
+  const verifiedHits: Hit[] = []
+  const unverifiedHits = new Map<string, Hit>()
+  const pass1Misses: string[] = []
+  const failedSearches: string[] = []
+  const lastSearchFailed = new Map<string, boolean>()
+  // A retry run fills only the slots still open, from only the artists that failed.
+  const artistCap = Math.min(LARGE_GROUP_ARTIST_CAP, exhibition.retry?.artistSlots ?? LARGE_GROUP_ARTIST_CAP)
 
-  if (rows.length < 5) {
-    const orderedArtists = await orderArtistsBySearchPriority(exhibition.artists)
-    for (const artist of orderedArtists) {
-      if (rows.length >= 5) {
-        console.log(`Exa per-artist [Large Group]: cap reached, skipping remaining artists (${orderedArtists.slice(orderedArtists.indexOf(artist)).join(', ')})`)
-        break
-      }
-      const result = await searchArtistProfile(exa, artist, isValid, context.get(artist), bios.get(artist) ?? exhibition.press_release, venueDomain, exhibitionId)
-      console.log(`Exa per-artist [Large Group / ${artist}]:`, result ? { title: result.title, url: result.url } : 'no valid result')
-      if (result && !seenUrls.has(result.url)) {
-        seenUrls.add(result.url)
-        rows.push({ ...result, artistName: artist })
-      }
+  const searchOne = async (artist: string, pass: 1 | 2): Promise<Hit | null> => {
+    const disambiguator = context.get(artist)?.trim() || null
+    let failed = false
+    const result = await searchArtistProfile(exa, artist, isValid, disambiguator ?? undefined, bios.get(artist) ?? exhibition.press_release, venueDomain, exhibitionId,
+      (candidates) => verifyArtistCandidates(artist, disambiguator, bios.get(artist) ?? null, exhibition.press_release, candidates),
+      {
+        includeDomains: pass === 1 ? LARGE_GROUP_PASS1_DOMAINS : undefined,
+        onSearchFailed: (error) => {
+          failed = true
+          failedSearches.push(`Pass ${pass} / ${artist}: ${error}`)
+          console.error(`Exa per-artist search FAILED [Large Group Pass ${pass} / ${artist}]${pass === 1 ? ` (${LARGE_GROUP_PASS1_DOMAINS.length}-outlet filter)` : ''}: ${error}`)
+        },
+      })
+    lastSearchFailed.set(artist, failed)
+    // Belt and braces on the hard filter: a Pass-1 piece off the list doesn't count.
+    if (result && pass === 1 && !isOnDomainList(result.url, LARGE_GROUP_PASS1_DOMAINS)) return null
+    return result ? { ...result, artistName: artist } : null
+  }
+
+  const runPass = async (pass: 1 | 2, queue: string[]) => {
+    let next = 0
+    while (next < queue.length && verifiedHits.length < artistCap) {
+      const batch = queue.slice(next, next + artistCap - verifiedHits.length)
+      next += batch.length
+      const results = await Promise.all(batch.map((artist) => searchOne(artist, pass)))
+      batch.forEach((artist, i) => {
+        const hit = results[i]
+        const fresh = hit && !seenUrls.has(hit.url)
+        if (fresh && !hit.qualityFlag) {
+          seenUrls.add(hit.url)
+          verifiedHits.push(hit)
+          console.log(`Exa per-artist [Large Group Pass ${pass} / ${artist}]: verified — ${hit.title} (${hit.url})`)
+          return
+        }
+        if (fresh) unverifiedHits.set(artist, hit)
+        if (pass === 1) pass1Misses.push(artist)
+        console.log(`Exa per-artist [Large Group Pass ${pass} / ${artist}]: ${!hit ? 'nothing passed' : !fresh ? `duplicate URL (${hit.url})` : `unverified only (${hit.url})`}`)
+      })
+    }
+    if (next < queue.length) {
+      console.log(`Exa per-artist [Large Group Pass ${pass}]: ${artistCap} verified — not searched: ${queue.slice(next).join(', ')}`)
     }
   }
 
-  console.log(`Exa selected [Large Group / ${exhibition.show_title}]:`, rows.map((r) => ({ title: r.title, url: r.url })))
-  return { prereads: rows.slice(0, 5).map(toPrereadRow), hasShowCoverage: showReview.length > 0, blocked: null }
+  const ordered = orderLargeGroupArtists(exhibition.retry?.artists ?? exhibition.artists, context)
+  if (exhibition.retry) console.log(`Exa per-artist [Large Group / ${showTitle}]: retry run — ${artistCap} slot(s) open, searching only ${ordered.join(', ')}`)
+  console.log(`Exa per-artist [Large Group / ${showTitle}] order:`, ordered.map((a) => `${a}${context.get(a)?.trim() ? ' *' : ''}`).join(', '))
+  await runPass(1, ordered)
+  if (verifiedHits.length < artistCap && pass1Misses.length > 0) {
+    console.log(`Exa per-artist [Large Group]: Pass 1 found ${verifiedHits.length} — Pass 2 re-searches ${pass1Misses.length} miss(es) unfiltered`)
+    await runPass(2, pass1Misses)
+  }
+
+  // Unverified pieces fill only slots no verified piece could, in search order, one per
+  // artist who has no verified piece.
+  const artistRows: Hit[] = [...verifiedHits]
+  for (const artist of ordered) {
+    if (artistRows.length >= artistCap) break
+    const hit = unverifiedHits.get(artist)
+    if (!hit || seenUrls.has(hit.url) || artistRows.some((r) => r.artistName === artist)) continue
+    seenUrls.add(hit.url)
+    artistRows.push(hit)
+  }
+  if (failedSearches.length > 0) {
+    console.error(`Exa per-artist [Large Group / ${showTitle}]: ${failedSearches.length} search(es) never got an answer — ${failedSearches.join(' | ')}`)
+  }
+  // Only a failure that may have cost a piece: the artist's last search failed, they
+  // have no piece, and a slot was left open for them.
+  const retryArtists = artistRows.length < artistCap
+    ? ordered.filter((a) => lastSearchFailed.get(a) && !artistRows.some((r) => r.artistName === a))
+    : []
+  if (failedSearches.length > 0 && retryArtists.length === 0) {
+    console.log(`Exa per-artist [Large Group / ${showTitle}]: failed search(es) cost nothing (recovered, or every slot filled) — no retry needed`)
+  }
+
+  const combined = [...showReview, ...artistRows]
+  console.log(`Exa selected [Large Group / ${showTitle}]:`, combined.map((r) => ({ title: r.title, url: r.url, artist: (r as Partial<Hit>).artistName ?? null })))
+  return {
+    prereads: combined.map(toPrereadRow), hasShowCoverage: showReview.length > 0, blocked: null, showReview: showReviewAttempt,
+    ...(retryArtists.length > 0 ? { retryArtists, searchErrors: failedSearches.filter((m) => retryArtists.some((a) => m.includes(` / ${a}: `))) } : {}),
+  }
 }
 
 export async function generatePrereads(
@@ -1026,9 +1226,11 @@ export async function generatePrereads(
     venue_name: string
     venue_url?: string | null
     exhibition_id?: string | null
-    // Gallery solo only: whether S4 (show review) may run now — see isShowReviewDue.
-    // Absent means not due; the daily show-review cron runs it later.
+    // Gallery shows (every tier): whether the show review (solo's S4) may run now —
+    // see isShowReviewDue. Absent means not due; the daily show-review cron runs it later.
     show_review_due?: boolean
+    // Small and large group: a retry run for artists whose search failed (see ArtistRetry).
+    retry?: ArtistRetry
   }
 ): Promise<GeneratePrereadsResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
@@ -1054,13 +1256,15 @@ export async function generatePrereads(
   // subject, no risk of misattributing a detail about someone else mentioned in the
   // same text. Fetched once and reused for both query-context extraction below and the
   // mononym verification pass further down.
-  const bios = await fetchArtistBios(exhibition.artists)
+  // A retry run (small / large group) only searches the artists that failed last time.
+  const searchArtists = exhibition.retry?.artists ?? exhibition.artists
+  const bios = await fetchArtistBios(searchArtists)
 
   // One cheap call per exhibition, extracting a short disambiguating phrase per artist
   // (e.g. "musician and filmmaker") from their own bio when available, else the show's
   // shared press release — steers searches away from unrelated same-named people.
   // No-ops if nothing usable is found; every query below degrades gracefully.
-  const searchContext = await extractArtistSearchContext(exhibition.press_release, exhibition.artists, bios)
+  const searchContext = await extractArtistSearchContext(exhibition.press_release, searchArtists, bios)
 
   if (showType === 'small_group') {
     return generateSmallGroupPrereads(exa, exhibition, isValid, searchContext, bios, venueDomain)
@@ -1301,11 +1505,11 @@ async function generateSoloPrereads(
 }
 
 /**
- * Gallery solo S4 on its own — what the daily show-review cron runs for a show whose
- * 14 days are up. Same search, pre-filter and check as the inline S4. Throws if the
- * venue blocklist can't be read.
+ * The show review on its own (gallery solo's S4, and small and large group's) — what the daily
+ * show-review cron runs for a show whose 14 days are up. Same search, pre-filter and
+ * check as the inline run. Throws if the venue blocklist can't be read.
  */
-export async function searchSoloShowReview(ctx: PrereadRepairContext): Promise<{ rows: PrereadRow[]; result: ShowReviewResult }> {
+export async function searchGalleryShowReview(ctx: PrereadRepairContext): Promise<{ rows: PrereadRow[]; result: ShowReviewResult }> {
   const exa = new Exa(process.env.EXA_API_KEY!)
   const galleryDomains = await buildGalleryBlocklist()
   const isValid = (r: PoolResult): r is PoolResult & { title: string } =>

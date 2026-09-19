@@ -3,12 +3,13 @@ import { runShowReviewsDue } from '@/lib/agent2'
 import type { AgentRunError } from '@/lib/agent-runs'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
-// GET /api/cron/show-reviews — gallery solo S4, once a day.
+// GET /api/cron/show-reviews — the show review for every gallery show (solo S4, small
+// and large group), once a day.
 //
-// A show review can't exist the day a show opens, so the solo ladder waits 14 days
-// (exhibitions.show_review_pending_until, migration_v55). This finds every published
-// solo show whose wait is over and that hasn't had its show-review search yet (or
-// whose search has errored fewer than 3 times), and runs it. An empty result is
+// A show review can't exist the day a show opens, so every gallery tier
+// waits 14 days (exhibitions.show_review_pending_until, migrations v55/v56/v57). This finds
+// every published gallery show whose wait is over and that hasn't had its
+// show-review search yet (or whose search has errored fewer than 3 times), and runs it. An empty result is
 // final. Rules: lib/agent2.ts runShowReviewsDue.
 //
 // Each show costs one or two Exa searches and a Haiku check. Called by Vercel Cron
