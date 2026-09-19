@@ -71,25 +71,17 @@ const TIER_2_DOMAINS = [
   'nytimes.com', 'newyorker.com', 'theguardian.com', 'ft.com',
   'wsj.com', 'vulture.com', 'nymag.com',
 ]
-// nytimes.com, theguardian.com, and wsj.com are blocked from Exa's `includeDomains`
-// on this plan — a domain-filtered search naming any of them throws a 403 for the
-// whole request, not just an empty result for that domain (verified directly).
-// TIER_2_DOMAINS itself stays as the classification list for getResultTier (fine to
-// classify a result as Tier 2 if it shows up via an unfiltered search) — this subset
-// is for any search that actually passes `includeDomains` to Exa.
-const EXA_QUERYABLE_TIER_2_DOMAINS = TIER_2_DOMAINS.filter(
-  (d) => !['nytimes.com', 'theguardian.com', 'wsj.com'].includes(d)
-)
-// Domains Exa refuses in `includeDomains` (see above). Any hard-filtered search strips
-// them first: loggedExaSearch swallows the 403, so leaving one in would silently turn
-// the whole search into "no results".
-const EXA_UNFILTERABLE_DOMAINS = ['nytimes.com', 'theguardian.com', 'wsj.com']
-function exaFilterable(domains: string[]): string[] {
-  return domains.filter((d) => !EXA_UNFILTERABLE_DOMAINS.includes(d))
-}
+// Also the show review's domain filter (searchShowReview), all seven included. This
+// note once said nytimes.com, theguardian.com and wsj.com make a filtered Exa search
+// 403, and the filter left them out; that was never true on retest. Live 2026-09-18
+// in the show-review query's exact shape, across solo, small- and large-group shows:
+// 10 searches, 0 errors, 41 results from those three outlets.
 
 // The 22 outlets the gallery solo ladder cares about. S1/S2 only SORT by it (the search
-// itself is unrestricted); S3 uses it as a hard filter.
+// itself is unrestricted); S3 uses it as a hard filter, all 22 included — nytimes.com,
+// theguardian.com and wsj.com were once stripped on the false belief that Exa 403s
+// them in a filter. Retested live 2026-09-18 in S3's and S5's exact
+// query shapes: 15 searches, 0 errors, 42 results from those three outlets.
 const SOLO_PRESS_DOMAINS = [
   'artforum.com', 'artnews.com', 'brooklynrail.org', 'hyperallergic.com',
   'theartnewspaper.com', 'news.artnet.com', 'bombmagazine.org', 'frieze.com',
@@ -709,7 +701,7 @@ async function searchShowReview(
   const filtered = await loggedExaSearch(exa, query, {
     type: 'auto',
     numResults: 5,
-    includeDomains: EXA_QUERYABLE_TIER_2_DOMAINS,
+    includeDomains: TIER_2_DOMAINS,
     contents: { highlights: true },
   }, { exhibitionId, functionName: 'searchShowReview' })
 
@@ -1213,7 +1205,7 @@ async function generateSoloPrereads(
     search('S1', `${withContext} artist`, { startPublishedDate: windowStart }),
     search('S2', `${withContext} artist practice body of work critical essay interview`, { startPublishedDate: windowStart }),
     disambiguator
-      ? search('S3', `${withContext} artist`, { startPublishedDate: windowStart, includeDomains: exaFilterable(SOLO_PRESS_DOMAINS) })
+      ? search('S3', `${withContext} artist`, { startPublishedDate: windowStart, includeDomains: SOLO_PRESS_DOMAINS })
       : Promise.resolve([]),
   ])
   if (!disambiguator) console.log(`Exa S3 skipped [${artist}]: no disambiguator`)
@@ -1264,7 +1256,7 @@ async function generateSoloPrereads(
   // S5 — S1 and S2 both empty after the check, and a non-fine-art disambiguator.
   const s1s2Kept = pool.filter((r) => r.stage === 'S1' || r.stage === 'S2').length
   if (s1s2Kept === 0 && isNonFineArtDisambiguator(disambiguator)) {
-    const s5 = await search('S5', `${withContext} interview profile`, { includeDomains: exaFilterable(SOLO_CROSSOVER_DOMAINS) })
+    const s5 = await search('S5', `${withContext} interview profile`, { includeDomains: SOLO_CROSSOVER_DOMAINS })
     pool = [...pool, ...await checkAndKeep(dedupe(s5))]
   } else {
     console.log(`Exa S5 skipped [${artist}]: ${s1s2Kept > 0 ? `S1/S2 kept ${s1s2Kept}` : 'no non-fine-art disambiguator'}`)
