@@ -32,6 +32,7 @@ import {
   findReplacementPreread,
   prereadSubject,
   searchGalleryShowReview,
+  searchMuseumGroupShowReview,
   showReviewPendingUntil,
   isShowReviewDue,
   nextShowReviewStatus,
@@ -41,6 +42,7 @@ import {
 } from './claude'
 import {
   generateMuseumCoverage,
+  classifyMuseumShow,
   generateFairCoverage,
   crossLinkCoverageToReadings,
   coverageItemToPrereadRow,
@@ -139,11 +141,34 @@ class ArtistRetryPending extends Error {
 const GROUP_ARTIST_CAP = 5
 
 /**
- * Every gallery-path show with artists — solo, small group and large group — is on the
- * 14-day show-review gate.
+ * On the 14-day show-review gate: every gallery-path show with artists (solo, small
+ * and large group), and every museum group show (0 or 2+ artists), whose only
+ * coverage IS the show review.
  */
 function isOnShowReviewGate(ex: LoadedExhibition): boolean {
-  return ex.path === 'gallery' && ex.ctx.artists.length >= 1
+  if (ex.path === 'gallery') return ex.ctx.artists.length >= 1
+  return ex.path === 'museum' && classifyMuseumShow(ex.ctx.artists) === 'group_show'
+}
+
+/** The show's review date: stored, or its opening + 14 days. */
+function gatePendingUntil(ex: LoadedExhibition): string {
+  return ex.showReview.pendingUntil ?? showReviewPendingUntil(ex.startDate)
+}
+
+// Records the gate after a main run: the date always, the attempt only if it ran.
+async function recordShowReviewGate(ex: LoadedExhibition, pendingUntil: string, showReview: { ran: boolean; result: ShowReviewResult | null } | undefined): Promise<void> {
+  const { error } = await getSupabaseAdmin().from('exhibitions').update({
+    show_review_pending_until: pendingUntil,
+    ...(showReview?.ran && showReview.result ? {
+      show_review_attempted_at: new Date().toISOString(),
+      show_review_status: nextShowReviewStatus(ex.showReview.status, showReview.result),
+    } : {}),
+  }).eq('id', ex.ctx.exhibition_id)
+  if (error) throw new Error(`Failed to record show-review gate: ${error.message}`)
+}
+
+function museumReviewContext(ex: LoadedExhibition) {
+  return { ...ex.ctx, institution_name: ex.institutionName }
 }
 
 async function loadExhibition(exhibitionId: string): Promise<LoadedExhibition> {
@@ -166,7 +191,7 @@ function hasText(html: string | null): boolean {
 // Gallery-path shows (galleries, nonprofits, experimental spaces) need both artists
 // and a press release — the search is built on artist names and the press release
 // is what the quality check verifies the show against. Museums and fairs are never
-// blocked: museum coverage has its own no-artist tier (Type D) and fairs have no
+// blocked: a museum show with no artists is a group show (searched by title + venue) and fairs have no
 // artists at all. Artists are checked first, so a show missing both reads as
 // pending_artists; the admin warnings list both missing fields regardless.
 function blockingStatus(ex: LoadedExhibition): PrereadStatus | null {
@@ -249,7 +274,7 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
 
   if (ex.path === 'gallery') {
     const gated = isOnShowReviewGate(ex)
-    const pendingUntil = gated ? (ex.showReview.pendingUntil ?? showReviewPendingUntil(ex.startDate)) : null
+    const pendingUntil = gated ? gatePendingUntil(ex) : null
     // A group show left in 'error' by failed artist searches: search only those artists,
     // for only the artist slots still open (large group's 5).
     const retryArtists = ex.status === 'error' && ex.ctx.artists.length >= 2
@@ -278,16 +303,7 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: id })))
       if (error) throw new Error(`Failed to insert prereads: ${error.message}`)
     }
-    if (gated) {
-      const { error } = await db.from('exhibitions').update({
-        show_review_pending_until: pendingUntil,
-        ...(showReview?.ran && showReview.result ? {
-          show_review_attempted_at: new Date().toISOString(),
-          show_review_status: nextShowReviewStatus(ex.showReview.status, showReview.result),
-        } : {}),
-      }).eq('id', id)
-      if (error) throw new Error(`Failed to record show-review gate: ${error.message}`)
-    }
+    if (gated) await recordShowReviewGate(ex, pendingUntil!, showReview)
     // Carried over from Agent 1's old inline block: a gallery show with no show-level
     // review gets 'show_coverage' in missing_fields. A gated show whose review hasn't run
     // yet isn't missing it — it's waiting for it.
@@ -306,13 +322,35 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
     return fresh.length
   }
 
-  const coverage = ex.path === 'museum'
-    ? await generateMuseumCoverage(ex.ctx.show_title, ex.ctx.venue_name, ex.ctx.artists, id).then(async (r) => {
-      // The Type A-D tier still lives on the exhibition row.
-      await db.from('exhibitions').update({ coverage_type: r.coverageType }).eq('id', id)
-      return r.coverage
+  if (ex.path === 'museum') {
+    // Solo: contemporary/historical (3 tiers), then its searches. Group show: the show
+    // review only, once the 14-day gate is open.
+    const gated = isOnShowReviewGate(ex)
+    const pendingUntil = gated ? gatePendingUntil(ex) : null
+    const r = await generateMuseumCoverage({
+      exhibitionId: id,
+      showTitle: ex.ctx.show_title,
+      venueName: ex.ctx.venue_name,
+      institutionName: ex.institutionName,
+      venueUrl: ex.ctx.venue_url,
+      artists: ex.ctx.artists,
+      pressRelease: ex.ctx.press_release,
+      showReviewDue: gated && isShowReviewDue(pendingUntil, ex.showReview.attemptedAt, ex.showReview.status),
     })
-    : await generateFairCoverage(ex.institutionName, id)
+    // Needs migration_v59: the old CHECK only allows the Type A-D values.
+    const { error: typeError } = await db.from('exhibitions').update({ coverage_type: r.coverageType }).eq('id', id)
+    if (typeError) throw new Error(`Failed to record coverage_type: ${typeError.message}`)
+    const fresh = r.prereads.filter((p) => !p.article_url || !have.has(p.article_url))
+    if (fresh.length > 0) {
+      const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: id })))
+      if (error) throw new Error(`Failed to insert coverage: ${error.message}`)
+      await crossLinkCoverageToReadings(id, fresh.map((p) => ({ url: p.article_url })))
+    }
+    if (gated) await recordShowReviewGate(ex, pendingUntil!, r.showReview)
+    return fresh.length
+  }
+
+  const coverage = await generateFairCoverage(ex.institutionName, id)
 
   const fresh = coverage.filter((c) => !have.has(c.url))
   if (fresh.length > 0) {
@@ -506,7 +544,10 @@ export async function runAgent2ForExhibition(
       return { ...base, action: 'blocked', statusAfter: added, message: 'Blocked — this show has no artists. Add them, then Retrigger.' }
     }
     const statusAfter = await recomputePrereadStatus(exhibitionId)
-    const message = statusAfter === 'empty' ? 'Ran and found nothing.'
+    const waitingForReview = ex.path === 'museum' && isOnShowReviewGate(ex)
+      && !isShowReviewDue(gatePendingUntil(ex), ex.showReview.attemptedAt, ex.showReview.status)
+    const message = statusAfter === 'empty' && waitingForReview ? `Nothing yet — the show review is searched from ${gatePendingUntil(ex)}.`
+      : statusAfter === 'empty' ? 'Ran and found nothing.'
       : statusAfter === 'needs_review' ? `Added ${added} row(s); at least one is flagged and hidden.`
         : `Added ${added} row(s).`
     return { ...base, action: 'generated', statusAfter, rowsAdded: added, message }
@@ -677,7 +718,7 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   const ex = await loadExhibition(exhibitionId)
   const base = { exhibitionId, showTitle: ex.ctx.show_title, rowsAdded: 0 }
 
-  if (!isOnShowReviewGate(ex)) return { ...base, status: 'skipped', message: 'Not a gallery show with artists.' }
+  if (!isOnShowReviewGate(ex)) return { ...base, status: 'skipped', message: 'Not a gallery show with artists, or a museum group show.' }
   if (!isShowReviewDue(ex.showReview.pendingUntil, ex.showReview.attemptedAt, ex.showReview.status)) {
     return { ...base, status: 'skipped', message: `Not due (pending until ${ex.showReview.pendingUntil ?? 'unset'}).` }
   }
@@ -689,7 +730,9 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   let rowsAdded = 0
   try {
     const have = await existingUrls(exhibitionId)
-    const s4 = await searchGalleryShowReview(ex.ctx)
+    const s4 = ex.path === 'museum'
+      ? await searchMuseumGroupShowReview(museumReviewContext(ex))
+      : await searchGalleryShowReview(ex.ctx)
     const fresh = s4.rows.filter((p) => !p.article_url || !have.has(p.article_url))
     if (fresh.length > 0) {
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: exhibitionId })))
@@ -705,7 +748,9 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   }
   const status = nextShowReviewStatus(ex.showReview.status, result)
 
-  const missing = status === 'found'
+  // show_coverage in missing_fields is a gallery-only signal; museums never carried it.
+  const missing = ex.path !== 'gallery' ? ex.missingFields
+    : status === 'found'
     ? ex.missingFields.filter((f) => f !== 'show_coverage')
     : status === 'empty' && !ex.missingFields.includes('show_coverage') ? [...ex.missingFields, 'show_coverage'] : ex.missingFields
   const { error } = await db.from('exhibitions').update({

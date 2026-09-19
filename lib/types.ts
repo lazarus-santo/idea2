@@ -22,7 +22,7 @@ export interface Preread {
   // artist to attach).
   artist_name?: string | null
   // Named item_coverage_type, not coverage_type — exhibitions.coverage_type is
-  // the unrelated Type A/B/C-small/C-large/D classification tier.
+  // the unrelated museum classification ('solo' / 'group_show', migration_v59).
   item_coverage_type?: CoverageType | null
   author?: string | null
   // ISO-8601 datetime string (Exa's native publishedDate format), not a bare

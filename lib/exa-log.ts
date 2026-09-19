@@ -16,7 +16,9 @@ export interface LoggedExaSearchOptions {
   numResults?: number
   includeDomains?: string[]
   startPublishedDate?: string
-  contents?: { highlights?: boolean }
+  // `text` returns page text (capped) — museum solo's birth/death lookup reads it,
+  // since a highlight alone rarely carries the dates.
+  contents?: { highlights?: boolean; text?: boolean | { maxCharacters: number } }
 }
 
 export interface LoggedExaSearchContext {

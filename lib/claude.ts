@@ -99,6 +99,14 @@ const SOLO_CROSSOVER_DOMAINS = [
   'interviewmagazine.com', 'anothermag.com',
 ]
 
+// Position on the 22-outlet list (0 = first), or 22 for anything off it. Museum group
+// shows sort their unrestricted show search by this.
+export function pressDomainRank(url: string): number {
+  const host = getResultDomain(url)
+  const idx = SOLO_PRESS_DOMAINS.findIndex((d) => host === d || host.endsWith(`.${d}`))
+  return idx === -1 ? SOLO_PRESS_DOMAINS.length : idx
+}
+
 function isOnDomainList(url: string, domains: string[]): boolean {
   const host = getResultDomain(url)
   return domains.some((d) => host === d || host.endsWith(`.${d}`))
@@ -565,7 +573,7 @@ ${html
   return parsed
 }
 
-type PrereadRow = Omit<Preread, 'id' | 'exhibition_id' | 'created_at'>
+export type PrereadRow = Omit<Preread, 'id' | 'exhibition_id' | 'created_at'>
 export interface GeneratePrereadsResult {
   prereads: PrereadRow[]
   hasShowCoverage: boolean
@@ -904,7 +912,7 @@ async function withOneRetry<T>(label: string, attempt: () => Promise<T | null>):
 // people who happen to share the artist's name. Falls back to no context for any
 // artist with nothing usable found; callers must treat a missing entry as "search
 // unmodified," never as an error.
-async function extractArtistSearchContext(
+export async function extractArtistSearchContext(
   pressRelease: string | null,
   artistNames: string[],
   bios: Map<string, string>
@@ -1524,6 +1532,178 @@ export async function searchGalleryShowReview(ctx: PrereadRepairContext): Promis
 function showReviewResult(s4: { rows: unknown[]; searchFailed: boolean }): ShowReviewResult {
   if (s4.rows.length > 0) return 'found'
   return s4.searchFailed ? 'error' : 'empty'
+}
+
+// ─── Museum group show (0 or 2+ artists): the show review ────────────────────
+//
+// One show-level search, unrestricted, gated 14 days after opening like every gallery
+// show (the same show_review_* columns and cron). No per-artist searches.
+//
+//   1. self-sourced checks — the museum's own site, any known venue, an artist's own
+//      domain — before anything else
+//   2. mechanical anchor:
+//        a reliable artist is listed → the result names one of them AND the museum
+//        no reliable artist (e.g. 0 artists) → the result names the show AND the museum
+//   3. AI check grounded in the show's press release (always, on every survivor)
+//   4. sort by the 22-outlet list, keep up to 3
+//
+// A candidate the check never judged is kept with quality_flag 'unverified', which the
+// database blanks on insert (migration_v53) — same as every gallery path.
+
+export const MUSEUM_GROUP_REVIEW_CAP = 3
+
+export interface MuseumShowReviewContext {
+  exhibition_id: string | null
+  show_title: string
+  artists: string[]
+  press_release: string | null
+  venue_name: string
+  institution_name?: string | null
+  venue_url: string | null
+}
+
+// Words that name a kind of place rather than this one. "Whitney Museum" still anchors
+// on "whitney"; "New Museum", whose words are all generic, anchors on its full name.
+const GENERIC_VENUE_WORDS = new Set([
+  'the', 'museum', 'of', 'art', 'arts', 'and', 'in', 'at', 'for', 'gallery', 'galleries',
+  'collection', 'center', 'centre', 'institute', 'foundation', 'house', 'new', 'york', 'nyc',
+  'american', 'national', 'modern', 'contemporary', 'society', 'madison', 'fifth', 'avenue',
+])
+
+// Short names reviews spell out (or the reverse). Keyed by the normalized venue or
+// institution name as stored.
+const VENUE_ALIASES: Record<string, string[]> = {
+  'moma': ['museum of modern art', 'moma'],
+  'moma ps1': ['moma ps1', 'ps1'],
+  'mad museum': ['museum of arts and design', 'mad museum'],
+  'the met': ['metropolitan museum', 'the met'],
+  'the metropolitan museum of art': ['metropolitan museum', 'the met'],
+  'frick madison': ['frick'],
+  'the frick collection': ['frick'],
+  'whitney museum': ['whitney'],
+  'guggenheim museum': ['guggenheim'],
+  'studio museum in harlem': ['studio museum'],
+}
+
+/** The phrases that count as naming the venue: full names, aliases, distinctive words. */
+export function venueAnchorPhrases(names: (string | null | undefined)[]): string[] {
+  const phrases = new Set<string>()
+  for (const raw of names) {
+    const name = raw?.trim()
+    if (!name) continue
+    const norm = normalizeForMatch(name).trim()
+    phrases.add(norm)
+    for (const a of VENUE_ALIASES[norm] ?? []) phrases.add(a)
+    // A single distinctive word (4+ letters) is enough: "Whitney", "Guggenheim", "Frick".
+    for (const w of norm.split(' ')) {
+      if (w.length >= 4 && !GENERIC_VENUE_WORDS.has(w)) phrases.add(w)
+    }
+  }
+  return [...phrases]
+}
+
+export function mentionsVenue(text: string, venueNames: (string | null | undefined)[]): boolean {
+  const norm = normalizeForMatch(text)
+  return venueAnchorPhrases(venueNames).some((p) => containsPhrase(norm, p))
+}
+
+// An artist name the anchor can lean on: at least two significant name parts. A
+// mononym or one-word collective ("Aziz", "Studio") matches far too much text.
+export function isReliableArtistName(name: string): boolean {
+  return significantNameParts(name).length >= 2
+}
+
+// Every significant part of the name, whole-word — the same rule as isAboutArtist.
+function mentionsArtist(text: string, artist: string): boolean {
+  const parts = significantNameParts(artist)
+  return parts.length > 0 && parts.every((p) => containsWholeWord(text, p))
+}
+
+const TITLE_STOPWORDS = new Set(['the', 'and', 'for', 'from', 'with', 'into', 'of', 'a', 'an', 'in', 'on', 'to', 'at'])
+
+// Fuzzy title match: the full title, or the part either side of a colon/dash (4+
+// characters), or — for a title of 3+ significant words — at least 3 in 4 of those
+// words present. Reviews shorten long museum titles ("Buddha and Shiva, Lotus and
+// Dragon" for the whole "…: Celebrating 70 Years of…").
+export function mentionsShowTitle(text: string, showTitle: string): boolean {
+  const norm = normalizeForMatch(text)
+  const segments = showTitle.split(/\s*[:|–—]\s*/).map((p) => p.trim()).filter((p) => p.length >= 4)
+  if ([showTitle, ...segments].some((t) => containsPhrase(norm, t))) return true
+  const words = normalizeForMatch(showTitle).trim().split(' ').filter((w) => w.length > 2 && !TITLE_STOPWORDS.has(w))
+  if (words.length < 3) return false
+  const present = words.filter((w) => norm.includes(` ${w} `)).length
+  return present / words.length >= 0.75
+}
+
+export type MuseumAnchor = 'artist_venue' | 'title_venue'
+
+/** Which anchor a museum group show uses: an artist when a reliable one is listed, else the title. */
+export function museumAnchorFor(artists: string[]): MuseumAnchor {
+  return artists.some(isReliableArtistName) ? 'artist_venue' : 'title_venue'
+}
+
+export function passesMuseumAnchor(
+  r: { title: string | null; highlights?: string[]; text?: string },
+  ctx: Pick<MuseumShowReviewContext, 'show_title' | 'artists' | 'venue_name' | 'institution_name'>
+): boolean {
+  const text = [r.title ?? '', ...(r.highlights ?? []), r.text ?? ''].join(' ')
+  if (!mentionsVenue(text, [ctx.venue_name, ctx.institution_name])) return false
+  if (museumAnchorFor(ctx.artists) === 'artist_venue') {
+    return ctx.artists.filter(isReliableArtistName).some((a) => mentionsArtist(text, a))
+  }
+  return mentionsShowTitle(text, ctx.show_title)
+}
+
+const MUSEUM_REVIEW_TEXT_CHARS = 4000
+
+/**
+ * The museum group show's review search. Throws if the venue blocklist can't be read;
+ * a failed Exa call is reported as result 'error', never as an empty search.
+ */
+export async function searchMuseumGroupShowReview(
+  ctx: MuseumShowReviewContext,
+  exaClient?: Exa
+): Promise<{ rows: PrereadRow[]; result: ShowReviewResult; anchor: MuseumAnchor }> {
+  const exa = exaClient ?? new Exa(process.env.EXA_API_KEY!)
+  const anchor = museumAnchorFor(ctx.artists)
+  const galleryDomains = await buildGalleryBlocklist()
+  const venueDomain = ctx.venue_url ? getResultDomain(ctx.venue_url) || null : null
+
+  const query = `${ctx.show_title} ${ctx.venue_name} exhibition review`
+  const res = await loggedExaSearch(exa, query, {
+    type: 'auto',
+    numResults: 10,
+    contents: { highlights: true, text: { maxCharacters: MUSEUM_REVIEW_TEXT_CHARS } },
+  }, { exhibitionId: ctx.exhibition_id, functionName: 'searchMuseumGroupShowReview' })
+
+  type Raw = PoolResult & { text?: string }
+  const raw = (res.results as unknown as Raw[])
+  const selfSourced = raw.filter((r) => isBlockedUrl(r.url, galleryDomains)
+    || isSelfSourcedByVenue(r.url, venueDomain)
+    || ctx.artists.some((a) => isSelfSourcedByArtistDomain(r.url, a)))
+  const pool = raw.filter((r): r is Raw & { title: string } => !!r.title?.trim() && !selfSourced.includes(r))
+  const anchored = pool.filter((r) => passesMuseumAnchor(r, ctx))
+  console.log(`Museum group review [${ctx.show_title}]: ${raw.length} found, ${selfSourced.length} self-sourced/blocked, ${anchored.length} passed the ${anchor} anchor`)
+
+  let kept: (PoolResult & { title: string })[] = anchored.map((r) => ({ ...r, contentPriority: 0 as const }))
+  if (kept.length > 0) {
+    const verified = await verifySubstantiallyAbout(
+      `the exhibition "${ctx.show_title}" at ${ctx.venue_name}`,
+      ctx.press_release,
+      kept,
+      { sourceKind: 'show_press_release' }
+    )
+    kept = applyQualityGate(kept, verified)
+    console.log(`Museum group review check [${ctx.show_title}]: ${kept.length} of ${anchored.length} kept`)
+  }
+
+  const rows = [...kept]
+    .sort((a, b) => pressDomainRank(a.url) - pressDomainRank(b.url))
+    .slice(0, MUSEUM_GROUP_REVIEW_CAP)
+    .map((r) => ({ ...toPrereadRow(r), summary: null, item_coverage_type: 'show_coverage' as const }))
+
+  const result: ShowReviewResult = rows.length > 0 ? 'found' : res.error ? 'error' : 'empty'
+  return { rows, result, anchor }
 }
 
 // ─── Single-row repair (Agent 2 retry, admin Replace) ─────────────────────────

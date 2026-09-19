@@ -3,7 +3,7 @@
 // and the order it is shown in come from one list. Kept free of the Anthropic/Exa
 // clients museum-coverage.ts creates at import, so the page can load it.
 
-// Order matters — the publication-importance ranking for Type C-Large and fairs
+// Order matters — the publication-importance ranking for fairs (and, before 2026-09-18, museum Type C-Large)
 // (Artforum > Hyperallergic > NYT > ARTnews > The Art Newspaper > Artnet > New Yorker
 // > Frieze > Brooklyn Rail > FT).
 export const MUSEUM_TARGET_DOMAINS = [
