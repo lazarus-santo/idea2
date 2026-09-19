@@ -5,7 +5,12 @@ import {
   extractJsonObject,
   publicationFromUrl,
   extractArtistSearchContext,
+  generatePrereads,
+  searchGalleryShowReview,
   searchMuseumGroupShowReview,
+  type PrereadRepairContext,
+  type ArtistIdentity,
+  type MuseumRepairKind,
   type PrereadRow,
   type ShowReviewAttempt,
 } from './claude'
@@ -19,13 +24,9 @@ const exa = new Exa(process.env.EXA_API_KEY!)
 // MUSEUM_TARGET_DOMAINS and publicationImportanceRank live in lib/coverage-ranking.ts,
 // shared with the public page so display order follows the same ranking.
 
-// Museum solo searches filter to all of MUSEUM_TARGET_DOMAINS, nytimes.com included.
-// It was once stripped on the belief that Exa 403s a filter naming it; that was never
-// true on retest (gallery, 2026-09-18: 15+ filtered searches, 0 errors, NYT results
-// returned; museum solo retested the same day).
-//
-// Fairs still use the old list without nytimes.com — same false premise, but fairs
-// weren't part of this fix. Left for a separate decision.
+// Fairs filter to MUSEUM_TARGET_DOMAINS minus nytimes.com. It was stripped on the
+// belief that Exa 403s a filter naming it; that was never true on retest (2026-09-18:
+// 15+ filtered searches, 0 errors, NYT results returned). Left for a separate decision.
 const FAIR_QUERYABLE_DOMAINS = MUSEUM_TARGET_DOMAINS.filter((d) => d !== 'nytimes.com')
 
 interface MuseumSearchResult {
@@ -40,8 +41,7 @@ function isValidResult(r: MuseumSearchResult): r is MuseumSearchResult & { title
   return !!r.title?.trim()
 }
 
-// functionName identifies the actual caller (generateSoloContemporary,
-// generateSoloHistorical, generateFairCoverage) rather than always logging
+// functionName identifies the actual caller (generateFairCoverage) rather than always logging
 // 'museumSearch' — this is the one function that issues the real Exa call for museum
 // solo and fair coverage, but which classification tier or fair
 // path triggered it is the useful signal for exa_search_log, same as gallery's
@@ -102,7 +102,9 @@ export function coverageItemToPrereadRow(exhibitionId: string, item: CoverageIte
 
 // ─── Classification ───────────────────────────────────────────────────────────
 // Two kinds of museum show, by artist count alone:
-//   1 artist      → 'solo'        (then contemporary vs historical, below)
+//   1 artist      → 'solo'        (then contemporary vs historical, below: contemporary
+//                                  gets the gallery solo ladder, historical only the
+//                                  show review below)
 //   0 or 2+       → 'group_show'  (one show-level review search, 14-day gate)
 // Replaces the old Type A/B/C-Small/C-Large/D tiers entirely.
 
@@ -331,11 +333,15 @@ export interface EraOverrides {
   tier2?: (artistName: string) => Promise<'yes' | 'no' | 'uncertain' | undefined>
 }
 
+/**
+ * The era, plus the disambiguator found on the way — the contemporary ladder reuses
+ * it rather than extracting (and paying for) a second, possibly different one.
+ */
 export async function classifyArtistEra(
   artistName: string,
   show: { showTitle: string; venueName: string; pressRelease: string | null; exhibitionId: string | null },
   overrides: EraOverrides = {}
-): Promise<EraDecision> {
+): Promise<EraDecision & { disambiguator: string | null }> {
   // The same disambiguator gallery shows use (bio first, else the press release).
   const bios = await fetchArtistBiosForEra(artistName)
   const context = await extractArtistSearchContext(show.pressRelease, [artistName], bios)
@@ -354,9 +360,9 @@ export async function classifyArtistEra(
 
   return log(await eraFromPressRelease(artistName, show.showTitle, show.venueName, show.pressRelease))
 
-  function log(d: EraDecision): EraDecision {
+  function log(d: EraDecision): EraDecision & { disambiguator: string | null } {
     console.log(`Museum era [${artistName}]: ${d.era} via ${d.tier} — ${d.evidence}`)
-    return d
+    return { ...d, disambiguator }
   }
 }
 
@@ -371,43 +377,42 @@ async function fetchArtistBiosForEra(artistName: string): Promise<Map<string, st
   return bios
 }
 
-// ─── Solo, contemporary (was Type A) ─────────────────────────────────────────
-async function generateSoloContemporary(exhibitionTitle: string, institutionName: string, artistName: string, exhibitionId: string | null): Promise<CoverageItem[]> {
-  const [s1, s2, s3] = await Promise.all([
-    museumSearch(`${exhibitionTitle} ${artistName} ${institutionName} review`, 3, exhibitionId, 'generateSoloContemporary'),
-    museumSearch(`${artistName} interview profile studio practice`, 3, exhibitionId, 'generateSoloContemporary'),
-    museumSearch(`${artistName} exhibition review -${exhibitionTitle}`, 3, exhibitionId, 'generateSoloContemporary'),
-  ])
-
-  const seenUrls = new Set<string>()
-  const items: CoverageItem[] = []
-  const pick = (results: MuseumSearchResult[], coverageType: CoverageType) => {
-    const best = results.filter(isValidResult).find((r) => !seenUrls.has(r.url))
-    if (best) {
-      seenUrls.add(best.url)
-      items.push(toCoverageItem(best, coverageType, artistName))
-    }
-  }
-
-  pick(s1, 'show_coverage')
-  pick(s2, 'artist_profile')
-  pick(s3, 'past_show')
-
-  return items.slice(0, 3)
+// ─── Solo, contemporary: the gallery solo ladder (S1-S5) ─────────────────────
+// No museum version of it: generatePrereads with the one artist runs gallery's
+// generateSoloPrereads as is — the same searches, 22 outlets, self-sourced checks,
+// "described as …" check, S4 on the 14-day gate and S5 crossover. The museum's own
+// site is covered by the venue blocklist and the venue-domain check, like a gallery's.
+async function generateSoloContemporary(input: MuseumCoverageInput, artist: string, disambiguator: string | null) {
+  const r = await generatePrereads({
+    show_title: input.showTitle,
+    artists: [artist],
+    start_date: null,
+    end_date: null,
+    description: null,
+    press_release: input.pressRelease,
+    image_url: null,
+    venue_name: input.venueName,
+    venue_url: input.venueUrl,
+    exhibition_id: input.exhibitionId,
+    show_review_due: input.showReviewDue,
+    search_context: new Map(disambiguator ? [[artist, disambiguator]] : []),
+  })
+  // The public museum page orders rows by item_coverage_type: the show review first.
+  const reviewUrls = new Set(r.showReviewUrls ?? [])
+  const prereads = r.prereads.map((p): PrereadRow => ({
+    ...p,
+    item_coverage_type: p.article_url && reviewUrls.has(p.article_url) ? 'show_coverage' : 'artist_profile',
+  }))
+  return { prereads, showReview: r.showReview ?? { ran: false, result: null } }
 }
 
-// ─── Solo, historical (was Type B): show coverage only ───────────────────────
-async function generateSoloHistorical(exhibitionTitle: string, institutionName: string, exhibitionId: string | null): Promise<CoverageItem[]> {
-  const results = await museumSearch(`${exhibitionTitle} ${institutionName}`, 5, exhibitionId, 'generateSoloHistorical')
-  const seenUrls = new Set<string>()
-  const items: CoverageItem[] = []
-  for (const r of results.filter(isValidResult)) {
-    if (seenUrls.has(r.url)) continue
-    seenUrls.add(r.url)
-    items.push(toCoverageItem(r, 'show_coverage', null))
-    if (items.length === 2) break
-  }
-  return items
+/**
+ * The daily show-review job's search for a contemporary museum solo show: gallery
+ * solo's S4 (searchGalleryShowReview), rows labelled show_coverage.
+ */
+export async function searchMuseumSoloShowReview(ctx: PrereadRepairContext) {
+  const r = await searchGalleryShowReview(ctx)
+  return { ...r, rows: r.rows.map((p): PrereadRow => ({ ...p, item_coverage_type: 'show_coverage' })) }
 }
 
 export interface MuseumCoverageInput {
@@ -418,7 +423,10 @@ export interface MuseumCoverageInput {
   venueUrl: string | null
   artists: string[]
   pressRelease: string | null
-  /** Group shows: whether the 14-day show-review gate is open (isShowReviewDue). */
+  /**
+   * Whether the 14-day show-review gate is open (isShowReviewDue). Every museum show
+   * type uses it.
+   */
   showReviewDue: boolean
 }
 
@@ -428,7 +436,10 @@ export interface MuseumCoverageResult {
   prereads: PrereadRow[]
   /** Solo only. */
   era?: EraDecision
-  /** Group only: whether the show review ran this time and what it found. */
+  /**
+   * Whether the show review ran this time and what it found — set for every museum
+   * show; the caller records it on the 14-day gate.
+   */
   showReview?: ShowReviewAttempt
 }
 
@@ -440,16 +451,28 @@ export async function generateMuseumCoverage(input: MuseumCoverageInput): Promis
     const era = await classifyArtistEra(artist, {
       showTitle: input.showTitle, venueName: input.venueName, pressRelease: input.pressRelease, exhibitionId: input.exhibitionId,
     })
-    const coverage = era.era === 'contemporary'
-      ? await generateSoloContemporary(input.showTitle, input.venueName, artist, input.exhibitionId)
-      : await generateSoloHistorical(input.showTitle, input.venueName, input.exhibitionId)
-    console.log(`Museum coverage [solo/${era.era} / ${input.showTitle}]:`, coverage.map((c) => ({ title: c.title, url: c.url })))
-    return { coverageType, era, prereads: coverage.map((c) => coverageItemToRow(c)) }
+    if (era.era === 'contemporary') {
+      const { prereads, showReview } = await generateSoloContemporary(input, artist, era.disambiguator)
+      console.log(`Museum coverage [solo/contemporary / ${input.showTitle}]:`, prereads.map((p) => ({ title: p.article_title, url: p.article_url, flag: p.quality_flag })))
+      return { coverageType, era, prereads, showReview }
+    }
+    // Historical: show reviews only — the group show's review step, gate and all.
+    return { coverageType, era, ...await museumShowReview(input, 'solo/historical') }
   }
 
+  return { coverageType, ...await museumShowReview(input, 'group_show') }
+}
+
+/**
+ * A museum show's review, once its 14 days are up: the group show's search, anchor,
+ * press-release check and 22-outlet sort (searchMuseumGroupShowReview), up to 3 kept.
+ * Shared by group shows and historical solo shows — a historical artist gets no
+ * interview or practice search, only coverage of this show.
+ */
+async function museumShowReview(input: MuseumCoverageInput, label: string): Promise<{ prereads: PrereadRow[]; showReview: ShowReviewAttempt }> {
   if (!input.showReviewDue) {
-    console.log(`Museum group review skipped [${input.showTitle}]: not due yet (14 days after opening)`)
-    return { coverageType, prereads: [], showReview: { ran: false, result: null } }
+    console.log(`Museum show review skipped [${label} / ${input.showTitle}]: not due yet (14 days after opening)`)
+    return { prereads: [], showReview: { ran: false, result: null } }
   }
   try {
     const review = await searchMuseumGroupShowReview({
@@ -461,19 +484,37 @@ export async function generateMuseumCoverage(input: MuseumCoverageInput): Promis
       institution_name: input.institutionName,
       venue_url: input.venueUrl,
     })
-    console.log(`Museum coverage [group_show / ${input.showTitle}] (${review.anchor}):`, review.rows.map((r) => ({ title: r.article_title, url: r.article_url, flag: r.quality_flag })))
-    return { coverageType, prereads: review.rows, showReview: { ran: true, result: review.result } }
+    console.log(`Museum coverage [${label} / ${input.showTitle}] (${review.anchor}):`, review.rows.map((r) => ({ title: r.article_title, url: r.article_url, flag: r.quality_flag })))
+    return { prereads: review.rows, showReview: { ran: true, result: review.result } }
   } catch (err) {
-    console.error(`Museum group review failed [${input.showTitle}]:`, err)
-    return { coverageType, prereads: [], showReview: { ran: true, result: 'error' } }
+    console.error(`Museum show review failed [${label} / ${input.showTitle}]:`, err)
+    return { prereads: [], showReview: { ran: true, result: 'error' } }
   }
 }
 
-function coverageItemToRow(item: CoverageItem): PrereadRow {
-  const { exhibition_id: _unused, ...row } = coverageItemToPrereadRow('', item)
-  void _unused
-  return row
+/**
+ * The context Agent 2's repair and Replace need for a museum show: which museum
+ * search and check its rows go through. A solo show's era isn't stored anywhere, so
+ * it is decided again here (the same three tiers), and the disambiguator found on
+ * the way is handed to the artist check rather than extracted a second time.
+ */
+export async function museumRepairContext(ctx: PrereadRepairContext, institutionName: string): Promise<PrereadRepairContext> {
+  let kind: MuseumRepairKind = 'group_show'
+  if (classifyMuseumShow(ctx.artists) === 'solo') {
+    const artist = ctx.artists[0]
+    const era = await classifyArtistEra(artist, {
+      showTitle: ctx.show_title, venueName: ctx.venue_name, pressRelease: ctx.press_release, exhibitionId: ctx.exhibition_id,
+    })
+    kind = era.era === 'contemporary' ? 'solo_contemporary' : 'solo_historical'
+    const bio = (await fetchArtistBiosForEra(artist)).get(artist) ?? null
+    const identity: ArtistIdentity = { disambiguator: era.disambiguator, bio }
+    ctx.identityCache ??= new Map()
+    ctx.identityCache.set(artist, Promise.resolve(identity))
+  }
+  console.log(`Museum repair [${ctx.show_title}]: ${kind}`)
+  return { ...ctx, museum: { kind, institution_name: institutionName } }
 }
+
 
 // ─── Fair coverage ────────────────────────────────────────────────────────────
 //

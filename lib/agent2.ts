@@ -37,12 +37,14 @@ import {
   isShowReviewDue,
   nextShowReviewStatus,
   type PrereadRepairContext,
+  type MuseumRepairKind,
   type ShowReviewResult,
   type ShowReviewStatus,
 } from './claude'
 import {
   generateMuseumCoverage,
-  classifyMuseumShow,
+  searchMuseumSoloShowReview,
+  museumRepairContext,
   generateFairCoverage,
   crossLinkCoverageToReadings,
   coverageItemToPrereadRow,
@@ -142,12 +144,12 @@ const GROUP_ARTIST_CAP = 5
 
 /**
  * On the 14-day show-review gate: every gallery-path show with artists (solo, small
- * and large group), and every museum group show (0 or 2+ artists), whose only
- * coverage IS the show review.
+ * and large group) and every museum show — a group show or historical solo show,
+ * whose only coverage IS the show review, and a contemporary solo show (gallery's S4).
  */
 function isOnShowReviewGate(ex: LoadedExhibition): boolean {
   if (ex.path === 'gallery') return ex.ctx.artists.length >= 1
-  return ex.path === 'museum' && classifyMuseumShow(ex.ctx.artists) === 'group_show'
+  return ex.path === 'museum'
 }
 
 /** The show's review date: stored, or its opening + 14 days. */
@@ -165,6 +167,13 @@ async function recordShowReviewGate(ex: LoadedExhibition, pendingUntil: string, 
     } : {}),
   }).eq('id', ex.ctx.exhibition_id)
   if (error) throw new Error(`Failed to record show-review gate: ${error.message}`)
+}
+
+// Which review search a museum show's gate runs: gallery's S4 for a contemporary solo
+// show, the group show's for a group or historical solo show. The era isn't stored,
+// so a solo show's is decided again here (museumRepairContext, the same three tiers).
+async function museumReviewSearchKind(ex: LoadedExhibition): Promise<MuseumRepairKind> {
+  return (await museumRepairContext(ex.ctx, ex.institutionName)).museum!.kind
 }
 
 function museumReviewContext(ex: LoadedExhibition) {
@@ -323,10 +332,10 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
   }
 
   if (ex.path === 'museum') {
-    // Solo: contemporary/historical (3 tiers), then its searches. Group show: the show
-    // review only, once the 14-day gate is open.
-    const gated = isOnShowReviewGate(ex)
-    const pendingUntil = gated ? gatePendingUntil(ex) : null
+    // Solo: contemporary/historical (3 tiers), then the gallery solo ladder
+    // (contemporary) or the show review only (historical). Group show: the show review
+    // only. Every museum show is gated at 14 days.
+    const pendingUntil = gatePendingUntil(ex)
     const r = await generateMuseumCoverage({
       exhibitionId: id,
       showTitle: ex.ctx.show_title,
@@ -335,7 +344,7 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       venueUrl: ex.ctx.venue_url,
       artists: ex.ctx.artists,
       pressRelease: ex.ctx.press_release,
-      showReviewDue: gated && isShowReviewDue(pendingUntil, ex.showReview.attemptedAt, ex.showReview.status),
+      showReviewDue: isShowReviewDue(pendingUntil, ex.showReview.attemptedAt, ex.showReview.status),
     })
     // Needs migration_v59: the old CHECK only allows the Type A-D values.
     const { error: typeError } = await db.from('exhibitions').update({ coverage_type: r.coverageType }).eq('id', id)
@@ -346,7 +355,7 @@ async function generate(ex: LoadedExhibition): Promise<number | 'pending_artists
       if (error) throw new Error(`Failed to insert coverage: ${error.message}`)
       await crossLinkCoverageToReadings(id, fresh.map((p) => ({ url: p.article_url })))
     }
-    if (gated) await recordShowReviewGate(ex, pendingUntil!, r.showReview)
+    if (r.showReview) await recordShowReviewGate(ex, pendingUntil, r.showReview)
     return fresh.length
   }
 
@@ -370,11 +379,14 @@ interface StoredPreread {
   article_title: string | null
   summary: string | null
   artist_name: string | null
+  item_coverage_type: string | null
   quality_flag: QualityFlag | null
   row_status: RowStatus
+  /** migration_v60 — a flagged row only a person may repair (Replace); automatic repair skips it. */
+  repair_hold: boolean
 }
 
-const PREREAD_SELECT = 'id, exhibition_id, article_url, article_title, summary, artist_name, quality_flag, row_status'
+const PREREAD_SELECT = 'id, exhibition_id, article_url, article_title, summary, artist_name, item_coverage_type, quality_flag, row_status, repair_hold'
 
 type RowRepairResult =
   | { repaired: true; how: 'rechecked' | 'replaced' }
@@ -395,14 +407,14 @@ async function repairRow(
   if (opts.recheckFirst) {
     const verdict = await recheckPreread(ex.ctx, row)
     if (verdict === 'pass') {
-      const { error } = await db.from('prereads').update({ quality_flag: null, row_status: 'active' }).eq('id', row.id)
+      const { error } = await db.from('prereads').update({ quality_flag: null, row_status: 'active', repair_hold: false }).eq('id', row.id)
       if (error) throw new Error(`Failed to update preread: ${error.message}`)
       return { repaired: true, how: 'rechecked' }
     }
     recheckFlag = verdict
   }
 
-  const subject = prereadSubject(ex.ctx, row.artist_name)
+  const subject = prereadSubject(ex.ctx, row.artist_name, row.item_coverage_type)
   const found = await findReplacementPreread(ex.ctx, subject, opts.excludeUrls, opts.customQuery)
   if (found.ok) {
     const { error } = await db.from('prereads').update({
@@ -412,6 +424,7 @@ async function repairRow(
       artist_name: row.artist_name ?? found.row.artist_name ?? null,
       quality_flag: null,
       row_status: 'active',
+      repair_hold: false,
     }).eq('id', row.id)
     if (error) throw new Error(`Failed to update preread: ${error.message}`)
     // Two flagged rows repaired in one pass must not both land on this article.
@@ -428,12 +441,23 @@ async function repairRow(
   return { repaired: false, flag, note }
 }
 
+// A museum show is repaired with its own search and check (museumRepairContext
+// decides which — for a solo show that means running the era check again). Gallery
+// shows need nothing added.
+async function withRepairContext(ex: LoadedExhibition): Promise<LoadedExhibition> {
+  if (ex.path !== 'museum') return ex
+  return { ...ex, ctx: await museumRepairContext(ex.ctx, ex.institutionName) }
+}
+
+// Flagged rows automatic repair may touch — held rows (repair_hold) are left for a
+// person to Replace.
 async function flaggedRows(exhibitionId: string): Promise<StoredPreread[]> {
   const { data, error } = await getSupabaseAdmin()
     .from('prereads')
     .select(PREREAD_SELECT)
     .eq('exhibition_id', exhibitionId)
     .not('quality_flag', 'is', null)
+    .eq('repair_hold', false)
   if (error) throw new Error(`Failed to read flagged prereads: ${error.message}`)
   return (data ?? []) as StoredPreread[]
 }
@@ -518,13 +542,16 @@ export async function runAgent2ForExhibition(
   }
 
   if (ex.status === 'needs_review') {
-    if (ex.path !== 'gallery') {
-      // Unreachable today: nothing flags museum or fair rows (they have no quality
-      // check yet). Left explicit so a future flag doesn't send them into the
-      // gallery repair search by accident.
-      return skip('Museum/fair coverage has no repair path yet.')
+    if (ex.path === 'fair') {
+      // Unreachable today: nothing flags fair rows (they have no quality check yet).
+      // Left explicit so a future flag doesn't send them into a repair search by accident.
+      return skip('Fair coverage has no repair path yet.')
     }
-    const { repaired, stillFlagged } = await repairFlagged(ex, errors)
+    // Checked before withRepairContext, which runs the era check for a museum solo show.
+    if ((await flaggedRows(exhibitionId)).length === 0) {
+      return skip('Every flagged row is held for a person to Replace.')
+    }
+    const { repaired, stillFlagged } = await repairFlagged(await withRepairContext(ex), errors)
     const statusAfter = await recomputePrereadStatus(exhibitionId)
     return {
       ...base,
@@ -586,7 +613,8 @@ export interface ReplaceOutcome {
  * On success the row gets the new article, quality_flag NULL and row_status
  * 'active'. On failure a FLAGGED row gets the new flag; a CLEAN row is left exactly
  * as it was — failing to find something better is no reason to hide an article
- * that passed. Museum and fair rows are refused: they have no quality check yet.
+ * that passed. Museum rows use their show type's search and check; fair rows are
+ * refused, since fair coverage has no quality check yet.
  */
 export async function replacePreread(prereadId: string, customQuery?: string | null): Promise<ReplaceOutcome> {
   const db = getSupabaseAdmin()
@@ -594,10 +622,11 @@ export async function replacePreread(prereadId: string, customQuery?: string | n
   if (error || !row) throw new Agent2UserError(`Preread ${prereadId} not found`, 404)
   const stored = row as StoredPreread
 
-  const ex = await loadExhibition(stored.exhibition_id)
-  if (ex.path !== 'gallery') {
-    throw new Agent2UserError('Replace is only available for gallery prereads. Museum and fair coverage has no quality check yet.', 400)
+  const loaded = await loadExhibition(stored.exhibition_id)
+  if (loaded.path === 'fair') {
+    throw new Agent2UserError('Replace is not available for fair coverage: it has no quality check yet.', 400)
   }
+  const ex = await withRepairContext(loaded)
 
   const exclude = await existingUrls(ex.ctx.exhibition_id)
   const result = await repairRow(ex, stored, {
@@ -718,7 +747,7 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   const ex = await loadExhibition(exhibitionId)
   const base = { exhibitionId, showTitle: ex.ctx.show_title, rowsAdded: 0 }
 
-  if (!isOnShowReviewGate(ex)) return { ...base, status: 'skipped', message: 'Not a gallery show with artists, or a museum group show.' }
+  if (!isOnShowReviewGate(ex)) return { ...base, status: 'skipped', message: 'Not a gallery show with artists, or a museum show.' }
   if (!isShowReviewDue(ex.showReview.pendingUntil, ex.showReview.attemptedAt, ex.showReview.status)) {
     return { ...base, status: 'skipped', message: `Not due (pending until ${ex.showReview.pendingUntil ?? 'unset'}).` }
   }
@@ -730,9 +759,9 @@ export async function runSoloShowReview(exhibitionId: string, errors: AgentRunEr
   let rowsAdded = 0
   try {
     const have = await existingUrls(exhibitionId)
-    const s4 = ex.path === 'museum'
-      ? await searchMuseumGroupShowReview(museumReviewContext(ex))
-      : await searchGalleryShowReview(ex.ctx)
+    const s4 = ex.path !== 'museum' ? await searchGalleryShowReview(ex.ctx)
+      : await museumReviewSearchKind(ex) === 'solo_contemporary' ? await searchMuseumSoloShowReview(ex.ctx)
+        : await searchMuseumGroupShowReview(museumReviewContext(ex))
     const fresh = s4.rows.filter((p) => !p.article_url || !have.has(p.article_url))
     if (fresh.length > 0) {
       const { error } = await db.from('prereads').insert(fresh.map((p) => ({ ...p, exhibition_id: exhibitionId })))

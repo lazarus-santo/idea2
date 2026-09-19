@@ -4,8 +4,8 @@ import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
 
 // POST /api/admin/prereads/[id]/replace — the admin Replace button (Trigger 3B).
 // Body: { query?: string }. No query = a regular Agent 2 retry for this one row;
-// a query = the admin's own search terms, used as-is. Gallery prereads only —
-// museum and fair coverage has no quality check yet and gets a 400.
+// a query = the admin's own search terms, used as-is. Gallery and museum rows —
+// fair coverage has no quality check yet and gets a 400.
 export const maxDuration = 120
 
 export async function POST(request: NextRequest,

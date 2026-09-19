@@ -590,6 +590,9 @@ export interface GeneratePrereadsResult {
   retryArtists?: string[]
   // The failed-search messages behind retryArtists, for the run's error log.
   searchErrors?: string[]
+  // Solo: the URLs among `prereads` that are the show review (S4), so a museum solo
+  // show can label them show_coverage for its public page's ordering.
+  showReviewUrls?: string[]
 }
 
 /**
@@ -1239,6 +1242,9 @@ export async function generatePrereads(
     show_review_due?: boolean
     // Small and large group: a retry run for artists whose search failed (see ArtistRetry).
     retry?: ArtistRetry
+    // Disambiguators already extracted by the caller (museum solo does it for its
+    // era check) — the same extraction, so it isn't paid for or re-rolled twice.
+    search_context?: Map<string, string>
   }
 ): Promise<GeneratePrereadsResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
@@ -1272,7 +1278,8 @@ export async function generatePrereads(
   // (e.g. "musician and filmmaker") from their own bio when available, else the show's
   // shared press release — steers searches away from unrelated same-named people.
   // No-ops if nothing usable is found; every query below degrades gracefully.
-  const searchContext = await extractArtistSearchContext(exhibition.press_release, searchArtists, bios)
+  const searchContext = exhibition.search_context
+    ?? await extractArtistSearchContext(exhibition.press_release, searchArtists, bios)
 
   if (showType === 'small_group') {
     return generateSmallGroupPrereads(exa, exhibition, isValid, searchContext, bios, venueDomain)
@@ -1287,6 +1294,9 @@ export async function generatePrereads(
 }
 
 // ─── Gallery solo ladder (S1-S5) ─────────────────────────────────────────────
+//
+// Also the contemporary museum solo ladder: generateMuseumCoverage calls
+// generatePrereads for it, unchanged.
 //
 //   S1  broad recent coverage       rolling 2 years, unrestricted, 22 domains sort first
 //   S2  body of work / interview    same window and sort; checked against the artist's
@@ -1509,7 +1519,10 @@ async function generateSoloPrereads(
 
   console.log(`Exa selected [${showTitle}]:`, prereads.map((p) => ({ title: p.article_title, pub: p.publication, url: p.article_url })))
 
-  return { prereads, hasShowCoverage: showReview.length > 0, blocked: null, showReview: showReviewAttempt }
+  return {
+    prereads, hasShowCoverage: showReview.length > 0, blocked: null, showReview: showReviewAttempt,
+    showReviewUrls: reviewRows.map((r) => r.url),
+  }
 }
 
 /**
@@ -1713,8 +1726,18 @@ export async function searchMuseumGroupShowReview(
 // generators use (blocklist, self-sourced checks, verifySubstantiallyAbout), so a
 // repaired row clears exactly the bar a freshly generated one would.
 //
-// Gallery-path ('full') rows only. Museum and fair coverage has no quality check yet,
-// so there is nothing to re-check against and no flag it could ever have been given.
+// Gallery rows, and museum rows through `museum` below — each museum show type is
+// repaired with its own search and check. Fair coverage still has no quality check.
+
+/**
+ * Which museum search and check a museum show's rows are repaired with:
+ *   solo_contemporary  the gallery solo ladder's — an artist row is checked and
+ *                      replaced like a gallery solo row, a show_coverage row like S4
+ *   solo_historical    the same as group_show: the show review is all it gets
+ *   group_show         the group show's search and venue + artist/title anchor, checked
+ *                      against the press release; every row is about the show
+ */
+export type MuseumRepairKind = 'solo_contemporary' | 'solo_historical' | 'group_show'
 
 export interface PrereadRepairContext {
   exhibition_id: string
@@ -1726,9 +1749,11 @@ export interface PrereadRepairContext {
   // Filled in on first use by artistIdentity, so a repair pass over several rows of
   // one show extracts each artist's disambiguator once, not once per row.
   identityCache?: Map<string, Promise<ArtistIdentity>>
+  // Museum shows only; absent means a gallery show.
+  museum?: { kind: MuseumRepairKind; institution_name: string | null }
 }
 
-interface ArtistIdentity {
+export interface ArtistIdentity {
   disambiguator: string | null
   bio: string | null
 }
@@ -1756,7 +1781,12 @@ async function verifyForSubject<T extends PoolResult & { title: string }>(
   subject: PrereadSubject,
   candidates: T[]
 ): Promise<Map<string, VerifiedCandidate> | null> {
-  if (subject.kind === 'show') return verifySubstantiallyAbout(subjectLabel(ctx, subject), ctx.press_release, candidates)
+  if (subject.kind === 'show') {
+    // Museum show rows get the same press-release grounding as the museum generators
+    // (group review, S4); gallery show rows keep theirs.
+    return verifySubstantiallyAbout(subjectLabel(ctx, subject), ctx.press_release, candidates,
+      ctx.museum ? { sourceKind: 'show_press_release' } : {})
+  }
   const { disambiguator, bio } = await artistIdentity(ctx, subject.name)
   return verifyArtistCandidates(subject.name, disambiguator, bio, ctx.press_release, candidates)
 }
@@ -1766,8 +1796,19 @@ export type PrereadSubject = { kind: 'artist'; name: string } | { kind: 'show' }
 
 // A row's subject follows how it was generated: per-artist rows carry artist_name;
 // a solo show's rows don't, but every one of them is about that one artist; anything
-// else is a show-level (show review) row.
-export function prereadSubject(ctx: PrereadRepairContext, artistName: string | null | undefined): PrereadSubject {
+// else is a show-level (show review) row. Museum rows go by the show type instead:
+// only a contemporary solo show has artist rows, and its show review is labelled
+// show_coverage.
+export function prereadSubject(
+  ctx: PrereadRepairContext,
+  artistName: string | null | undefined,
+  itemCoverageType?: string | null
+): PrereadSubject {
+  if (ctx.museum) {
+    return ctx.museum.kind === 'solo_contemporary' && itemCoverageType !== 'show_coverage'
+      ? { kind: 'artist', name: ctx.artists[0] }
+      : { kind: 'show' }
+  }
   if (artistName) return { kind: 'artist', name: artistName }
   if (ctx.artists.length === 1) return { kind: 'artist', name: ctx.artists[0] }
   return { kind: 'show' }
@@ -1791,10 +1832,10 @@ function isSelfSourcedFor(url: string, ctx: PrereadRepairContext, subject: Prere
  */
 export async function recheckPreread(
   ctx: PrereadRepairContext,
-  row: { article_url: string | null; article_title: string | null; summary: string | null; artist_name?: string | null }
+  row: { article_url: string | null; article_title: string | null; summary: string | null; artist_name?: string | null; item_coverage_type?: string | null }
 ): Promise<'pass' | QualityFlag> {
   if (!row.article_url) return 'mismatched'
-  const subject = prereadSubject(ctx, row.artist_name)
+  const subject = prereadSubject(ctx, row.artist_name, row.item_coverage_type)
   if (isSelfSourcedFor(row.article_url, ctx, subject)) return 'self_sourced'
 
   const candidate: PoolResult & { title: string } = {
@@ -1807,6 +1848,27 @@ export async function recheckPreread(
   const gate = qualityGate(verified, candidate.url)
   if (gate === 'pass') return 'pass'
   if (gate === 'unverified') return 'unverified'
+  // A show-level row that isn't about this show can still be about one of its artists,
+  // and then it belongs:
+  //   - contemporary museum solo: the ladder takes artist pieces as well as show
+  //     reviews, and the old museum search labelled many artist pieces show_coverage
+  //   - museum group show: rows the old per-artist tiers stored (anything not labelled
+  //     show_coverage) are checked as pieces about the artist they name
+  // The artist is the row's own artist_name, else the first of the show's artists its
+  // title/summary names; a row that names none of them is judged as a show row only.
+  const artistFallback = subject.kind !== 'show' ? null
+    : ctx.museum?.kind === 'solo_contemporary' ? ctx.artists[0]
+      : ctx.museum?.kind === 'group_show' && row.item_coverage_type !== 'show_coverage'
+        ? (row.artist_name && ctx.artists.includes(row.artist_name) ? row.artist_name
+          : ctx.artists.find((a) => significantNameParts(a).length > 0 && isAboutArtist(candidate, a)) ?? null)
+        : null
+  if (artistFallback) {
+    const asArtist: PrereadSubject = { kind: 'artist', name: artistFallback }
+    if (!isSelfSourcedFor(row.article_url, ctx, asArtist)) {
+      const artistVerified = await verifyForSubject(ctx, asArtist, [{ ...candidate, contentPriority: 1 }])
+      if (qualityGate(artistVerified, candidate.url) === 'pass') return 'pass'
+    }
+  }
   return rejectionFlag(verified!.get(candidate.url)!)
 }
 
@@ -1829,16 +1891,26 @@ export async function findReplacementPreread(
   customQuery?: string | null
 ): Promise<ReplacementResult> {
   const exa = new Exa(process.env.EXA_API_KEY!)
-  const query = customQuery?.trim()
-    || (subject.kind === 'artist'
-      ? `${subject.name} artist interview profile`
-      : `${ctx.show_title} ${ctx.venue_name} review exhibition`)
+  const custom = customQuery?.trim() || null
+  const museumKind = subject.kind === 'show' ? ctx.museum?.kind : undefined
+  // Group and historical solo shows are both searched the way the group review is.
+  const museumGroupSearch = museumKind === 'group_show' || museumKind === 'solo_historical'
+  // The default search is the one that generated this kind of row: the museum group
+  // review search (group and historical solo shows), or gallery's (also contemporary
+  // museum solo's). A custom query is used as typed.
+  const query = custom
+    || (subject.kind === 'artist' ? `${subject.name} artist interview profile`
+      : museumGroupSearch ? `${ctx.show_title} ${ctx.venue_name} exhibition review`
+        : `${ctx.show_title} ${ctx.venue_name} review exhibition`)
 
   const res = await loggedExaSearch(exa, query, {
     type: 'auto',
     numResults: 8,
-    contents: { highlights: true },
-  }, { exhibitionId: ctx.exhibition_id, functionName: customQuery?.trim() ? 'replacePrereadCustom' : 'repairPreread' })
+    // The group anchor reads page text, as the group search does.
+    contents: !custom && museumGroupSearch
+      ? { highlights: true, text: { maxCharacters: MUSEUM_REVIEW_TEXT_CHARS } }
+      : { highlights: true },
+  }, { exhibitionId: ctx.exhibition_id, functionName: custom ? 'replacePrereadCustom' : 'repairPreread' })
 
   const galleryDomains = await buildGalleryBlocklist()
   const results = (res.results as unknown as PoolResult[]).map((r) => ({ ...r, contentPriority: (subject.kind === 'show' ? 0 : 1) as 0 | 1 }))
@@ -1851,6 +1923,9 @@ export async function findReplacementPreread(
     // The name check is skipped for a custom query: the admin chose those terms on
     // purpose, and the comprehension check below still guards aboutness.
     if (!customQuery?.trim() && subject.kind === 'artist' && !isAboutArtist(r, subject.name)) continue
+    // Same for the museum group show's venue + artist/title anchor.
+    if (!custom && museumGroupSearch
+      && !passesMuseumAnchor(r as PoolResult & { text?: string }, { ...ctx, institution_name: ctx.museum?.institution_name })) continue
     candidates.push(r as PoolResult & { title: string })
   }
 
@@ -1864,7 +1939,9 @@ export async function findReplacementPreread(
 
   const best = ranked.find((r) => qualityGate(verified, r.url) === 'pass')
   if (best) {
-    return { ok: true, row: toPrereadRow({ ...best, artistName: subject.kind === 'artist' && ctx.artists.length > 1 ? subject.name : null }) }
+    const row = toPrereadRow({ ...best, artistName: subject.kind === 'artist' && ctx.artists.length > 1 ? subject.name : null })
+    // Museum rows carry their kind: the public museum page orders by it.
+    return { ok: true, row: ctx.museum ? { ...row, item_coverage_type: subject.kind === 'show' ? 'show_coverage' : 'artist_profile' } : row }
   }
 
   const judged = ranked.map((r) => verified.get(r.url)).find((v): v is VerifiedCandidate => !!v)
@@ -2533,20 +2610,22 @@ function normalizeShowType(value: unknown): ExhibitionDetailExtracted['show_type
   return value === 'installation' ? 'installation' : 'exhibition'
 }
 
-const DETAIL_PROMPT = (url: string, content: string) => `Extract exhibition data from this page (${url}).
+const DETAIL_PROMPT = (url: string, content: string, pageTitles: string[] = []) => `Extract exhibition data from this page (${url}).
 
 Today: ${new Date().toISOString().split('T')[0]}
-
+${pageTitles.length > 0 ? `\nThe page's own title tags (not part of the HTML below): ${pageTitles.map((t) => JSON.stringify(t)).join(' / ')}\n` : ''}
 CRITICAL RULES:
 - Do NOT generate, infer, or hallucinate content not present on the page
 - description must be verbatim extracted text — never AI-generated or summarized
 - If a field is not on the page, return null
+- title: the show's own title, in full — not whichever text is largest or first. Many pages set the artist's name as the big heading and put the show's title in a smaller heading or line just under or beside it (heading "Pierre Huyghe", then "UUmwelt"). Look for that second line before settling on the name: when the page has one, the title is the show title ("UUmwelt"), not the artist's name. The page's title tags above often spell out the full title ("Pierre Huyghe: UUmwelt | MoMA", "TARYN SIMON | FATHER COUNTRY I DO LOVE YOU") — use them to find it, but leave out the venue, city, address and dates they also carry, and take the show title's capitalization from the page text when it appears there. A title tag that only repeats the artist's name, or part of it ("Tornay — Bowery Gallery" for the artist Ian Tornay), is not a separate show title. When the page's heading is itself one combined title that includes the artist ("Andrea Bowers: Democracy Needs Our Courage"), keep it exactly as written. When neither the page nor its title tags give the show any title of its own, many shows are simply titled with the artist's name: return the name exactly as the page's heading shows it ("Ian Tornay") — never null just because the title is a name.
 - Dates in YYYY-MM-DD format only
 - When a date on the page has no explicit year (e.g. "Through Jul 25", "Opens March 3"), this is a listing of what the institution currently considers on view — infer the year that is consistent with that: for an end date, pick the soonest occurrence of that month/day that is on or after today; for a start date, pick the occurrence that keeps the exhibition's run plausible relative to today. Do not default to the current calendar year or the page's copyright year without this reasoning — a bare "Jul 25" read on a page today should not be assumed to have already passed just because that date earlier this year is in the past.
 - The output must be valid JSON: any double-quote character that is part of extracted text (e.g. a quoted phrase copied from the page) must be escaped as \\" so it does not terminate the JSON string early
 - show_type: "installation" when the page describes a site-specific, long-term, permanent, or on-view-indefinitely work/display (e.g. "long-term view", "permanent installation", "on view indefinitely", a commissioned site-specific work) — "exhibition" for a normal temporary show with a defined or expected run. Default to "exhibition" when unclear.
 - artist_bio: many exhibition pages have a separate biographical section about the artist(s), often under its own heading like "About the Artist," "More About [Name]," or "Biography" — distinct from the exhibition/show description above it. Extract this verbatim if present, separately from "description." If the page has bios for multiple artists, concatenate them, each preceded by the artist's name. Null if no such section exists on the page.
-- artists_inferred: where the names in "artists" came from. false ONLY when the page carries a dedicated artist list or credit line — an "Artists:" block, a byline under the show title, a list of artist names as links, a curated checklist. true when you read the names out of the exhibition title ("Andrea Bowers: Democracy Needs Our Courage") or out of the body prose. Return true when there are no artists, and true whenever you are unsure: a credit line is a specific thing to see on the page, and calling a prose mention "credited" lets a group show publish names that may not be its artist list at all.
+- artists: only the artists of THIS exhibition. Museum and gallery pages often carry other lists of names: an "Artists" module listing everyone with work in the room, garden or wing where the show is installed; related or recommended artists; collection highlights; other shows' credits. A list — even one headed "Artists" — is this show's artist list only when it belongs to the show: it sits with the show's title and description, or its names are the ones the show's own text presents as its artists. When the show's title and description are about one artist's work (e.g. a single commission or installation), return just that artist, and do not add names that appear only in such a page-wide list.
+- artists_inferred: where the names in "artists" came from. false ONLY when the page carries a dedicated artist list or credit line for THIS show — an "Artists:" block belonging to the show (see "artists" above), a byline under the show title, a list of artist names as links, a curated checklist. true when you read the names out of the exhibition title ("Andrea Bowers: Democracy Needs Our Courage") or out of the body prose. Return true when there are no artists, and true whenever you are unsure: a credit line is a specific thing to see on the page, and calling a prose mention "credited" lets a group show publish names that may not be its artist list at all.
 - addresses: every street address where THIS exhibition is on view, as a list of up to 3 entries in page order — one location per entry, never two street addresses in one entry.
   • Each entry is one complete address: house number and street, any floor/suite, then city, state and zip. Include the city, state and zip even when the page prints them on a separate line or in a separate element from the street — "533 West 19th Street" followed by "New York, New York 10011" becomes "533 West 19th Street, New York, New York 10011".
   • A show held at several locations: when the page lists them as separate blocks (e.g. a "Locations" section with one labelled address each), return one entry per block. When one line joins addresses ("22 Cortlandt Alley & 394 Broadway"), split it into one entry per address, each carrying the city, state and zip they share.
@@ -2627,11 +2706,11 @@ ${nextDataJson}`,
   }
 }
 
-async function callClaudeForDetail(content: string, url: string): Promise<ExhibitionDetailExtracted> {
+async function callClaudeForDetail(content: string, url: string, pageTitles: string[] = []): Promise<ExhibitionDetailExtracted> {
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 4096,
-    messages: [{ role: 'user', content: DETAIL_PROMPT(url, content) }],
+    messages: [{ role: 'user', content: DETAIL_PROMPT(url, content, pageTitles) }],
   })
   const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   const raw = extractJsonObject<Partial<ExhibitionDetailExtracted>>(text)
@@ -2676,6 +2755,29 @@ function descriptionLooksIncomplete(detail: ExhibitionDetailExtracted): boolean 
   return (detail.description?.trim().length ?? 0) < MIN_COMPLETE_DESCRIPTION_LENGTH
 }
 
+// The page's <title> and og:title. The content sent to the model is the page's main
+// region, which never includes <head> — yet that is often the only place the full
+// show title is spelled out when the page's big heading is just the artist's name
+// (Guggenheim "TARYN SIMON | FATHER COUNTRY I DO LOVE YOU", MoMA "Pierre Huyghe:
+// UUmwelt | MoMA"). Without them, four shows were stored under the artist's name.
+export function pageTitleTags(html: string): string[] {
+  const decode = (t: string) => t
+    .replace(/&amp;/g, '&').replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&#8211;|&ndash;/g, '–').replace(/&#8212;|&mdash;/g, '—').replace(/&#8217;|&rsquo;/g, '’').replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+  const found = [
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1],
+    html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']/i)?.[1],
+    html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+property=["']og:title["']/i)?.[1],
+  ]
+  const titles: string[] = []
+  for (const t of found) {
+    const d = t ? decode(t).slice(0, 300) : ''
+    if (d && !titles.includes(d)) titles.push(d)
+  }
+  return titles
+}
+
 export async function extractExhibitionDetail(
   html: string,
   exhibitionUrl: string
@@ -2685,8 +2787,9 @@ export async function extractExhibitionDetail(
   const cleaned = deepStripHtml(html)
   const mainContent = extractMainContent(cleaned)
   const primary = mainContent.slice(0, 60000)
+  const pageTitles = pageTitleTags(html)
 
-  let result = await callClaudeForDetail(primary, exhibitionUrl)
+  let result = await callClaudeForDetail(primary, exhibitionUrl, pageTitles)
 
   // If title is null, retry targeting specific semantic containers —
   // handles sites where the exhibition data is in a non-standard wrapper
@@ -2694,7 +2797,7 @@ export async function extractExhibitionDetail(
     const focused = extractDetailFocused(cleaned).slice(0, 60000)
     if (focused.length > 1000 && focused !== primary) {
       console.log(`[extractExhibitionDetail] title null on first pass — retrying with focused content (${exhibitionUrl})`)
-      const retry = await callClaudeForDetail(focused, exhibitionUrl)
+      const retry = await callClaudeForDetail(focused, exhibitionUrl, pageTitles)
       if (retry.title?.trim()) result = retry
     }
 
@@ -2723,7 +2826,7 @@ export async function extractExhibitionDetail(
   if (result.title?.trim() && descriptionLooksIncomplete(result) && mainContent.length > primary.length) {
     const expanded = mainContent.slice(0, MAX_DETAIL_CONTENT_LENGTH)
     console.log(`[extractExhibitionDetail] description incomplete on first pass (${result.description?.length ?? 0} chars) — retrying with expanded window (${expanded.length} chars) for ${exhibitionUrl}`)
-    const expandedResult = await callClaudeForDetail(expanded, exhibitionUrl)
+    const expandedResult = await callClaudeForDetail(expanded, exhibitionUrl, pageTitles)
     const expandedLen = expandedResult.description?.trim().length ?? 0
     const currentLen = result.description?.trim().length ?? 0
     if (expandedResult.title?.trim() && expandedLen > currentLen) {

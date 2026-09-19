@@ -181,9 +181,9 @@ export default function PrereadPanel({
   const [busyRow, setBusyRow] = useState<string | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
 
-  // Museum and fair coverage has no quality check yet, so there's nothing for
-  // Replace to check a new article against (lib/agent2.ts refuses it too).
-  const canReplace = venueType !== 'museum' && venueType !== 'fair'
+  // Fair coverage has no quality check yet, so there's nothing for Replace to check
+  // a new article against (lib/agent2.ts refuses it too).
+  const canReplace = venueType !== 'fair'
 
   const reload = useCallback(async () => {
     const res = await adminFetch(`/api/admin/prereads?exhibition_id=${exhibitionId}`)
