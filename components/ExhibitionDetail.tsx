@@ -8,8 +8,11 @@ import { sanitizeHtml, normalizeToHtml } from '@/lib/sanitize-html'
 import dynamic from 'next/dynamic'
 import AccountNav from '@/components/account/AccountNav'
 import ExhibitionLog from '@/components/ExhibitionLog'
+import ReadingLog from '@/components/ReadingLog'
 import type { OwnExhibitionLog } from '@/lib/exhibition-logs'
+import { readingKey, type OwnReadingLog } from '@/lib/reading-log-types'
 import '@/app/exhibition-log.css'
+import '@/app/reading-log.css'
 
 const ExhibitionMiniMap = dynamic(() => import('@/components/ExhibitionMiniMap'), { ssr: false })
 
@@ -79,11 +82,18 @@ export default function ExhibitionDetail({
   exhibition,
   viewerId,
   log,
+  readingLogs,
 }: {
   exhibition: ExhibitionDetailData
   viewerId: string | null
   log: OwnExhibitionLog | null
+  /** The visitor's own reading-log rows for this page's prereads, as entries. */
+  readingLogs: [string, OwnReadingLog][]
 }) {
+  // Rebuilt from entries because a Map cannot cross the server-to-client
+  // boundary. Keyed by readingKey(), the same key lib/reading-logs.ts uses.
+  const readingLogByKey = useMemo(() => new Map(readingLogs), [readingLogs])
+
   const [prShowFull, setPrShowFull] = useState(false)
   const [prHasMore, setPrHasMore] = useState(false)
   const prRef = useRef<HTMLDivElement>(null)
@@ -217,22 +227,37 @@ export default function ExhibitionDetail({
                 {sortByTier(exhibition.prereads).map((p) => {
                   const title = p.article_title ? stripTitleSiteSuffix(p.article_title, p.publication) : p.article_title
                   const label = [p.publication, title].filter(Boolean).join(' — ')
-                  return p.article_url ? (
-                    <a
-                      key={p.id}
-                      href={p.article_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="ep-preread-row"
-                    >
-                      <PrereadThumbnail url={p.thumbnail_url} />
-                      <span>{label || p.article_url}</span>
-                    </a>
-                  ) : (
-                    <span key={p.id} className="ep-preread-row ep-preread-row--no-url">
-                      <PrereadThumbnail url={p.thumbnail_url} />
-                      <span>{label}</span>
-                    </span>
+                  // The row was a single anchor. It is now a line holding that
+                  // anchor and the log pill beside it, because a button cannot
+                  // be nested inside a link.
+                  return (
+                    <div key={p.id} className="ep-preread-line">
+                      {p.article_url ? (
+                        <a
+                          href={p.article_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ep-preread-row"
+                        >
+                          <PrereadThumbnail url={p.thumbnail_url} />
+                          <span>{label || p.article_url}</span>
+                        </a>
+                      ) : (
+                        <span className="ep-preread-row ep-preread-row--no-url">
+                          <PrereadThumbnail url={p.thumbnail_url} />
+                          <span>{label}</span>
+                        </span>
+                      )}
+                      <ReadingLog
+                        contentType="preread"
+                        contentId={p.id}
+                        title={title || p.publication || 'this article'}
+                        viewerId={viewerId}
+                        log={readingLogByKey.get(readingKey('preread', p.id)) ?? null}
+                        variant="compact"
+                        signInNext={`/exhibitions/${exhibition.id}`}
+                      />
+                    </div>
                   )
                 })}
               </div>
@@ -265,22 +290,40 @@ export default function ExhibitionDetail({
                   const title = c.title ? stripTitleSiteSuffix(c.title, c.publication) : c.title
                   const label = [meta, title].filter(Boolean).join(' — ')
                   const content = label || c.url
-                  return c.reading_id ? (
-                    <Link key={c.url} href={`/readings/${c.reading_id}`} className="ep-preread-row">
-                      <PrereadThumbnail url={c.thumbnail_url} />
-                      <span>{content}</span>
-                    </Link>
-                  ) : (
-                    <a
-                      key={c.url}
-                      href={c.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="ep-preread-row"
-                    >
-                      <PrereadThumbnail url={c.thumbnail_url} />
-                      <span>{content}</span>
-                    </a>
+                  // Logged as a PREREAD, not a reading, even for an item that
+                  // also has a /readings page. Museum and fair coverage IS a
+                  // prereads row (migration_v35) and that is the id this list
+                  // has in hand; logging it under the reading id instead would
+                  // put the same article in two places in one person's log
+                  // depending on which page they happened to be on.
+                  return (
+                    <div key={c.url} className="ep-preread-line">
+                      {c.reading_id ? (
+                        <Link href={`/readings/${c.reading_id}`} className="ep-preread-row">
+                          <PrereadThumbnail url={c.thumbnail_url} />
+                          <span>{content}</span>
+                        </Link>
+                      ) : (
+                        <a
+                          href={c.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ep-preread-row"
+                        >
+                          <PrereadThumbnail url={c.thumbnail_url} />
+                          <span>{content}</span>
+                        </a>
+                      )}
+                      <ReadingLog
+                        contentType="preread"
+                        contentId={c.preread_id}
+                        title={title || c.publication || 'this article'}
+                        viewerId={viewerId}
+                        log={readingLogByKey.get(readingKey('preread', c.preread_id)) ?? null}
+                        variant="compact"
+                        signInNext={`/exhibitions/${exhibition.id}`}
+                      />
+                    </div>
                   )
                 })}
               </div>

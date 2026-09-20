@@ -57,6 +57,13 @@ export interface CoverageItem {
 }
 
 export interface CoverageDisplayItem {
+  /**
+   * The prereads row this item came from. Museum and fair coverage IS a
+   * prereads row (migration_v35), and the reading log keys on that id, so the
+   * display shape has to carry it — without it the coverage list would be the
+   * one place an article is shown that cannot be logged.
+   */
+  preread_id: string
   url: string
   title: string | null
   author: string | null

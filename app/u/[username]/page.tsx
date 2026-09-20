@@ -21,7 +21,9 @@ import FollowCounts from '@/components/account/FollowCounts'
 import FollowRequests from '@/components/account/FollowRequests'
 import RelationshipMenu from '@/components/account/RelationshipMenu'
 import ProfileLog from '@/components/account/ProfileLog'
+import ProfileReadingLog from '@/components/account/ProfileReadingLog'
 import { getProfileLog } from '@/lib/exhibition-logs'
+import { getProfileReadingLog } from '@/lib/reading-logs'
 import '@/app/account.css'
 
 interface Props {
@@ -150,17 +152,19 @@ export default async function ProfilePage({ params }: Props) {
   // wrong one first. There is no matching block read: a blocked profile never
   // reaches this line, having 404'd above.
   //
-  // The log is fetched for a locked profile too, and comes back empty: the
-  // function behind it asks can_view_profile() for itself rather than trusting
-  // a flag from here. Fetching it unconditionally is what keeps those two
-  // answers from being able to disagree — if the page's own `locked` were ever
-  // wrong, the list would still be empty, because the database decided.
-  const [counts, relationship, requests, muted, log] = await Promise.all([
+  // Both logs are fetched for a locked profile too, and come back empty: the
+  // functions behind them ask can_view_profile() for themselves rather than
+  // trusting a flag from here. Fetching them unconditionally is what keeps
+  // those answers from being able to disagree — if the page's own `locked`
+  // were ever wrong, the lists would still be empty, because the database
+  // decided.
+  const [counts, relationship, requests, muted, log, readingLog] = await Promise.all([
     getFollowCounts(card.id),
     getFollowRelationship(viewer?.id ?? null, card.id),
     isOwnProfile ? getPendingRequests() : Promise.resolve([]),
     isMuted(viewer?.id ?? null, card.id),
     getProfileLog(card.id),
+    getProfileReadingLog(card.id),
   ])
 
   return (
@@ -243,6 +247,17 @@ export default async function ProfilePage({ params }: Props) {
                 is not allowed to describe. */}
             <ProfileLog
               entries={log}
+              isOwnProfile={isOwnProfile}
+              displayName={profileDisplayName(card)}
+            />
+
+            {/* Two sections rather than one merged stream. They are logs of
+                different things — a show you stood in front of, a piece you
+                read — and interleaving them by date would bury whichever the
+                person does less of. Same list styling, so they read as two
+                parts of one account of what someone has been doing. */}
+            <ProfileReadingLog
+              entries={readingLog}
               isOwnProfile={isOwnProfile}
               displayName={profileDisplayName(card)}
             />

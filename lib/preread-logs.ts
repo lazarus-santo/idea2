@@ -1,55 +1,52 @@
+import { getSupabaseAdmin } from './supabase'
+
 /**
  * Has anyone logged this preread?
  *
- * The logging feature (seen it, rated it, short review — for exhibitions and
- * readings alike) is not built yet, so there is no table to ask. Nothing has
- * been logged, and every answer here is `false`.
+ * This is the question the freeze rule turns on. migration_v61 says a preread
+ * row someone has logged is never overwritten: repair and the admin Replace
+ * button put the fresh article into a NEW row and freeze the logged one —
+ * blanked, content untouched, pointing at its replacement — so the log still
+ * resolves to the article the person actually read.
  *
- * It exists as one module anyway, because the rule it feeds — a logged row is
- * frozen, never overwritten (migration_v61) — has to be written into the repair
- * and fair-regeneration paths NOW, while they are being touched, not bolted on
- * afterwards when the logging feature ships and someone has to remember every
- * place a preread gets rewritten.
+ * ── THIS FILE WAS A STUB UNTIL migration_v63 ────────────────────────────────
  *
- * ── WIRING IT UP ────────────────────────────────────────────────────────────
- * When the log table lands, this is the only file that changes: replace the
- * body of loggedPrereadIds with one query, something like
+ * It shipped with e10444b answering `false` to everything, because there was
+ * no log table to ask. That was honest at the time — nothing WAS logged — but
+ * it meant the freeze mechanism existed without the protection: every repair
+ * took the overwrite path, unconditionally. migration_v63 created
+ * public.reading_logs, and this now asks it. The freeze is live from here.
  *
- *     const { data, error } = await getSupabaseAdmin()
- *       .from('<the log table>')
- *       .select('preread_id')
- *       .in('preread_id', prereadIds)
- *     if (error) throw new Error(`Failed to read preread logs: ${error.message}`)
- *     return new Set((data ?? []).map((r) => r.preread_id as string))
+ * ── WHY THE ADMIN CLIENT, AND WHY IT THROWS ─────────────────────────────────
  *
- * Throw on a read failure rather than returning an empty set: "I could not
- * check" must never be treated as "nobody logged it", or a database hiccup
- * turns into an overwritten log.
+ * The service key, because this asks whether ANYBODY logged the row, and
+ * reading_logs is first-person under RLS — a session-scoped read would answer
+ * only for one account and miss every other person's log. The callers (Agent 2
+ * repair, the admin Replace route, fair coverage regeneration) are all
+ * server-side and already hold it.
+ *
+ * It THROWS on a read failure rather than returning an empty set, and that is
+ * the whole reason this is a function and not an inline query. "I could not
+ * check" must never be treated as "nobody logged it": the empty-set answer
+ * sends the caller down the overwrite path, and a momentary database hiccup
+ * would silently rewrite the article under somebody's rating. Failing the
+ * repair is the recoverable outcome; overwriting a log is not.
  */
 
-/**
- * Test seam, not a feature. A comma-separated list of preread ids to treat as
- * logged, so the freeze path can be exercised end to end before the log table
- * exists:
- *
- *     PREREAD_LOG_STUB_IDS=<preread-uuid> npm run dev
- *
- * Unset in production, where it reads as "nothing is logged" — the truth today.
- */
-const STUB_ENV = 'PREREAD_LOG_STUB_IDS'
-
-function stubbedIds(): Set<string> {
-  const raw = process.env[STUB_ENV]
-  if (!raw) return new Set()
-  return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean))
-}
-
-/** Which of `prereadIds` a person has logged. One query's worth, for callers holding many rows. */
+/** Which of `prereadIds` anyone has logged. One query's worth, for callers holding many rows. */
 export async function loggedPrereadIds(prereadIds: string[]): Promise<Set<string>> {
   if (prereadIds.length === 0) return new Set()
-  const stub = stubbedIds()
-  if (stub.size === 0) return new Set()
-  return new Set(prereadIds.filter((id) => stub.has(id)))
+
+  const { data, error } = await getSupabaseAdmin()
+    .from('reading_logs')
+    .select('content_id')
+    .eq('content_type', 'preread')
+    .in('content_id', prereadIds)
+
+  // Never swallowed. See above: an empty set here means "overwrite it".
+  if (error) throw new Error(`Failed to read preread logs: ${error.message}`)
+
+  return new Set((data ?? []).map((r) => r.content_id as string))
 }
 
 /** Has this one preread been logged? */

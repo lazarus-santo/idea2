@@ -22,7 +22,7 @@ declares three tables and columns that do not exist. Do not read it as current.
 
 ---
 
-## Tables (28)
+## Tables (29)
 
 ### `agent_runs`
 
@@ -341,6 +341,26 @@ declares three tables and columns that do not exist. Do not read it as current.
 | `scrape_frequency` | text | NOT NULL | `"daily"` |  |
 | `active` | boolean | NOT NULL | `true` |  |
 
+### `reading_logs`
+
+> One row per person per item read, across two tables: content_type preread = prereads.id, reading = readings.id (Top Stories and River). status reading_list = mean to read; read = read it. rating, liked and comment are valid ONLY at read and are rejected otherwise by reading_logs_read_gates_opinions. Readable through RLS by its owner alone; other people see it only via profile_reading_logs(), which applies profile privacy and comment visibility.
+
+| Column | Type | Null | Default | Key |
+|---|---|---|---|---|
+| `user_id` | uuid | NOT NULL |  | PK, FK → profiles.id |
+| `content_type` | text | NOT NULL |  | PK |
+| `content_id` | uuid | NOT NULL |  | PK |
+| `status` | text | NOT NULL |  |  |
+| `rating` | smallint |  |  |  |
+| `liked` | boolean | NOT NULL | `false` |  |
+| `comment` | text |  |  |  |
+| `comment_visibility` | text |  |  |  |
+| `created_at` | timestamp with time zone | NOT NULL | `"now()"` |  |
+| `updated_at` | timestamp with time zone | NOT NULL | `"now()"` |  |
+
+- `content_id` — The prereads.id or readings.id this log is about. NO foreign key is possible on a polymorphic column — reading_logs_loggable() checks it on write and profile_reading_logs() JOINs on read. Both underlying tables have a never-delete rule, which is what keeps this honest.
+- `comment_visibility` — public | private, NULL when there is no comment. A SECOND, NARROWER gate inside profile privacy — never a wider one. private = the logger only. public = whoever can already see the profile, which on a private account means approved followers, not everyone.
+
 ### `readings`
 
 | Column | Type | Null | Default | Key |
@@ -471,7 +491,7 @@ declares three tables and columns that do not exist. Do not read it as current.
 
 ---
 
-## Callable functions (12)
+## Callable functions (13)
 
 Names only. What each one does, who may execute it, and whether it is
 SECURITY DEFINER are all in the migration that created it.
@@ -487,4 +507,5 @@ SECURITY DEFINER are all in the migration that created it.
 - `profile_exhibition_logs()`
 - `profile_followers()`
 - `profile_following()`
+- `profile_reading_logs()`
 - `search_profile_cards()`

@@ -1,9 +1,55 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, createContext, useContext } from 'react'
 import Link from 'next/link'
 import type { Reading } from '@/lib/types'
 import AccountNav from '@/components/account/AccountNav'
+import ReadingLog from '@/components/ReadingLog'
+import { useReadingLogs, logFor, type ReadingLogStore } from '@/lib/reading-log-client'
+import '@/app/reading-log.css'
+
+/**
+ * The visitor's own reading log, shared down the page.
+ *
+ * Context rather than props because the Top Stories layouts take one thing —
+ * the three articles they arrange — and threading a store through LayoutA/B/C
+ * to reach the cards inside would add a parameter to components whose entire
+ * job is geometry. Nothing here is secret: the store holds the signed-in
+ * person's own rows, read under the first-person policies in migration_v63.
+ *
+ * The default is an empty, signed-out store so a card rendered outside the
+ * provider degrades to no pill rather than throwing.
+ */
+const LogStore = createContext<ReadingLogStore>({
+  viewerId: null,
+  logs: new Map(),
+  ready: false,
+  refresh: () => {},
+})
+
+/** The pill for one article, wherever it is shown. Nothing when signed out. */
+function ArticleLog({ reading, className }: { reading: Reading; className?: string }) {
+  const store = useContext(LogStore)
+  // `ready` keeps a signed-in person from seeing "Log" flash before their own
+  // state arrives — the wrong answer, briefly, on every card at once.
+  if (!store.ready || !store.viewerId) return null
+
+  return (
+    <div className={className}>
+      <ReadingLog
+        contentType="reading"
+        contentId={reading.id}
+        title={reading.headline}
+        viewerId={store.viewerId}
+        log={logFor(store, 'reading', reading.id)}
+        variant="compact"
+        signInNext="/readings"
+        // No server render to refresh on this page: re-read the store instead.
+        onSaved={store.refresh}
+      />
+    </div>
+  )
+}
 
 type Tab = 'top-stories' | 'river'
 type RiverGroupFilter = 'all' | 'news' | 'art_market' | 'people' | 'opinion'
@@ -158,7 +204,12 @@ function CardImg({ r, left, top, width, height }: {
       backgroundSize: 'cover',
       backgroundPosition: '50%',
       boxSizing: 'border-box',
-    }} />
+    }}>
+      {/* Over the image rather than in the text block beside it: those blocks
+          are sized to the design's measurements and clip their overflow, so a
+          control added inside one would simply disappear. */}
+      <ArticleLog reading={r} className="rl-over-img" />
+    </div>
   )
 }
 
@@ -244,6 +295,7 @@ function StoryCard({ reading }: { reading: Reading }) {
         <a href={reading.article_url} target="_blank" rel="noopener noreferrer"
           className="rd-card-headline">{reading.headline}</a>
         {source && <span className="rd-card-source">{source}</span>}
+        <ArticleLog reading={reading} />
       </div>
     </div>
   )
@@ -347,6 +399,7 @@ function RiverView({
                     <span className="rd-river-time">{formatTime(r.published_at)}</span>
                     <a href={r.article_url} target="_blank" rel="noopener noreferrer"
                       className="rd-river-entry">{entry}</a>
+                    <ArticleLog reading={r} />
                   </div>
                 )
               })}
@@ -361,6 +414,7 @@ function RiverView({
 // ── Page ──────────────────────────────────────────────────────
 
 export default function ReadingsPage() {
+  const logStore = useReadingLogs()
   const [tab, setTab] = useState<Tab>('top-stories')
   const [readings, setReadings] = useState<Reading[]>([])
   const [riverReadings, setRiverReadings] = useState<Reading[]>([])
@@ -398,6 +452,7 @@ export default function ReadingsPage() {
   }, [readings])
 
   return (
+    <LogStore.Provider value={logStore}>
     <div className="rd-page">
       <nav className="ei-nav">
         <div className="ep-nav-inner">
@@ -444,5 +499,6 @@ export default function ReadingsPage() {
         )}
       </main>
     </div>
+    </LogStore.Provider>
   )
 }

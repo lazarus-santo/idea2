@@ -2,6 +2,9 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import AccountNav from '@/components/account/AccountNav'
+import { getCurrentUser } from '@/lib/auth'
+import { getOwnReadingLog } from '@/lib/reading-logs'
+import ReadingLog from '@/components/ReadingLog'
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -58,6 +61,14 @@ export default async function ReadingPage({ params }: PageProps) {
   const pub = (reading as any).publications?.name ?? null
   const pubDate = formatDate(reading.published_at)
 
+  // The page's own reads above use the service key, which is right for public
+  // article data and wrong for anything about the visitor. The log is read
+  // through their session instead, so RLS decides it: migration_v63 narrows
+  // that table to the caller's own rows, and a person can only ever see their
+  // own entry here. Other people's logs live on their profiles.
+  const viewer = await getCurrentUser()
+  const ownLog = await getOwnReadingLog(viewer?.id ?? null, 'reading', id)
+
   return (
     <div className="rp-body">
       <nav className="ep-nav" aria-label="Site navigation">
@@ -90,6 +101,17 @@ export default async function ReadingPage({ params }: PageProps) {
         >
           Read article &rsaquo;
         </a>
+
+        {/* The full block, not the pill: this page is about one article, so
+            there is room for the thing the visitor DOES with it. */}
+        <ReadingLog
+          contentType="reading"
+          contentId={id}
+          title={reading.headline}
+          viewerId={viewer?.id ?? null}
+          log={ownLog}
+          signInNext={`/readings/${id}`}
+        />
 
         {relatedExhibition && (
           <div className="rp-related-exhibition">

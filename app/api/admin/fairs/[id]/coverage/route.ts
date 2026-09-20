@@ -70,7 +70,22 @@ export async function POST(
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500 })
 
   const existing = (existingRows ?? []) as { id: string; article_url: string | null }[]
-  const logged = await loggedPrereadIds(existing.map((r) => r.id))
+
+  // Which rows someone has logged decides whether a stale row is BLANKED or
+  // DELETED, so a failure to find out has to stop the regeneration here.
+  // loggedPrereadIds throws rather than returning an empty set for exactly
+  // this reason (see lib/preread-logs.ts): an empty set would read as "nobody
+  // logged anything" and send every stale row down the delete path.
+  let logged: Set<string>
+  try {
+    logged = await loggedPrereadIds(existing.map((r) => r.id))
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    )
+  }
+
   const plan = planFairCoverageWrites(exhibitionId, existing, coverage, logged, coverageItemToPrereadRow)
 
   for (const { id: rowId, row } of plan.updates) {

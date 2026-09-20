@@ -13,6 +13,7 @@ import { publicationImportanceRank } from './coverage-ranking'
 import type { CoverageDisplayItem } from './types'
 
 export interface CoveragePrereadRow {
+  id: string
   article_url: string | null
   article_title: string | null
   publication: string | null
@@ -58,6 +59,7 @@ export function prereadsToCoverageDisplay(
       return a.article_url.localeCompare(b.article_url)
     })
     .map((r) => ({
+      preread_id: r.id,
       url: r.article_url,
       title: r.article_title,
       author: r.author,

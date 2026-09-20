@@ -1,0 +1,178 @@
+/*
+ * The reading log — only the parts the exhibition log does not already have.
+ *
+ * ReadingLog imports exhibition-log.css as well and uses its .el- classes for
+ * every control inside, because the two logs ARE the same control: same
+ * toggles, same stars, same note box, same audience buttons. Restyling them
+ * here would be a second set of values to keep in step with the first, and
+ * they would drift.
+ *
+ * What is left is the compact shape — a pill and the panel it opens — which
+ * the exhibition log has no need for, because a show's page has room for the
+ * block and a River row does not.
+ *
+ * Same palette rules as exhibition-log.css: no --ac- tokens, because those are
+ * declared on .ac-page and this renders on the readings and exhibition shells
+ * too. The greys are the cream-ground values account.css measures, written out.
+ */
+
+/* ── The compact pill ────────────────────────────────────── */
+
+/*
+ * position: relative anchors the panel; display: inline-flex keeps the pill on
+ * the baseline of whatever row it was dropped into rather than claiming a line.
+ */
+.rl-compact {
+  position: relative;
+  display: inline-flex;
+  font-family: var(--font-inter-tight), system-ui, sans-serif;
+  vertical-align: middle;
+}
+
+/*
+ * Small, quiet and fixed-width enough that Log → Saved → Read does not shift
+ * the row it sits in. Like .el-choice it reads as the state once there is one.
+ */
+.rl-pill {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  min-width: 46px;
+  padding: 5px 9px;
+  border: 1px solid #CFC9B8;
+  border-radius: 999px;
+  background: rgba(255, 252, 236, 0.92);
+  color: #4A4640;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.rl-pill:hover { border-color: #000; color: #000; }
+
+.rl-pill--on {
+  border-color: #000;
+  background: #000;
+  color: #FFFCEC;
+}
+
+.rl-pill--on:hover { opacity: 0.75; color: #FFFCEC; }
+
+/* ── The panel it opens ──────────────────────────────────── */
+
+/*
+ * Floated over the page rather than expanding the row. Top Stories is a set of
+ * absolutely positioned blocks measured against a design, and the River is a
+ * dense list — in both, a control that added height would either be clipped by
+ * a fixed-height text block or push everything below it out of place.
+ *
+ * Right-aligned because the pill sits at the end of its row on every surface
+ * that uses it, so opening leftward keeps the panel on screen.
+ */
+.rl-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 14px 14px;
+  background: #FFFCEC;
+  border: 1px solid #000;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+  font-size: 14px;
+  line-height: 17px;
+  color: #000;
+  /* Normal flow inside, whatever the row outside is doing. */
+  text-align: left;
+  cursor: default;
+}
+
+.rl-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+/* .el-label carries a bottom margin for the block layout; inside the panel the
+   head's own margin does that job. */
+.rl-panel-head .el-label { margin: 0; }
+
+.rl-close {
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: #6B665D;
+  cursor: pointer;
+}
+
+.rl-close:hover { color: #000; }
+
+/* ── Where the pill sits on each surface ─────────────────── */
+
+/*
+ * The preread and coverage rows on an exhibition page. The row was a single
+ * anchor; it is now a flex line holding that anchor and the pill, because a
+ * button cannot be nested inside a link.
+ */
+.ep-preread-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ep-preread-line .ep-preread-row { flex: 1 1 auto; min-width: 0; }
+.ep-preread-line .rl-compact { flex: 0 0 auto; }
+
+/* A River row: time, entry, pill. The entry takes the slack. */
+.rd-river-row .rl-compact { flex: 0 0 auto; margin-left: auto; }
+
+/*
+ * A Top Stories card. The pill is laid over the image's top-right corner
+ * rather than added to the text block: those text blocks have fixed heights
+ * and clip their overflow, so anything added inside them disappears.
+ */
+.rl-over-img {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 30;
+}
+
+/* The fallback card used on mobile and for incomplete groups is ordinary flow,
+   so the pill goes after the source line instead. */
+.rd-card-body .rl-compact { margin-top: 6px; align-self: flex-start; }
+
+/* ── The reading log on a profile ────────────────────────── */
+
+/*
+ * The list reuses .el-list / .el-entry wholesale — it is the same list of the
+ * same shape, one section down. These are the two things an exhibition entry
+ * has no equivalent of.
+ */
+
+/* Where an exhibition entry shows the venue, a reading entry shows the
+   publication and, for a preread, the show it was filed under. */
+.rl-entry-link {
+  color: #6B665D;
+  text-decoration: none;
+}
+
+.rl-entry-link:hover { color: #000; text-decoration: underline; }
+
+/*
+ * "The version you read." A frozen preread (migration_v61) has since been
+ * replaced on the exhibition page, and the entry above it is the article the
+ * person actually read. Said plainly and quietly: it is a fact about the
+ * piece, not a problem with their log.
+ */
+.rl-entry-frozen {
+  font-size: 12px;
+  color: #6B665D;
+  margin: 4px 0 0;
+}

@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { getCurrentUser } from '@/lib/auth'
 import { getOwnLog } from '@/lib/exhibition-logs'
+import { getOwnReadingLogs } from '@/lib/reading-logs'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
 import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 import type { ExhibitionDetailData, CoverageDisplayItem } from '@/lib/types'
@@ -175,13 +176,30 @@ export default async function ExhibitionPage({ params }: PageProps) {
   // that table to the caller's own rows, and a person can only ever see their
   // own entry here. Other people's logs live on their profiles.
   const viewer = await getCurrentUser()
-  const ownLog = await getOwnLog(viewer?.id ?? null, id)
+
+  // The prereads and the coverage items are the SAME table (migration_v35), so
+  // one lookup covers both lists — whichever of the two this show renders.
+  // Read through the visitor's session for the same reason as the show's own
+  // log: migration_v63 narrows reading_logs to the caller's own rows.
+  const [ownLog, ownReadingLogs] = await Promise.all([
+    getOwnLog(viewer?.id ?? null, id),
+    getOwnReadingLogs(
+      viewer?.id ?? null,
+      [
+        ...exhibition.prereads.map((p) => p.id),
+        ...exhibition.coverage.map((c) => c.preread_id),
+      ].map((contentId) => ({ contentType: 'preread' as const, contentId }))
+    ),
+  ])
 
   return (
     <ExhibitionDetail
       exhibition={exhibition}
       viewerId={viewer?.id ?? null}
       log={ownLog}
+      // A Map does not survive the server-to-client boundary, so it is handed
+      // over as entries and rebuilt in the component.
+      readingLogs={[...ownReadingLogs]}
     />
   )
 }
