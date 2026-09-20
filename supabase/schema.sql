@@ -1,5 +1,43 @@
--- Lazarus Exhibitions Database Schema
--- Run this in the Supabase SQL editor
+-- ############################################################################
+-- ##  STALE. THIS IS THE v1 SCHEMA. DO NOT READ IT AS CURRENT, DO NOT RUN IT.
+-- ############################################################################
+--
+-- Kept for history only. It stopped describing this database somewhere around
+-- migration_v2 and has been wrong for sixty migrations since.
+--
+-- WHAT IS WRONG WITH IT, concretely, so nobody has to find out the hard way:
+--
+--   · It declares THREE tables. The database serves twenty-eight.
+--   · exhibitions.venue_name and exhibitions.artists do not exist. Venues are
+--     a table (exhibitions.venue_id -> venues.id) and artists are a join table
+--     (exhibition_artists), both since migration_v2.
+--   · exhibitions.last_fetched_at does not exist. A test in this repo was
+--     written against it because of this file, and failed against production.
+--     The column a scrape actually moves is exhibitions.updated_at.
+--   · going_counts was DROPPED in schema v2. This file still creates it, and
+--     app/api/going is a 410 stub explaining where it went.
+--   · The RLS policies at the bottom are not the policies that are live. The
+--     real ones are deny-by-default with per-column grants (migration_v26) and
+--     a privacy model built across v40-v62. The "USING (true)" below would be
+--     a serious misreading of how this database is protected.
+--
+-- WHERE THE TRUTH IS:
+--
+--   supabase/SCHEMA-CURRENT.md   what every table and column IS, today.
+--                                Generated from the live database; regenerate
+--                                with `node --env-file=.env.local
+--                                scripts/dump-schema.mjs`. Shape only.
+--   supabase/migration_v*.sql    the source of truth, and the ONLY source for
+--                                constraints, RLS, grants, triggers, functions
+--                                and indexes. Each explains its reasoning.
+--
+-- Read the migrations for anything that decides ACCESS. A shape reference
+-- cannot tell you who is allowed to see a row.
+--
+-- ############################################################################
+
+-- Lazarus Exhibitions Database Schema  [v1 — superseded, see the banner above]
+-- Run this in the Supabase SQL editor  [NO. Running this would be destructive.]
 
 CREATE TABLE IF NOT EXISTS exhibitions (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
