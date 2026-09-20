@@ -391,9 +391,11 @@ async function classifyArticles(
 // 98.8% across the historical sample. It cost one Exa search per article (140+ on
 // a daily run) to produce a decision it never really made.
 //
-// The knock-on was worse than the noise. pruneOldReadings only deletes rows with
-// top_story = false, so flagging everything silently disabled the 7-day retention
-// policy: 261 of 288 readings were older than a week and none could be removed.
+// The knock-on was worse than the noise. The prune of the day only deleted rows
+// with top_story = false, so flagging everything silently disabled the 7-day
+// retention policy: 261 of 288 readings were older than a week and none could be
+// removed. That prune no longer exists — readings are kept for good — so the flag
+// now only decides what the river promotes.
 const TOP_STORY_MIN_RELEVANCE = 0.8
 
 // ─── Main Agent 3 pipeline ────────────────────────────────────────────────────
@@ -401,7 +403,6 @@ const TOP_STORY_MIN_RELEVANCE = 0.8
 export interface CurationResult {
   written: number
   classified: number
-  pruned: number
   topStories: number
   staleSkipped: number
   candidatesConsidered: number
@@ -467,7 +468,7 @@ export async function curateReadings(
   if (!publications || publications.length === 0) {
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
     return {
-      written: 0, classified: 0, pruned: 0, topStories: 0, candidatesConsidered: 0, staleSkipped: 0,
+      written: 0, classified: 0, topStories: 0, candidatesConsidered: 0, staleSkipped: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -513,9 +514,8 @@ export async function curateReadings(
   console.log(`Agent 3 [${tierFilter}]: ${candidates.length} candidate(s) across ${publications.length} feed(s); ${staleSkipped} skipped as older than ${RETENTION_DAYS} days`)
 
   if (candidates.length === 0) {
-    const pruned = await pruneOldReadings()
     return {
-      written: 0, classified: 0, pruned, topStories: 0, candidatesConsidered: 0, staleSkipped,
+      written: 0, classified: 0, topStories: 0, candidatesConsidered: 0, staleSkipped,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -625,12 +625,14 @@ export async function curateReadings(
     }
   }
 
-  // Pruning runs last, and now actually removes things: with top_story no longer
-  // set on nearly every row, the 7-day retention policy applies again.
-  const pruned = await pruneOldReadings()
-  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, pruned: ${pruned}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
+  // Nothing is deleted here any more. Readings are kept indefinitely: the river
+  // shows the last 7 days and ignores the rest, but anything that references a
+  // reading later — an editor's pick, a search, a person's log — needs the row to
+  // still exist. The old prune deleted past the same 7 days and had already cost
+  // one editor's pick, which quietly stopped rendering when its article went.
+  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
-    written, classified, pruned, topStories, candidatesConsidered: candidates.length, staleSkipped,
+    written, classified, topStories, candidatesConsidered: candidates.length, staleSkipped,
     byCategory, byRiverGroup, topStoryCandidates, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
@@ -654,7 +656,6 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
       errors: curation.errors,
       summary: {
         classified: curation.classified,
-        pruned: curation.pruned,
         topStories: curation.topStories,
         stale_skipped: curation.staleSkipped,
         by_category: curation.byCategory,
@@ -673,11 +674,11 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
   }
 }
 
-// How long a reading survives unless it is a Top Story. Single source of truth:
-// pruneOldReadings deletes past it, and isOutsideRetention refuses to spend a
-// classification on anything already beyond it. If these two ever disagree, the
-// pipeline either pays to classify rows it is about to delete (the old
-// behaviour) or drops articles it would have kept.
+// How far back Agent 3 will look when deciding whether an article is worth
+// classifying. Readings are never deleted — pruneOldReadings is gone, so nothing
+// ages out of the database. This is purely a spend limit: /api/river only ever
+// shows the last 7 days, so classifying an older article buys a row no one will
+// see. It deliberately matches the river's own window.
 const RETENTION_DAYS = 7
 
 function retentionCutoff(): Date {
@@ -687,18 +688,18 @@ function retentionCutoff(): Date {
 }
 
 /**
- * True when an RSS item is already older than the retention window, so writing
- * it would be immediately undone by the next prune.
+ * True when an RSS item is older than the window the river displays, so writing
+ * it would buy a row that never appears on the page.
  *
  * Measured on the 2026-08-04 daily run before this existed: 111 articles were
- * classified and written, 92 of them pruned in the same run — 83% of the
- * Anthropic spend for that run bought rows that did not survive it. Feeds that
+ * classified and written, 92 of them older than the window — 83% of the
+ * Anthropic spend for that run bought rows no reader would ever reach. Feeds that
  * serve long back-catalogues (The Nation's culture feed returns 50 items
  * spanning months) are the main source.
  *
- * Undated items are kept. A null published_at is never less than the cutoff, so
- * pruneOldReadings will not delete them either — dropping them here would lose
- * articles the retention policy intends to keep.
+ * Undated items are kept: dropping them here would lose articles that may well
+ * be current, and the river simply never shows them (it filters on
+ * published_at).
  */
 function isOutsideRetention(pubDate: string | null): boolean {
   if (!pubDate) return false
@@ -707,38 +708,3 @@ function isOutsideRetention(pubDate: string | null): boolean {
   return t < retentionCutoff().getTime()
 }
 
-async function pruneOldReadings(): Promise<number> {
-  const db = getSupabaseAdmin()
-  const cutoff = retentionCutoff()
-
-  // Never delete a reading an editor's pick points at. editor_picks.reference_id
-  // is not a foreign key, so nothing at the database level stops this, and it has
-  // already happened at least once: a live article pick from 2026-05-31 now
-  // resolves to nothing because its reading was pruned out from under it. The
-  // public Editor's Picks page renders whatever it can find, so the failure is
-  // silent — the pick just stops appearing.
-  //
-  // This was harmless only for as long as top_story was set on every row, which
-  // made the prune a no-op. Now that the flag means something again, the picks
-  // need protecting explicitly.
-  const { data: pickedRows } = await db
-    .from('editor_picks')
-    .select('reference_id')
-    .eq('pick_type', 'article')
-
-  const picked = [...new Set((pickedRows ?? []).map((p) => p.reference_id as string).filter(Boolean))]
-
-  let query = db
-    .from('readings')
-    .delete({ count: 'exact' })
-    .lt('published_at', cutoff.toISOString())
-    .eq('top_story', false)
-
-  if (picked.length > 0) {
-    query = query.not('id', 'in', `(${picked.join(',')})`)
-  }
-
-  const { count, error } = await query
-  if (error) console.error('Prune failed:', error.message)
-  return count ?? 0
-}
