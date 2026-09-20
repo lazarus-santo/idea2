@@ -1772,14 +1772,34 @@ export async function scrapeInstitution(
     // show_title is a fresh Claude extraction every scrape and its casing can
     // drift run to run, so a differing-case title never trips the constraint
     // and silently inserts a real duplicate instead of erroring.
+    // % and _ are escaped so a title containing them matches only itself.
     const { data: existingByTitle } = existingByUrl
       ? { data: null }
       : await db
           .from('exhibitions')
-          .select('id, status')
+          .select('id, status, detail_url')
           .eq('venue_id', venue.id)
-          .ilike('show_title', cleanTitle)
+          .ilike('show_title', cleanTitle.replace(/[\\%_]/g, '\\$&'))
           .maybeSingle()
+
+    // A title match on a row with no stored URL is where an exhibition id can
+    // silently split: titles drift between scrapes ("CFGNY: Puddles into Pond"
+    // vs "Puddles into Pond"), and once they do, the title lookup misses and the
+    // same show is inserted again under a second id. Saving the URL now means
+    // every later scrape matches on it instead. This runs for published rows too
+    // — detail_url is a match key, not admin-approved content. The URL lookup
+    // above just missed, so the (venue_id, detail_url) constraint can only
+    // reject this on a race, and a failure only costs the backfill.
+    if (existingByTitle && !existingByTitle.detail_url) {
+      const { error: backfillError } = await db
+        .from('exhibitions')
+        .update({ detail_url: normalizedUrl })
+        .eq('id', existingByTitle.id)
+        .is('detail_url', null)
+      if (backfillError) {
+        console.error(`[${vn}] detail_url backfill failed for "${cleanTitle}":`, backfillError.message)
+      }
+    }
 
     const existing = existingByUrl ?? existingByTitle
 
