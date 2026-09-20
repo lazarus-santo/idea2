@@ -85,20 +85,10 @@ function toCoverageItem(
 // risk. CoverageItem has no summary/highlight text of its own — summary stays
 // null rather than folding author into it, now that author has its own column
 // (migration_v35).
-export function coverageItemToPrereadRow(exhibitionId: string, item: CoverageItem) {
-  return {
-    exhibition_id: exhibitionId,
-    article_title: item.title,
-    publication: item.publication,
-    article_url: item.url,
-    thumbnail_url: item.thumbnail_url,
-    summary: null,
-    artist_name: item.artist_name,
-    item_coverage_type: item.coverage_type,
-    author: item.author,
-    published_date: item.published_date,
-  }
-}
+// Moved to lib/preread-writes.ts, where the rest of the preread write rules live
+// and can be unit-tested without a database. Re-exported so existing callers'
+// imports keep working.
+export { coverageItemToPrereadRow } from './preread-writes'
 
 // ─── Classification ───────────────────────────────────────────────────────────
 // Two kinds of museum show, by artist count alone:

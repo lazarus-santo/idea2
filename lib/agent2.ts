@@ -40,6 +40,7 @@ import {
   type MuseumRepairKind,
   type ShowReviewResult,
   type ShowReviewStatus,
+  type PrereadRow,
 } from './claude'
 import {
   generateMuseumCoverage,
@@ -49,6 +50,8 @@ import {
   crossLinkCoverageToReadings,
   coverageItemToPrereadRow,
 } from './museum-coverage'
+import { isPrereadLogged } from './preread-logs'
+import { replacementOverwrite, replacementInsert, freezeUpdate } from './preread-writes'
 import type { AgentRunError } from './agent-runs'
 import type { PrereadStatus, QualityFlag, RowStatus } from './types'
 
@@ -241,6 +244,10 @@ export async function recomputePrereadStatus(exhibitionId: string): Promise<Prer
     .from('prereads')
     .select('quality_flag')
     .eq('exhibition_id', exhibitionId)
+    // A frozen row (migration_v61) is an archived copy kept for someone's log, not
+    // live coverage. Its old flag would otherwise pin the show at 'needs_review'
+    // with nothing an admin could do about it — automatic repair skips frozen rows.
+    .is('superseded_by', null)
   if (error) throw new Error(`Failed to read prereads: ${error.message}`)
   const rows = data ?? []
   const status: PrereadStatus =
@@ -261,6 +268,8 @@ export async function recomputePrereadStatus(exhibitionId: string): Promise<Prer
 async function storedArtistRowCount(ex: LoadedExhibition): Promise<number> {
   const { count, error } = await getSupabaseAdmin().from('prereads').select('id', { count: 'exact', head: true })
     .eq('exhibition_id', ex.ctx.exhibition_id)
+    // A frozen row and the row that replaced it are one article's worth of coverage.
+    .is('superseded_by', null)
   if (error) throw new Error(`Failed to count stored pieces: ${error.message}`)
   return Math.max(0, (count ?? 0) - (ex.showReview.status === 'found' ? 1 : 0))
 }
@@ -384,18 +393,60 @@ interface StoredPreread {
   row_status: RowStatus
   /** migration_v60 — a flagged row only a person may repair (Replace); automatic repair skips it. */
   repair_hold: boolean
+  /** migration_v61 — set when this row was frozen for someone's log; points at its replacement. */
+  superseded_by: string | null
 }
 
-const PREREAD_SELECT = 'id, exhibition_id, article_url, article_title, summary, artist_name, item_coverage_type, quality_flag, row_status, repair_hold'
+const PREREAD_SELECT = 'id, exhibition_id, article_url, article_title, summary, artist_name, item_coverage_type, quality_flag, row_status, repair_hold, superseded_by'
 
 type RowRepairResult =
-  | { repaired: true; how: 'rechecked' | 'replaced' }
+  | { repaired: true; how: 'rechecked'; prereadId: string; froze: false }
+  /** `prereadId` is the row now holding the article: the same row, or a new one if the old was frozen. */
+  | { repaired: true; how: 'replaced'; prereadId: string; froze: boolean }
   | { repaired: false; flag: QualityFlag | null; note: string }
 
 // One row: re-check the article already there first (no search needed if the only
 // problem was a check that failed to run), then look for a replacement. A repaired
 // row gets quality_flag NULL and row_status 'active' in one write — the replacement
 // article is new, so a blank that existed only because of the old flag goes with it.
+/**
+ * A logged row's replacement: the fresh article goes into a NEW row, and the
+ * logged row is frozen — blanked, content untouched, pointing at the row that
+ * took over. The person's rating and review stay attached to the article they
+ * actually read, and the show still shows the better piece.
+ *
+ * The insert comes first on purpose. There is no transaction across two
+ * PostgREST calls, so one of them has to go first, and the orders fail
+ * differently: insert-then-freeze leaves both rows visible for a moment (and
+ * permanently, if the freeze then fails — loud, and an admin can Blank the old
+ * one). Freeze-then-insert would hide the show's coverage first and, if the
+ * insert failed, leave the page with nothing. A visible duplicate beats a
+ * disappearance.
+ */
+async function freezeAndReplace(row: StoredPreread, fresh: PrereadRow): Promise<RowRepairResult> {
+  const db = getSupabaseAdmin()
+
+  const { data: inserted, error: insertError } = await db
+    .from('prereads')
+    .insert(replacementInsert(row.exhibition_id, fresh, row.artist_name))
+    .select('id')
+    .single()
+  if (insertError || !inserted) {
+    throw new Error(`Failed to insert the replacement preread: ${insertError?.message ?? 'no row returned'}`)
+  }
+
+  const { error: freezeError } = await db.from('prereads').update(freezeUpdate(inserted.id as string)).eq('id', row.id)
+  if (freezeError) {
+    // Both rows are live. Say which, so it can be sorted out by hand.
+    throw new Error(
+      `Replacement ${inserted.id} was created but preread ${row.id} could not be frozen (${freezeError.message}) — `
+      + 'both rows are showing on the exhibition page until one is blanked.'
+    )
+  }
+
+  return { repaired: true, how: 'replaced', prereadId: inserted.id as string, froze: true }
+}
+
 async function repairRow(
   ex: LoadedExhibition,
   row: StoredPreread,
@@ -407,9 +458,11 @@ async function repairRow(
   if (opts.recheckFirst) {
     const verdict = await recheckPreread(ex.ctx, row)
     if (verdict === 'pass') {
+      // No freeze check here: the article is not changing. The row keeps the piece
+      // it already had, so a log of it still resolves to what the person read.
       const { error } = await db.from('prereads').update({ quality_flag: null, row_status: 'active', repair_hold: false }).eq('id', row.id)
       if (error) throw new Error(`Failed to update preread: ${error.message}`)
-      return { repaired: true, how: 'rechecked' }
+      return { repaired: true, how: 'rechecked', prereadId: row.id, froze: false }
     }
     recheckFlag = verdict
   }
@@ -417,19 +470,22 @@ async function repairRow(
   const subject = prereadSubject(ex.ctx, row.artist_name, row.item_coverage_type)
   const found = await findReplacementPreread(ex.ctx, subject, opts.excludeUrls, opts.customQuery)
   if (found.ok) {
-    const { error } = await db.from('prereads').update({
-      ...found.row,
-      // A per-artist row stays bound to its artist even if the replacement came from
-      // a custom query that didn't name them.
-      artist_name: row.artist_name ?? found.row.artist_name ?? null,
-      quality_flag: null,
-      row_status: 'active',
-      repair_hold: false,
-    }).eq('id', row.id)
-    if (error) throw new Error(`Failed to update preread: ${error.message}`)
     // Two flagged rows repaired in one pass must not both land on this article.
+    // Added before either write, so a failure part-way through still can't hand
+    // the same article to the next row in the loop.
     if (found.row.article_url) opts.excludeUrls.add(found.row.article_url)
-    return { repaired: true, how: 'replaced' }
+
+    // The one rule that separates this from a silent content swap: a row someone
+    // has logged is frozen, not overwritten (migration_v61).
+    if (await isPrereadLogged(row.id)) {
+      return freezeAndReplace(row, found.row)
+    }
+
+    const { error } = await db.from('prereads')
+      .update(replacementOverwrite(found.row, row.artist_name))
+      .eq('id', row.id)
+    if (error) throw new Error(`Failed to update preread: ${error.message}`)
+    return { repaired: true, how: 'replaced', prereadId: row.id, froze: false }
   }
 
   // Why the repair failed: the replacement search's own reason if it judged
@@ -458,6 +514,9 @@ async function flaggedRows(exhibitionId: string): Promise<StoredPreread[]> {
     .eq('exhibition_id', exhibitionId)
     .not('quality_flag', 'is', null)
     .eq('repair_hold', false)
+    // Frozen rows keep the flag they had when they were archived. Repairing one
+    // again would freeze it again, one new row per run, for ever.
+    .is('superseded_by', null)
   if (error) throw new Error(`Failed to read flagged prereads: ${error.message}`)
   return (data ?? []) as StoredPreread[]
 }
@@ -622,6 +681,16 @@ export async function replacePreread(prereadId: string, customQuery?: string | n
   if (error || !row) throw new Agent2UserError(`Preread ${prereadId} not found`, 404)
   const stored = row as StoredPreread
 
+  // A frozen row is an archived copy kept for someone's log (migration_v61).
+  // Replacing it would un-hide it and rewrite the very content it exists to
+  // preserve; the row that took over is the one to act on.
+  if (stored.superseded_by) {
+    throw new Agent2UserError(
+      `This row was archived because someone logged it. Replace ${stored.superseded_by}, the row that replaced it, instead.`,
+      409
+    )
+  }
+
   const loaded = await loadExhibition(stored.exhibition_id)
   if (loaded.path === 'fair') {
     throw new Agent2UserError('Replace is not available for fair coverage: it has no quality check yet.', 400)
@@ -639,7 +708,9 @@ export async function replacePreread(prereadId: string, customQuery?: string | n
   let qualityFlag: QualityFlag | null = null
   let message: string
   if (result.repaired) {
-    message = result.how === 'rechecked' ? 'Re-checked the existing article: it passes now.' : 'Replaced with a new article that passed the check.'
+    message = result.how === 'rechecked' ? 'Re-checked the existing article: it passes now.'
+      : result.froze ? 'Someone had logged this article, so it was kept and hidden, and the new one added as its own row. Their log still points at what they read.'
+        : 'Replaced with a new article that passed the check.'
   } else if (stored.quality_flag !== null) {
     qualityFlag = result.flag ?? stored.quality_flag
     if (qualityFlag !== stored.quality_flag) {
@@ -656,7 +727,15 @@ export async function replacePreread(prereadId: string, customQuery?: string | n
     ? ex.status
     : await recomputePrereadStatus(ex.ctx.exhibition_id)
 
-  return { prereadId, replaced: result.repaired, qualityFlag, statusAfter, message }
+  // The row that now holds the article — a new id when the logged row was frozen,
+  // so the admin UI refreshes onto the row it should act on next.
+  return {
+    prereadId: result.repaired ? result.prereadId : prereadId,
+    replaced: result.repaired,
+    qualityFlag,
+    statusAfter,
+    message,
+  }
 }
 
 // ─── Trigger 3C: Blank / Activate ─────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { isAuthorizedAgentRequest, unauthorized } from '@/lib/api-auth'
+import { PICK_TARGET_TABLE, pickTargetExists, type PickType } from '@/lib/editor-picks'
 
 // GET /api/admin/editor-picks — the current live pick for each type.
 //
@@ -138,6 +139,25 @@ export async function POST(request: NextRequest) {
 
   if (!referenceId) {
     return NextResponse.json({ error: 'reference_id required for this pick type' }, { status: 400 })
+  }
+
+  // reference_id is a bare uuid with no foreign key, so a stale or mistyped id
+  // inserts a pick that renders as nothing: /api/editors-picks looks the target up
+  // fresh on every request and silently omits whatever it cannot find. Two such
+  // rows already exist from before this check. Verified before the retire step
+  // below, so a rejected pick leaves the current live pick in place.
+  const target = await pickTargetExists(pick_type as PickType, referenceId)
+  if (target.error) {
+    return NextResponse.json(
+      { error: `Could not verify reference_id ${referenceId}: ${target.error}` },
+      { status: 400 }
+    )
+  }
+  if (!target.exists) {
+    return NextResponse.json(
+      { error: `No row in ${PICK_TARGET_TABLE[pick_type as PickType]} with id ${referenceId} — pick not created` },
+      { status: 400 }
+    )
   }
 
   // Retire the current pick before inserting the replacement. This ordering is
