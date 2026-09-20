@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
 import { save as saveLog, remove as removeLog } from '@/lib/reading-log-writes'
+import AddToTopFour from '@/components/AddToTopFour'
 import type {
   OwnReadingLog,
   ReadingLogStatus,
@@ -66,6 +67,7 @@ export default function ReadingLog({
   variant = 'full',
   signInNext,
   onSaved,
+  inTopFour = false,
 }: {
   contentType: ReadingContentType
   contentId: string
@@ -78,6 +80,11 @@ export default function ReadingLog({
   signInNext: string
   /** Client pages pass this instead of relying on router.refresh(). */
   onSaved?: () => void
+  /**
+   * Whether this article is already one of the viewer's four. Only ever used
+   * to choose between Add and Remove — the database decides what is allowed.
+   */
+  inTopFour?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -328,6 +335,17 @@ export default function ReadingLog({
               {working ? '…' : noteSaved && !noteChanged ? 'Saved' : 'Save note'}
             </button>
           </div>
+
+          {/* Inside the 'read' block, so it appears exactly when the article
+              becomes eligible and goes away when it stops being — the same
+              moment the downgrade trigger removes it from the Top Four. It
+              shares onSaved with the log itself: on the Readings page there is
+              no server render to refresh, so both re-read the same store. */}
+          <AddToTopFour
+            target={{ kind: 'content', contentType, contentId }}
+            inTopFour={inTopFour}
+            onChanged={onSaved}
+          />
         </div>
       )}
 

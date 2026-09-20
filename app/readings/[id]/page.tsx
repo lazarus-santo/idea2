@@ -4,6 +4,8 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import AccountNav from '@/components/account/AccountNav'
 import { getCurrentUser } from '@/lib/auth'
 import { getOwnReadingLog } from '@/lib/reading-logs'
+import { getOwnTopFourContentKeys } from '@/lib/top-four'
+import { contentKey } from '@/lib/top-four-types'
 import ReadingLog from '@/components/ReadingLog'
 
 interface PageProps {
@@ -67,7 +69,12 @@ export default async function ReadingPage({ params }: PageProps) {
   // that table to the caller's own rows, and a person can only ever see their
   // own entry here. Other people's logs live on their profiles.
   const viewer = await getCurrentUser()
-  const ownLog = await getOwnReadingLog(viewer?.id ?? null, 'reading', id)
+  const [ownLog, topFourReads] = await Promise.all([
+    getOwnReadingLog(viewer?.id ?? null, 'reading', id),
+    // Their own keys, read under the same first-person policy — enough for the
+    // control below to know whether to offer Add or Remove.
+    getOwnTopFourContentKeys(viewer?.id ?? null),
+  ])
 
   return (
     <div className="rp-body">
@@ -111,6 +118,7 @@ export default async function ReadingPage({ params }: PageProps) {
           viewerId={viewer?.id ?? null}
           log={ownLog}
           signInNext={`/readings/${id}`}
+          inTopFour={topFourReads.includes(contentKey('reading', id))}
         />
 
         {relatedExhibition && (

@@ -22,8 +22,10 @@ import FollowRequests from '@/components/account/FollowRequests'
 import RelationshipMenu from '@/components/account/RelationshipMenu'
 import ProfileLog from '@/components/account/ProfileLog'
 import ProfileReadingLog from '@/components/account/ProfileReadingLog'
+import ProfileTopFour from '@/components/account/ProfileTopFour'
 import { getProfileLog } from '@/lib/exhibition-logs'
 import { getProfileReadingLog } from '@/lib/reading-logs'
+import { getTopFourExhibitions, getTopFourContent } from '@/lib/top-four'
 import '@/app/account.css'
 
 interface Props {
@@ -158,14 +160,24 @@ export default async function ProfilePage({ params }: Props) {
   // those answers from being able to disagree — if the page's own `locked`
   // were ever wrong, the lists would still be empty, because the database
   // decided.
-  const [counts, relationship, requests, muted, log, readingLog] = await Promise.all([
-    getFollowCounts(card.id),
-    getFollowRelationship(viewer?.id ?? null, card.id),
-    isOwnProfile ? getPendingRequests() : Promise.resolve([]),
-    isMuted(viewer?.id ?? null, card.id),
-    getProfileLog(card.id),
-    getProfileReadingLog(card.id),
-  ])
+  //
+  // The two Top Fours are fetched on the same terms and for the same reason:
+  // profile_top_four_exhibitions() and profile_top_four_content() ask
+  // can_view_profile() themselves, so a locked profile's lists come back empty
+  // whatever this page believes. They are NOT derived from the logs above —
+  // that would be a second idea of what is in somebody's Top Four, kept in
+  // step by hand.
+  const [counts, relationship, requests, muted, log, readingLog, topShows, topReads] =
+    await Promise.all([
+      getFollowCounts(card.id),
+      getFollowRelationship(viewer?.id ?? null, card.id),
+      isOwnProfile ? getPendingRequests() : Promise.resolve([]),
+      isMuted(viewer?.id ?? null, card.id),
+      getProfileLog(card.id),
+      getProfileReadingLog(card.id),
+      getTopFourExhibitions(card.id),
+      getTopFourContent(card.id),
+    ])
 
   return (
     <div className="ac-page">
@@ -239,6 +251,20 @@ export default async function ProfilePage({ params }: Props) {
                 year: 'numeric',
               })}
             </p>
+
+            {/* Above the logs, and inside the unlocked branch with them. A
+                Top Four is the short answer to "what does this person like"
+                and the log is the long one, so the short answer goes first.
+                It takes both logs as well as its own lists: on your own
+                profile they are what the editor offers, already fetched, so
+                choosing costs no extra read. See ProfileTopFour. */}
+            <ProfileTopFour
+              exhibitions={topShows}
+              content={topReads}
+              exhibitionLog={log}
+              readingLog={readingLog}
+              isOwnProfile={isOwnProfile}
+            />
 
             {/* Inside the unlocked branch, so a locked profile shows the
                 header and nothing else — same as the bio. The list would be

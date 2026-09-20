@@ -6,6 +6,7 @@ import type { Reading } from '@/lib/types'
 import AccountNav from '@/components/account/AccountNav'
 import ReadingLog from '@/components/ReadingLog'
 import { useReadingLogs, logFor, type ReadingLogStore } from '@/lib/reading-log-client'
+import { readingKey } from '@/lib/reading-log-types'
 import '@/app/reading-log.css'
 
 /**
@@ -23,6 +24,7 @@ import '@/app/reading-log.css'
 const LogStore = createContext<ReadingLogStore>({
   viewerId: null,
   logs: new Map(),
+  topFour: new Set(),
   ready: false,
   refresh: () => {},
 })
@@ -45,7 +47,10 @@ function ArticleLog({ reading, className }: { reading: Reading; className?: stri
         variant="compact"
         signInNext="/readings"
         // No server render to refresh on this page: re-read the store instead.
+        // The same refresh serves the Top Four control, which is why it does
+        // not take an onChanged of its own — one re-read answers both.
         onSaved={store.refresh}
+        inTopFour={store.topFour.has(readingKey('reading', reading.id))}
       />
     </div>
   )

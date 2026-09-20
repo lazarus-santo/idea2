@@ -38,6 +38,17 @@ export interface ReadingLogStore {
   viewerId: string | null
   /** Keyed `${content_type}:${content_id}` — use readingKey(). */
   logs: Map<string, OwnReadingLog>
+  /**
+   * Which of those the person has put in their article Top Four, under the
+   * same keys.
+   *
+   * It rides along with the log rather than getting a store of its own because
+   * it is read at the same moment, for the same person, to decorate the same
+   * rows — and because it is at most four keys. A separate hook would mean a
+   * second session subscription and a second chance for the two to disagree
+   * about who is signed in.
+   */
+  topFour: Set<string>
   /** False until the session has been resolved, so nothing renders the wrong state first. */
   ready: boolean
   /** Re-read after a write. Cheap, and simpler than predicting what the database did. */
@@ -47,6 +58,7 @@ export interface ReadingLogStore {
 export function useReadingLogs(): ReadingLogStore {
   const [viewerId, setViewerId] = useState<string | null>(null)
   const [logs, setLogs] = useState<Map<string, OwnReadingLog>>(new Map())
+  const [topFour, setTopFour] = useState<Set<string>>(new Set())
   const [ready, setReady] = useState(false)
   const [nonce, setNonce] = useState(0)
 
@@ -65,7 +77,7 @@ export function useReadingLogs(): ReadingLogStore {
       setTimeout(() => {
         if (cancelled) return
         setViewerId(session?.user.id ?? null)
-        if (!session) { setLogs(new Map()); setReady(true) }
+        if (!session) { setLogs(new Map()); setTopFour(new Set()); setReady(true) }
       }, 0)
     })
 
@@ -77,34 +89,60 @@ export function useReadingLogs(): ReadingLogStore {
     let cancelled = false
 
     ;(async () => {
-      const { data, error } = await getSupabaseBrowser()
-        .from('reading_logs')
-        .select('content_type, content_id, status, rating, liked, comment, comment_visibility')
-        .eq('user_id', viewerId)
-        .order('updated_at', { ascending: false })
-        .limit(LIMIT)
+      // Both in one round trip. The Top Four is four rows at most, and asking
+      // for it separately would let the two answers arrive at different times
+      // and briefly disagree — a row showing "Read" with no Top Four state, or
+      // the reverse.
+      const supabase = getSupabaseBrowser()
+      const [logRes, topFourRes] = await Promise.all([
+        supabase
+          .from('reading_logs')
+          .select('content_type, content_id, status, rating, liked, comment, comment_visibility')
+          .eq('user_id', viewerId)
+          .order('updated_at', { ascending: false })
+          .limit(LIMIT),
+        supabase
+          .from('top_four_content')
+          .select('content_type, content_id')
+          .eq('user_id', viewerId),
+      ])
 
       if (cancelled) return
-      if (error) {
+      if (logRes.error) {
         // Loud, then carry on unmarked. A failed read must not look like an
         // empty log in the console as well as on screen.
-        console.error('[reading-logs] own log lookup failed:', error.message)
+        console.error('[reading-logs] own log lookup failed:', logRes.error.message)
         setReady(true)
         return
       }
 
       const next = new Map<string, OwnReadingLog>()
-      for (const row of (data ?? []) as OwnReadingLog[]) {
+      for (const row of (logRes.data ?? []) as OwnReadingLog[]) {
         next.set(readingKey(row.content_type, row.content_id), row)
       }
       setLogs(next)
+
+      // A failed Top Four read is NOT fatal to the log itself: the pills are
+      // the point of this page and the Add control is a decoration on them. It
+      // degrades to "not in your Top Four", where a click is refused as a
+      // duplicate and nothing breaks.
+      if (topFourRes.error) {
+        console.error('[reading-logs] own top four lookup failed:', topFourRes.error.message)
+      } else {
+        const keys = new Set<string>()
+        for (const row of topFourRes.data ?? []) {
+          keys.add(readingKey(row.content_type, row.content_id))
+        }
+        setTopFour(keys)
+      }
+
       setReady(true)
     })()
 
     return () => { cancelled = true }
   }, [viewerId, nonce])
 
-  return { viewerId, logs, ready, refresh }
+  return { viewerId, logs, topFour, ready, refresh }
 }
 
 /** One item's entry out of the store, or null. */

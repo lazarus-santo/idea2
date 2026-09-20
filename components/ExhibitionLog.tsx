@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
 import { save as saveLog, remove as removeLog } from '@/lib/exhibition-log-writes'
+import AddToTopFour from '@/components/AddToTopFour'
 import type {
   OwnExhibitionLog,
   LogStatus,
@@ -48,11 +49,17 @@ export default function ExhibitionLog({
   exhibitionSlugTitle,
   viewerId,
   log,
+  inTopFour = false,
 }: {
   exhibitionId: string
   exhibitionSlugTitle: string
   viewerId: string | null
   log: OwnExhibitionLog | null
+  /**
+   * Whether this show is already one of the viewer's four. Only ever used to
+   * choose between Add and Remove — the database decides what is allowed.
+   */
+  inTopFour?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -290,6 +297,16 @@ export default function ExhibitionLog({
               {working ? '…' : noteSaved && !noteChanged ? 'Saved' : 'Save note'}
             </button>
           </div>
+
+          {/* Inside the 'seen' block, so it appears exactly when the show
+              becomes eligible and disappears the moment it stops being — which
+              is also the moment the downgrade trigger takes it out of the Top
+              Four, so the control and the database agree without either one
+              being told about the other. */}
+          <AddToTopFour
+            target={{ kind: 'exhibition', exhibitionId }}
+            inTopFour={inTopFour}
+          />
         </div>
       )}
 

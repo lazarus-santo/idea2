@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { getCurrentUser } from '@/lib/auth'
 import { getOwnLog } from '@/lib/exhibition-logs'
 import { getOwnReadingLogs } from '@/lib/reading-logs'
+import { getOwnTopFourExhibitionIds, getOwnTopFourContentKeys } from '@/lib/top-four'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
 import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 import type { ExhibitionDetailData, CoverageDisplayItem } from '@/lib/types'
@@ -181,7 +182,12 @@ export default async function ExhibitionPage({ params }: PageProps) {
   // one lookup covers both lists — whichever of the two this show renders.
   // Read through the visitor's session for the same reason as the show's own
   // log: migration_v63 narrows reading_logs to the caller's own rows.
-  const [ownLog, ownReadingLogs] = await Promise.all([
+  // The two Top Four reads are the viewer's own keys, nothing more — enough
+  // for the Add/Remove control on each log entry to know which it is. They are
+  // whole-list reads rather than per-item ones because a Top Four is four rows
+  // at most: asking about this page's items specifically would cost the same
+  // round trip and answer less.
+  const [ownLog, ownReadingLogs, topFourShows, topFourReads] = await Promise.all([
     getOwnLog(viewer?.id ?? null, id),
     getOwnReadingLogs(
       viewer?.id ?? null,
@@ -190,6 +196,8 @@ export default async function ExhibitionPage({ params }: PageProps) {
         ...exhibition.coverage.map((c) => c.preread_id),
       ].map((contentId) => ({ contentType: 'preread' as const, contentId }))
     ),
+    getOwnTopFourExhibitionIds(viewer?.id ?? null),
+    getOwnTopFourContentKeys(viewer?.id ?? null),
   ])
 
   return (
@@ -200,6 +208,8 @@ export default async function ExhibitionPage({ params }: PageProps) {
       // A Map does not survive the server-to-client boundary, so it is handed
       // over as entries and rebuilt in the component.
       readingLogs={[...ownReadingLogs]}
+      inTopFour={topFourShows.includes(id)}
+      topFourReadKeys={topFourReads}
     />
   )
 }

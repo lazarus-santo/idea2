@@ -83,16 +83,25 @@ export default function ExhibitionDetail({
   viewerId,
   log,
   readingLogs,
+  inTopFour = false,
+  topFourReadKeys = [],
 }: {
   exhibition: ExhibitionDetailData
   viewerId: string | null
   log: OwnExhibitionLog | null
   /** The visitor's own reading-log rows for this page's prereads, as entries. */
   readingLogs: [string, OwnReadingLog][]
+  /** Whether THIS show is one of the visitor's four. */
+  inTopFour?: boolean
+  /** Which articles are in their four, as readingKey() strings. */
+  topFourReadKeys?: string[]
 }) {
   // Rebuilt from entries because a Map cannot cross the server-to-client
   // boundary. Keyed by readingKey(), the same key lib/reading-logs.ts uses.
   const readingLogByKey = useMemo(() => new Map(readingLogs), [readingLogs])
+
+  // A Set for the same reason, and because every preread on the page asks it.
+  const topFourReads = useMemo(() => new Set(topFourReadKeys), [topFourReadKeys])
 
   const [prShowFull, setPrShowFull] = useState(false)
   const [prHasMore, setPrHasMore] = useState(false)
@@ -216,6 +225,7 @@ export default function ExhibitionDetail({
             exhibitionSlugTitle={exhibition.show_title}
             viewerId={viewerId}
             log={log}
+            inTopFour={inTopFour}
           />
 
           {hasCollapsibles && <div className="ep-sections-gap" />}
@@ -256,6 +266,7 @@ export default function ExhibitionDetail({
                         log={readingLogByKey.get(readingKey('preread', p.id)) ?? null}
                         variant="compact"
                         signInNext={`/exhibitions/${exhibition.id}`}
+                        inTopFour={topFourReads.has(readingKey('preread', p.id))}
                       />
                     </div>
                   )
@@ -322,6 +333,7 @@ export default function ExhibitionDetail({
                         log={readingLogByKey.get(readingKey('preread', c.preread_id)) ?? null}
                         variant="compact"
                         signInNext={`/exhibitions/${exhibition.id}`}
+                        inTopFour={topFourReads.has(readingKey('preread', c.preread_id))}
                       />
                     </div>
                   )

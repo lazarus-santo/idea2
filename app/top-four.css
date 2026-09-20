@@ -1,0 +1,412 @@
+/*
+ * The Top Four lists.
+ *
+ * Prefixed .tf- and loaded by ProfileTopFour, which also pulls in the editor.
+ * A separate stylesheet for the reason exhibition-log.css gives: this is a
+ * self-contained surface with its own shape, and keeping it out of
+ * globals.css means the profile is the only page that pays for it.
+ *
+ * Nothing here reads an --ac- token. Those are declared on .ac-page, and while
+ * the Top Four only appears inside one today, a colour taken from a token
+ * would fall back to inherit the first time it is rendered anywhere else. The
+ * greys below are the same cream-ground values account.css and
+ * exhibition-log.css measure — about 9:1 for soft and 5.4:1 for faint against
+ * #FFFCEC — written out rather than referenced.
+ *
+ * Type matches the log lists (15px titles, 13px meta, Inter Tight), because
+ * these sit directly above them and a second scale would read as a second kind
+ * of thing.
+ */
+
+.tf-block {
+  margin-top: 28px;
+  font-family: var(--font-inter-tight), system-ui, sans-serif;
+  color: #000;
+}
+
+.tf-section + .tf-section { margin-top: 24px; }
+
+.tf-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.tf-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.tf-hint {
+  font-size: 13px;
+  color: #6B665D;
+  margin: 8px 0 0;
+}
+
+/* ── The four slots ──────────────────────────────────────── */
+
+/*
+ * Two across on a phone, four across from 720px up. Four in a row is the shape
+ * the list is named for and is worth keeping wherever it fits; below that,
+ * four columns would leave titles two words wide.
+ */
+.tf-slots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (min-width: 720px) {
+  .tf-slots { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+.tf-slot {
+  position: relative;
+  min-width: 0;
+}
+
+/*
+ * The rank, always drawn — it is what makes four things read as an ordered
+ * list. Faint enough to sit behind the title rather than compete with it.
+ */
+.tf-rank {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #6B665D;
+  margin-bottom: 4px;
+}
+
+/*
+ * An empty slot is a dashed box of the same height as a filled one, so a list
+ * with two picks visibly has room for two more rather than just being short.
+ */
+.tf-slot-placeholder {
+  display: block;
+  border: 1px dashed rgba(0, 0, 0, 0.22);
+  border-radius: 2px;
+  /* Matches the thumbnail's square plus roughly two lines of text below it, so
+     the grid rows stay level whichever slots are filled. */
+  aspect-ratio: 1 / 1;
+}
+
+.tf-item {
+  display: block;
+  color: #000;
+  text-decoration: none;
+  min-width: 0;
+}
+
+.tf-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* No image: the same square, so a missing thumbnail does not shorten the slot
+   and knock the row out of line. */
+.tf-thumb--none {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.tf-item-text {
+  display: block;
+  margin-top: 6px;
+}
+
+.tf-item-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.tf-item:hover .tf-item-title { text-decoration: underline; }
+
+.tf-item-sub {
+  display: block;
+  font-size: 12px;
+  color: #6B665D;
+  margin-top: 2px;
+}
+
+.tf-item-frozen {
+  display: block;
+  font-size: 12px;
+  color: #6B665D;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.tf-marks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #4A4640;
+}
+
+.tf-stars { color: #000; letter-spacing: 1px; }
+
+/* ── The editor ──────────────────────────────────────────── */
+
+.tf-edit {
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 10px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: transparent;
+  color: #000;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.tf-edit:hover { background: rgba(0, 0, 0, 0.06); }
+
+.tf-editor {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 3px;
+  padding: 14px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.tf-editor-head { margin-bottom: 8px; }
+
+.tf-editor-title {
+  margin: 0;
+  font-weight: 700;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tf-editor-count {
+  font-weight: 400;
+  font-size: 13px;
+  color: #6B665D;
+}
+
+.tf-editor-empty {
+  font-size: 13px;
+  color: #6B665D;
+  margin: 6px 0;
+}
+
+/*
+ * The chosen list uses its own numbering rather than <ol>'s markers, because
+ * the rank has to sit inside the row next to the controls.
+ */
+.tf-chosen {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.tf-chosen-row,
+.tf-available-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.tf-chosen-rank {
+  font-weight: 700;
+  font-size: 13px;
+  color: #6B665D;
+  width: 14px;
+  flex: none;
+}
+
+.tf-chosen-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.tf-chosen-title {
+  display: block;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.tf-chosen-sub {
+  display: block;
+  font-size: 12px;
+  color: #6B665D;
+  margin-top: 1px;
+}
+
+.tf-chosen-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.tf-move,
+.tf-add {
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid #000;
+  background: transparent;
+  color: #000;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+
+.tf-move {
+  width: 26px;
+  height: 26px;
+  line-height: 1;
+  padding: 0;
+}
+
+.tf-add { padding: 3px 12px; }
+
+.tf-move:hover:not(:disabled),
+.tf-add:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
+
+/* Disabled here means "not available from this position" — the top item's ↑,
+   or Add when the list is full — so it reads as unavailable rather than
+   broken. */
+.tf-move:disabled,
+.tf-add:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.tf-pick { margin-top: 4px; }
+
+.tf-pick-label {
+  display: block;
+  font-size: 13px;
+  color: #4A4640;
+  margin-bottom: 6px;
+}
+
+.tf-filter {
+  font: inherit;
+  font-size: 14px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.24);
+  border-radius: 3px;
+  background: transparent;
+  color: #000;
+}
+
+/* The candidate list can be long — up to everything a person has logged — so
+   it scrolls rather than pushing Save off the screen. */
+.tf-available {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.tf-error {
+  font-size: 13px;
+  color: #8A2A1F;
+  margin: 10px 0 0;
+}
+
+.tf-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.tf-save,
+.tf-cancel {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid #000;
+  transition: opacity 150ms ease;
+}
+
+.tf-save {
+  background: #000;
+  color: #FFFCEC;
+}
+
+.tf-cancel {
+  background: transparent;
+  color: #000;
+}
+
+.tf-save:disabled,
+.tf-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── "Add to Top Four", on an item's own log entry ───────── */
+
+/*
+ * Sits under the log controls on an exhibition or article, so it reads as one
+ * more thing you can say about something you have already logged. Wraps,
+ * because the full-list message is a sentence and the compact reading pill
+ * lives in some very narrow places.
+ */
+.tf-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  font-family: var(--font-inter-tight), system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 17px;
+}
+
+.tf-action-btn {
+  font: inherit;
+  padding: 4px 11px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: transparent;
+  color: #000;
+  cursor: pointer;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+
+.tf-action-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
+
+.tf-action-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* The state, not an instruction — same register as the log's own Seen/Read. */
+.tf-action-in {
+  font-weight: 700;
+  color: #000;
+}
+
+/*
+ * The full message. It shares the log's error colour because it arrives the
+ * same way — the database refused and said why — even though this one is an
+ * ordinary answer rather than a fault.
+ */
+.tf-action-error {
+  color: #8A2A1F;
+  flex-basis: 100%;
+}
