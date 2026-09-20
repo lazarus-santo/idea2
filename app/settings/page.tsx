@@ -33,6 +33,11 @@ export default async function SettingsPage() {
         <h1 className="ac-title">Settings</h1>
         <p className="ac-subtitle">
           <Link href={profilePath(profile.username!)}>View your profile</Link>
+          {' · '}
+          {/* Crawls are not in the site nav in this phase. They are owner-only
+              until Phase 2 gives them an audience, so the way in is from the
+              account surface rather than from a nav everyone sees. */}
+          <Link href="/crawls">Your crawls</Link>
         </p>
 
         <SettingsForm profile={profile} email={user?.email ?? null}>

@@ -21,7 +21,7 @@ import { createServerClient } from '@supabase/ssr'
  */
 
 /** Signed-out visitors are bounced from these, with a route back afterwards. */
-const REQUIRES_SESSION = ['/settings', '/onboarding']
+const REQUIRES_SESSION = ['/settings', '/onboarding', '/crawls']
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request })
