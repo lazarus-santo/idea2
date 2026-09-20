@@ -7,6 +7,9 @@ import { sortByTier } from '@/lib/publication-tiers'
 import { sanitizeHtml, normalizeToHtml } from '@/lib/sanitize-html'
 import dynamic from 'next/dynamic'
 import AccountNav from '@/components/account/AccountNav'
+import ExhibitionLog from '@/components/ExhibitionLog'
+import type { OwnExhibitionLog } from '@/lib/exhibition-logs'
+import '@/app/exhibition-log.css'
 
 const ExhibitionMiniMap = dynamic(() => import('@/components/ExhibitionMiniMap'), { ssr: false })
 
@@ -72,7 +75,15 @@ function PrereadThumbnail({ url }: { url: string | null }) {
   )
 }
 
-export default function ExhibitionDetail({ exhibition }: { exhibition: ExhibitionDetailData }) {
+export default function ExhibitionDetail({
+  exhibition,
+  viewerId,
+  log,
+}: {
+  exhibition: ExhibitionDetailData
+  viewerId: string | null
+  log: OwnExhibitionLog | null
+}) {
   const [prShowFull, setPrShowFull] = useState(false)
   const [prHasMore, setPrHasMore] = useState(false)
   const prRef = useRef<HTMLDivElement>(null)
@@ -186,6 +197,16 @@ export default function ExhibitionDetail({ exhibition }: { exhibition: Exhibitio
               </a>
             </p>
           ))}
+
+          {/* Above the press release and the preread, because it is the one
+              thing on this page the visitor DOES rather than reads, and it is
+              the only part of it that is theirs. */}
+          <ExhibitionLog
+            exhibitionId={exhibition.id}
+            exhibitionSlugTitle={exhibition.show_title}
+            viewerId={viewerId}
+            log={log}
+          />
 
           {hasCollapsibles && <div className="ep-sections-gap" />}
 

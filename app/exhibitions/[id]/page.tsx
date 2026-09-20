@@ -1,5 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { getCurrentUser } from '@/lib/auth'
+import { getOwnLog } from '@/lib/exhibition-logs'
 import ExhibitionDetail from '@/components/ExhibitionDetail'
 import { resolveExhibitionLocation } from '@/lib/exhibition-location'
 import type { ExhibitionDetailData, CoverageDisplayItem } from '@/lib/types'
@@ -167,5 +169,19 @@ export default async function ExhibitionPage({ params }: PageProps) {
     coverage: mergedCoverage,
   }
 
-  return <ExhibitionDetail exhibition={exhibition} />
+  // The page's own read above uses the service key, which is right for public
+  // exhibition data and wrong for anything about the visitor. The log is read
+  // through their session instead, so RLS decides it: migration_v62 narrows
+  // that table to the caller's own rows, and a person can only ever see their
+  // own entry here. Other people's logs live on their profiles.
+  const viewer = await getCurrentUser()
+  const ownLog = await getOwnLog(viewer?.id ?? null, id)
+
+  return (
+    <ExhibitionDetail
+      exhibition={exhibition}
+      viewerId={viewer?.id ?? null}
+      log={ownLog}
+    />
+  )
 }

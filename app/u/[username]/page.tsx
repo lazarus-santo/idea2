@@ -20,6 +20,8 @@ import FollowButton from '@/components/account/FollowButton'
 import FollowCounts from '@/components/account/FollowCounts'
 import FollowRequests from '@/components/account/FollowRequests'
 import RelationshipMenu from '@/components/account/RelationshipMenu'
+import ProfileLog from '@/components/account/ProfileLog'
+import { getProfileLog } from '@/lib/exhibition-logs'
 import '@/app/account.css'
 
 interface Props {
@@ -147,11 +149,18 @@ export default async function ProfilePage({ params }: Props) {
   // word — Mute or Unmute — and a client fetch for one boolean would show the
   // wrong one first. There is no matching block read: a blocked profile never
   // reaches this line, having 404'd above.
-  const [counts, relationship, requests, muted] = await Promise.all([
+  //
+  // The log is fetched for a locked profile too, and comes back empty: the
+  // function behind it asks can_view_profile() for itself rather than trusting
+  // a flag from here. Fetching it unconditionally is what keeps those two
+  // answers from being able to disagree — if the page's own `locked` were ever
+  // wrong, the list would still be empty, because the database decided.
+  const [counts, relationship, requests, muted, log] = await Promise.all([
     getFollowCounts(card.id),
     getFollowRelationship(viewer?.id ?? null, card.id),
     isOwnProfile ? getPendingRequests() : Promise.resolve([]),
     isMuted(viewer?.id ?? null, card.id),
+    getProfileLog(card.id),
   ])
 
   return (
@@ -226,6 +235,17 @@ export default async function ProfilePage({ params }: Props) {
                 year: 'numeric',
               })}
             </p>
+
+            {/* Inside the unlocked branch, so a locked profile shows the
+                header and nothing else — same as the bio. The list would be
+                empty out here anyway; keeping it in means the page never
+                renders an "has not logged any shows" line about somebody it
+                is not allowed to describe. */}
+            <ProfileLog
+              entries={log}
+              isOwnProfile={isOwnProfile}
+              displayName={profileDisplayName(card)}
+            />
           </>
         )}
 
