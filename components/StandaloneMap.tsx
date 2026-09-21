@@ -383,6 +383,17 @@ function TimePicker({ value, onChange, label }: { value: string; onChange: (v: s
 // ── Main component ─────────────────────────────────────────────────────────────
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
+
+/**
+ * The route line's colour: the pin blue, reused rather than re-picked.
+ *
+ * The same value createPrimaryMarkerEl() fills a pin with in lib/mapMarkers.ts
+ * and the same one .mp-crawl-pin-num uses for a stop's numbered badge. Written
+ * here as a constant because a Mapbox paint property cannot read a CSS
+ * variable, so the alternative is the literal appearing twice in this file with
+ * nothing to say the two are meant to match.
+ */
+const ROUTE_BLUE = '#3432A8'
 type VenueFilter = 'all' | VenueTab
 type SubFilter = 'closing-soon' | null
 const FILTER_TABS: { label: string; value: VenueFilter }[] = [
@@ -669,35 +680,41 @@ export default function StandaloneMap() {
         data: { type: 'FeatureCollection', features: [] },
       })
 
-      // TWO LAYERS OVER ONE SOURCE, filtered on the property the API sets. A
-      // real walking leg and a guessed straight line must not look alike — the
-      // whole point of the per-leg fallback is that it is visible.
+      // TWO LAYERS OVER ONE SOURCE, split on `drawn` — whether Mapbox actually
+      // returned a route for this leg. A real routed leg and a guessed straight
+      // line must not look alike; the whole point of the per-leg fallback is
+      // that it is visible.
       //
-      // Yellow rather than the pin blue: this map's style is dark navy and
-      // #3432A8 on it is very nearly invisible. --yellow is the palette's other
-      // ink and reads at a glance against that ground.
+      // The split is NOT on the travel mode. A walked leg and a driven leg are
+      // both the route somebody chose, and drawing them differently would
+      // invent a distinction the person did not ask the map to make — the
+      // itinerary's own toggle is where the mode is stated. What the map has to
+      // show is real-versus-guessed.
+      //
+      // ROUTE_BLUE is the pin blue from lib/mapMarkers.ts, reused rather than
+      // re-picked so the line and the stops read as one object.
       map.addLayer({
-        id: 'crawl-route-walking',
+        id: 'crawl-route-drawn',
         type: 'line',
         source: 'crawl-route',
-        filter: ['==', ['get', 'mode'], 'walking'],
+        filter: ['==', ['get', 'drawn'], 'route'],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#E2CE3A', 'line-width': 4, 'line-opacity': 0.95 },
+        paint: { 'line-color': ROUTE_BLUE, 'line-width': 2.5, 'line-opacity': 1 },
       })
 
-      // The same yellow, dashed and dimmer. Same colour because it is the same
-      // route; dashed because this leg is a guess.
+      // The same blue, dashed and thinner still. Same colour because it is the
+      // same route; dashed because this leg is a guess.
       map.addLayer({
         id: 'crawl-route-straight',
         type: 'line',
         source: 'crawl-route',
-        filter: ['==', ['get', 'mode'], 'straight'],
+        filter: ['==', ['get', 'drawn'], 'straight'],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
-          'line-color': '#E2CE3A',
-          'line-width': 3,
-          'line-opacity': 0.65,
-          'line-dasharray': [1.5, 2],
+          'line-color': ROUTE_BLUE,
+          'line-width': 1.75,
+          'line-opacity': 0.8,
+          'line-dasharray': [2, 2.5],
         },
       })
 
@@ -864,25 +881,61 @@ export default function StandaloneMap() {
     [itinerary]
   )
 
-  const placeableKey = useMemo(
-    () => placeable.map(p => `${p.lng.toFixed(5)},${p.lat.toFixed(5)}`).join('|'),
-    [placeable]
+  /**
+   * THE DRAWN LINE FOLLOWS EACH LEG'S OWN MODE.
+   *
+   * The itinerary's per-leg walk/drive toggle decides how that leg is routed,
+   * so a crawl walked as far as 24th Street and driven from there gets a
+   * pavement line and then a road line. They are genuinely different routes
+   * over the same two points — a driving leg obeys one-way streets and misses
+   * the pedestrian cut-through the walking leg takes — and drawing one profile
+   * for the whole route said "walk this" over a leg the person had already told
+   * us they were driving.
+   *
+   * WHICH MODE APPLIES WHEN A STOP CANNOT BE PLACED. `placeable` skips stops
+   * with no coordinates, so a drawn leg can span more than one itinerary leg.
+   * It takes the mode of the leg LEAVING its origin — legModes[from_index] —
+   * because that is the choice the person made about setting off from the stop
+   * the line actually starts at. An unplaceable stop is rare: a show that
+   * closed and never had an address resolved.
+   *
+   * legModes[i] is the leg from stop i to stop i+1, and defaults to walking,
+   * exactly as the itinerary's own reads of it do.
+   */
+  const routeLegs = useMemo(
+    () =>
+      placeable.slice(0, -1).map((from, i) => {
+        const to = placeable[i + 1]
+        return {
+          from_index: from.index,
+          to_index: to.index,
+          from: [from.lng, from.lat] as [number, number],
+          to: [to.lng, to.lat] as [number, number],
+          mode: legModes[from.index] ?? 'walking',
+        }
+      }),
+    [placeable, legModes]
   )
 
   /**
-   * THE DRAWN LINE IS ALWAYS THE WALKING ROUTE, whatever the per-leg walk/drive
-   * toggle says, and that is deliberate rather than an oversight.
+   * What makes two route requests the same request.
    *
-   * A crawl is a walking route between galleries — that is what the feature is.
-   * The drive toggle beside each leg belongs to the ITINERARY's time estimate,
-   * which answers a different question ("can I fit this into the afternoon")
-   * and keeps showing its own driving minutes unchanged. Redrawing the line as
-   * a driving route when somebody checks how long a cab would take would mean
-   * the picture of the walk disappears the moment they ask about not walking.
+   * The coordinates in order AND the mode of each leg, because flipping one
+   * leg to driving has to redraw that leg even though every stop stayed
+   * exactly where it was. Keyed on a string so a re-render that rebuilds an
+   * identical array does not refetch.
    */
+  const routeKey = useMemo(
+    () =>
+      routeLegs
+        .map(l => `${l.mode}:${l.from[0].toFixed(5)},${l.from[1].toFixed(5)}>${l.to[0].toFixed(5)},${l.to[1].toFixed(5)}`)
+        .join('|'),
+    [routeLegs]
+  )
+
   useEffect(() => {
     // Nothing to ask for. `crawlRoute` reads as empty on its own, below.
-    if (placeable.length < 2) return
+    if (routeLegs.length === 0) return
 
     // Debounced, and aborted: dragging a stop through three slots should ask
     // for one route, not three, and an earlier request landing late would
@@ -893,9 +946,7 @@ export default function StandaloneMap() {
       fetch('/api/crawl-route', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          points: placeable.map(p => ({ index: p.index, lng: p.lng, lat: p.lat })),
-        }),
+        body: JSON.stringify({ legs: routeLegs }),
         signal: controller.signal,
       })
         .then(r => (r.ok ? r.json() : { segments: [], fallback_count: 0 }))
@@ -908,10 +959,10 @@ export default function StandaloneMap() {
     }, 350)
 
     return () => { clearTimeout(timer); controller.abort() }
-    // placeableKey rather than `placeable`: a new array holding the same
-    // coordinates in the same order is the same route.
+    // routeKey rather than `routeLegs`: a new array describing the same legs in
+    // the same modes is the same route.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [placeableKey])
+  }, [routeKey])
 
   /**
    * The route as it should be drawn right now.
@@ -921,8 +972,8 @@ export default function StandaloneMap() {
    * answer on the map until a fetch that will never happen returns.
    */
   const crawlRoute: CrawlRoute | null = useMemo(
-    () => (placeable.length < 2 ? { segments: [], fallback_count: 0 } : routeData),
-    [placeable.length, routeData]
+    () => (routeLegs.length === 0 ? { segments: [], fallback_count: 0 } : routeData),
+    [routeLegs.length, routeData]
   )
 
   useEffect(() => {
@@ -935,7 +986,7 @@ export default function StandaloneMap() {
       type: 'FeatureCollection',
       features: (crawlRoute?.segments ?? []).map(seg => ({
         type: 'Feature' as const,
-        properties: { mode: seg.mode },
+        properties: { drawn: seg.drawn },
         geometry: { type: 'LineString' as const, coordinates: seg.geometry },
       })),
     })
@@ -1016,6 +1067,33 @@ export default function StandaloneMap() {
     setDragOverIdx(null)
     dragIdxRef.current = null
   }
+
+  /**
+   * What to say about legs that could not be routed, if anything.
+   *
+   * Read off the segments rather than from fallback_count alone, because on a
+   * mixed route the COUNT is not enough to word it: two dashed legs might be
+   * one walking failure and one driving failure, and "2 legs — no walking
+   * directions available" would be wrong about one of them.
+   *
+   * Each failed leg reports the mode it asked for, so the modes are counted
+   * and named. Null when everything routed, which is the ordinary case and the
+   * one that should say nothing at all.
+   */
+  const fallbackNotice = useMemo(() => {
+    const failed = (crawlRoute?.segments ?? []).filter(s => s.drawn === 'straight')
+    if (failed.length === 0) return null
+
+    const counts = { walking: 0, driving: 0 }
+    failed.forEach(s => { counts[s.travel_mode] += 1 })
+
+    const parts: string[] = []
+    if (counts.walking) parts.push(`${counts.walking} with no walking directions`)
+    if (counts.driving) parts.push(`${counts.driving} with no driving directions`)
+
+    const legWord = failed.length === 1 ? 'leg' : 'legs'
+    return `${failed.length} ${legWord} shown as a straight line — ${parts.join(', ')}.`
+  }, [crawlRoute])
 
   // ── Saving the itinerary as a crawl ──────────────────────────────────────────
 
@@ -1468,13 +1546,10 @@ export default function StandaloneMap() {
                     <p className="mp-crawl-hint">
                       Only you can see your crawls.
                       {routeLoading
-                        ? ' Working out the walk…'
-                        : (crawlRoute?.fallback_count ?? 0) > 0
-                          // Said plainly rather than hidden. A dashed leg is a
-                          // straight line because no walking route came back
-                          // for it, and it is not in the walking total.
-                          ? ` ${crawlRoute!.fallback_count} leg${crawlRoute!.fallback_count === 1 ? '' : 's'} shown as a straight line — no walking directions available.`
-                          : ''}
+                        ? ' Working out the route…'
+                        // Said plainly rather than hidden, and naming the mode
+                        // that failed — see fallbackNotice.
+                        : fallbackNotice ? ` ${fallbackNotice}` : ''}
                     </p>
                   </>
                 )}

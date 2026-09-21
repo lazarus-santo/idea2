@@ -1,46 +1,67 @@
 import { NextResponse } from 'next/server'
-import { CRAWL_MAX_STOPS, type CrawlRoute, type CrawlRouteSegment } from '@/lib/crawl-types'
+import {
+  CRAWL_MAX_STOPS,
+  type CrawlRoute,
+  type CrawlRouteRequestLeg,
+  type CrawlRouteSegment,
+  type TravelMode,
+} from '@/lib/crawl-types'
 
 /**
- * POST /api/crawl-route — the walking line drawn between a crawl's stops.
+ * POST /api/crawl-route — the line drawn between a crawl's stops.
  *
  * ── WHY THIS IS NOT /api/directions ────────────────────────────────────────
  *
  * The existing route asks Mapbox the same question with `overview=false`,
  * which means "give me the duration, not the shape". It exists to tell the
- * map's itinerary panel how long a leg takes, and it is correct for that and
- * deliberately not changed here — the itinerary tool is out of scope.
+ * itinerary panel how long a leg takes, and it is correct for that and
+ * deliberately not changed here.
  *
- * A crawl needs the shape: the actual pavement geometry, so the route can be
- * TRACED on the map rather than implied by a straight line between pins. That
- * is a different request (`geometries=geojson`, `overview=full`) with a
- * different, much larger response, and a different cache. Two routes rather
- * than one with a flag, because the itinerary panel should not start paying
- * for geometry it does not draw.
+ * A crawl needs the shape: the actual geometry, so the route can be TRACED on
+ * the map rather than implied by a straight line between pins. That is a
+ * different request (`geometries=geojson`, `overview=full`) with a different,
+ * much larger response, and a different cache. Two routes rather than one with
+ * a flag, because the itinerary panel should not start paying for geometry it
+ * does not draw.
+ *
+ * ── EACH LEG IS ROUTED IN ITS OWN MODE ─────────────────────────────────────
+ *
+ * The request is a list of LEGS, each carrying its own two ends and its own
+ * mode, and each is sent to Mapbox on the matching routing profile. A crawl
+ * whose first leg is walked and whose second is driven gets a pavement line
+ * and then a road line, because those are different routes over the same two
+ * points — a driving leg follows one-way streets and avoids the pedestrian
+ * cut-through that the walking leg takes.
+ *
+ * Drawing one profile for the whole route was the earlier behaviour and was
+ * wrong in a quiet way: the line said "walk this" over a leg the person had
+ * already told us they were driving.
  *
  * ── ONE REQUEST PER LEG, NOT ONE PER ROUTE ─────────────────────────────────
  *
  * Mapbox will take up to twenty-five waypoints in a single Directions call and
- * hand back one geometry for the whole thing, which would be one request
- * instead of twenty-four. It is not used, and the reason is the brief's
- * fallback rule.
+ * hand back one geometry. That is not used, for two reasons, and the second is
+ * now the stronger one:
  *
- * With one call, a single unroutable pair fails the WHOLE route: Mapbox
- * answers NoRoute for the request, not for the leg, and there is no way to
- * recover which pair was the problem or to keep the other twenty-three real
- * legs. The route would collapse to straight lines everywhere, or to nothing.
+ *   THE FALLBACK. With one call, a single unroutable pair fails the WHOLE
+ *   route: Mapbox answers NoRoute for the request, not for the leg, and there
+ *   is no way to recover which pair was the problem or to keep the other legs.
+ *   Per leg, a failure is contained to the leg that failed.
  *
- * Per leg, a failure is contained to the leg that failed. That leg is drawn as
- * a straight line between its two pins, every other leg keeps its real walking
- * geometry, and the response says exactly how many fell back so the builder
- * can say so rather than presenting a guess as a measurement.
+ *   THE PROFILE. A Directions call has ONE profile. A route with mixed modes
+ *   cannot be expressed as a single call at all, whatever the fallback
+ *   behaviour — so per-leg is not an optimisation to revisit, it is the only
+ *   shape that can answer the question.
  *
  * WHAT COUNTS AS A FAILURE, all handled identically and all reported: Mapbox
- * answers NoRoute or NoSegment (a stop nowhere near a walkable street), the
+ * answers NoRoute or NoSegment (a stop nowhere near a routable street), the
  * request times out, the API returns a non-200, or MAPBOX_SERVER_TOKEN is not
- * set at all. The last is worth naming: without the token every leg falls back,
- * so the route still draws and the builder still says the line is approximate,
- * rather than the map silently showing nothing.
+ * set at all. The last is worth naming: without the token every leg falls
+ * back, so the route still draws and the map still says the line is
+ * approximate, rather than showing nothing.
+ *
+ * A failed leg reports the mode it ASKED for, so the map can say which kind of
+ * directions were missing rather than guessing.
  *
  * ── THE TOKEN IS THE SERVER'S ──────────────────────────────────────────────
  *
@@ -50,8 +71,8 @@ import { CRAWL_MAX_STOPS, type CrawlRoute, type CrawlRouteSegment } from '@/lib/
  * making the same mistake would fail the same way.
  */
 
-/** Mapbox's ceiling for one Directions call, and migration_v66's for one crawl. */
-const MAX_POINTS = CRAWL_MAX_STOPS
+/** Mapbox's ceiling for one call, and migration_v66's for one crawl. */
+const MAX_LEGS = CRAWL_MAX_STOPS
 
 /**
  * Module-level cache, surviving across requests in the same process — the same
@@ -59,10 +80,14 @@ const MAX_POINTS = CRAWL_MAX_STOPS
  *
  * It earns more here than there. A reorder does not change which places are
  * adjacent to which in most of a route, and every redraw asks for the same
- * pairs again; walking geometry between two fixed addresses does not change
- * between one request and the next. Keyed on the pair rounded to five decimal
- * places — about a metre, well under the precision any of these coordinates
- * actually have.
+ * pairs again; the route between two fixed addresses does not change between
+ * one request and the next.
+ *
+ * THE KEY INCLUDES THE MODE. Without it, walking a leg and then switching it
+ * to driving would hand back the pavement geometry for the driving line —
+ * cached under a key that did not record what was actually asked. Rounded to
+ * five decimal places, about a metre, well under the precision these
+ * coordinates actually have.
  *
  * ONLY SUCCESSES ARE CACHED. A straight-line fallback is a failure, and a
  * transient one — a timeout, a rate limit — must not become permanent for the
@@ -70,56 +95,62 @@ const MAX_POINTS = CRAWL_MAX_STOPS
  */
 const cache = new Map<string, { geometry: [number, number][]; distance: number; duration: number }>()
 
-interface Point {
-  /** Index into the crawl's stop list, so a leg can be matched to its two ends. */
-  index: number
-  lng: number
-  lat: number
+function cacheKey(leg: CrawlRouteRequestLeg): string {
+  const [aLng, aLat] = leg.from
+  const [bLng, bLat] = leg.to
+  return `${leg.mode}:${aLng.toFixed(5)},${aLat.toFixed(5)}_${bLng.toFixed(5)},${bLat.toFixed(5)}`
 }
 
-function key(a: Point, b: Point): string {
-  return `${a.lng.toFixed(5)},${a.lat.toFixed(5)}_${b.lng.toFixed(5)},${b.lat.toFixed(5)}`
-}
-
-/** The straight line between two stops. Two points, and honest about being two points. */
-function straightLine(a: Point, b: Point): CrawlRouteSegment {
+/** The straight line between two stops. Two points, and honest about being two. */
+function straightLine(leg: CrawlRouteRequestLeg): CrawlRouteSegment {
   return {
-    from_index: a.index,
-    to_index: b.index,
-    mode: 'straight',
-    geometry: [[a.lng, a.lat], [b.lng, b.lat]],
+    from_index: leg.from_index,
+    to_index: leg.to_index,
+    // The mode that was ASKED for, kept even though nothing was routed — it is
+    // what lets the map say "no driving directions" rather than a generic
+    // apology, or worse, the wrong mode's name.
+    travel_mode: leg.mode,
+    drawn: 'straight',
+    geometry: [leg.from, leg.to],
     // Null rather than the crow-flies distance. A number here would be read as
-    // "how far you walk", and the whole reason this leg exists is that nobody
-    // knows. Reporting the straight-line distance as a walking distance would
+    // "how far you travel", and the whole reason this leg exists is that
+    // nobody knows. Reporting a straight-line distance as a routed one would
     // be the silent gap the fallback is supposed to avoid.
     distance_meters: null,
     duration_minutes: null,
   }
 }
 
-async function walkingLeg(a: Point, b: Point, token: string | undefined): Promise<CrawlRouteSegment> {
-  if (!token) return straightLine(a, b)
+async function routeLeg(
+  leg: CrawlRouteRequestLeg,
+  token: string | undefined
+): Promise<CrawlRouteSegment> {
+  if (!token) return straightLine(leg)
 
-  const cached = cache.get(key(a, b))
+  const cached = cache.get(cacheKey(leg))
   if (cached) {
     return {
-      from_index: a.index,
-      to_index: b.index,
-      mode: 'walking',
+      from_index: leg.from_index,
+      to_index: leg.to_index,
+      travel_mode: leg.mode,
+      drawn: 'route',
       geometry: cached.geometry,
       distance_meters: cached.distance,
       duration_minutes: cached.duration,
     }
   }
 
-  const coords = `${a.lng},${a.lat};${b.lng},${b.lat}`
+  // `walking` and `driving` are Mapbox's own profile names, which is why the
+  // mode goes into the path unchanged. It is validated against the union
+  // before it gets here, so nothing a caller sends reaches this URL untested.
+  const coords = `${leg.from[0]},${leg.from[1]};${leg.to[0]},${leg.to[1]}`
   const url =
-    `https://api.mapbox.com/directions/v5/mapbox/walking/${coords}` +
+    `https://api.mapbox.com/directions/v5/mapbox/${leg.mode}/${coords}` +
     `?access_token=${token}&geometries=geojson&overview=full`
 
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
-    if (!res.ok) return straightLine(a, b)
+    if (!res.ok) return straightLine(leg)
 
     const json = await res.json()
     const route = json.routes?.[0]
@@ -128,18 +159,19 @@ async function walkingLeg(a: Point, b: Point, token: string | undefined): Promis
     // A route with fewer than two points is not a line. Treated as a failure
     // rather than drawn, because a one-point "line" renders as nothing at all
     // and would look like a leg that was never requested.
-    if (!Array.isArray(line) || line.length < 2) return straightLine(a, b)
+    if (!Array.isArray(line) || line.length < 2) return straightLine(leg)
 
     const geometry = line as [number, number][]
     const distance = typeof route.distance === 'number' ? Math.round(route.distance) : 0
     const duration = typeof route.duration === 'number' ? Math.round(route.duration / 60) : 0
 
-    cache.set(key(a, b), { geometry, distance, duration })
+    cache.set(cacheKey(leg), { geometry, distance, duration })
 
     return {
-      from_index: a.index,
-      to_index: b.index,
-      mode: 'walking',
+      from_index: leg.from_index,
+      to_index: leg.to_index,
+      travel_mode: leg.mode,
+      drawn: 'route',
       geometry,
       distance_meters: distance,
       duration_minutes: duration,
@@ -148,34 +180,58 @@ async function walkingLeg(a: Point, b: Point, token: string | undefined): Promis
     // Timeouts and network failures land here, alongside a malformed response.
     // All of them mean the same thing to the person looking at the map: this
     // leg is a straight line and is labelled as one.
-    return straightLine(a, b)
+    return straightLine(leg)
   }
 }
 
+const MODES: TravelMode[] = ['walking', 'driving']
+
+function isCoordinate(value: unknown): value is [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  )
+}
+
+/**
+ * A leg the server is willing to route.
+ *
+ * An unrecognised mode is DROPPED rather than quietly treated as walking. A
+ * leg silently routed in the wrong mode is the exact failure this change
+ * exists to remove, and defaulting here would reintroduce it one layer down.
+ */
+function isLeg(value: unknown): value is CrawlRouteRequestLeg {
+  if (!value || typeof value !== 'object') return false
+  const leg = value as Record<string, unknown>
+  return (
+    Number.isInteger(leg.from_index) &&
+    Number.isInteger(leg.to_index) &&
+    isCoordinate(leg.from) &&
+    isCoordinate(leg.to) &&
+    MODES.includes(leg.mode as TravelMode)
+  )
+}
+
 export async function POST(request: Request) {
-  let body: { points?: Point[] }
+  let body: { legs?: unknown[] }
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: 'bad_request' }, { status: 400 })
   }
 
-  const points = (body.points ?? []).filter(
-    (p): p is Point =>
-      !!p &&
-      Number.isFinite(p.lng) &&
-      Number.isFinite(p.lat) &&
-      Number.isInteger(p.index)
-  )
+  const legs = (body.legs ?? []).filter(isLeg)
 
-  // Nothing to draw between one pin. Not an error — it is what a crawl with a
-  // single stop looks like, and the builder asks for the route either way.
-  if (points.length < 2) {
+  // Nothing to draw. Not an error — it is what a crawl with a single stop looks
+  // like, and the map asks either way.
+  if (legs.length === 0) {
     return NextResponse.json({ segments: [], fallback_count: 0 } satisfies CrawlRoute)
   }
 
-  if (points.length > MAX_POINTS) {
-    return NextResponse.json({ error: 'too_many_points' }, { status: 400 })
+  if (legs.length > MAX_LEGS) {
+    return NextResponse.json({ error: 'too_many_legs' }, { status: 400 })
   }
 
   const token = process.env.MAPBOX_SERVER_TOKEN
@@ -188,12 +244,10 @@ export async function POST(request: Request) {
   // In parallel. The legs are independent, and a twenty-five-stop crawl done in
   // sequence at eight seconds of timeout apiece could hold a request open for
   // three minutes.
-  const segments = await Promise.all(
-    points.slice(0, -1).map((from, i) => walkingLeg(from, points[i + 1], token))
-  )
+  const segments = await Promise.all(legs.map(leg => routeLeg(leg, token)))
 
   return NextResponse.json({
     segments,
-    fallback_count: segments.filter((s) => s.mode === 'straight').length,
+    fallback_count: segments.filter(s => s.drawn === 'straight').length,
   } satisfies CrawlRoute)
 }

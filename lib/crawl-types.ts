@@ -91,25 +91,65 @@ export interface CrawlStopDetail {
 }
 
 /**
+ * How you get from one stop to the next.
+ *
+ * The same two values the /map itinerary's per-leg toggle already uses, and
+ * deliberately the same words, because they are the same decision: the line
+ * drawn between two stops follows whichever the person picked for that leg.
+ * Mapbox calls them routing profiles and names them identically.
+ */
+export type TravelMode = 'walking' | 'driving'
+
+/**
  * One leg of the drawn route, between consecutive stops.
  *
- * `mode` is the honest part. 'walking' means Mapbox returned real pavement
- * directions. 'straight' means it did not — no route found, no server token, a
- * timeout, or a stop with no coordinates — and the leg is drawn as a straight
- * line between the two pins instead. See app/api/crawl-route/route.ts for why
- * the fallback is per-leg rather than per-route, and why it is labelled on the
- * map rather than hidden.
+ * TWO FIELDS RATHER THAN ONE, and the split is the honest part.
+ *
+ *   travel_mode  what was ASKED FOR — this leg's toggle, walking or driving.
+ *   drawn        what came BACK. 'route' means Mapbox returned real directions
+ *                for that profile and the geometry below follows actual roads
+ *                or pavement. 'straight' means it did not — no route found, no
+ *                server token, a timeout, or a stop with no coordinates — and
+ *                the leg is a straight line between the two pins instead.
+ *
+ * They were one overloaded field while every leg was walking, and collapsing
+ * them again would lose exactly the thing a mixed route needs to say: WHICH
+ * mode had no directions. "No walking directions available" and "no driving
+ * directions available" are different facts about different legs, and a person
+ * looking at a dashed line deserves to be told which one they are looking at.
+ *
+ * See app/api/crawl-route/route.ts for why the fallback is per-leg rather than
+ * per-route, and why it is labelled on the map rather than hidden.
  */
 export interface CrawlRouteSegment {
   /** Index into the stop list, so a segment can be matched to its two ends. */
   from_index: number
   to_index: number
-  mode: 'walking' | 'straight'
-  /** [lng, lat] pairs, in Mapbox's order. Two points when mode is 'straight'. */
+  travel_mode: TravelMode
+  drawn: 'route' | 'straight'
+  /** [lng, lat] pairs, in Mapbox's order. Two points when drawn is 'straight'. */
   geometry: [number, number][]
   /** Mapbox's numbers, null on a straight-line fallback — there are none to report. */
   distance_meters: number | null
   duration_minutes: number | null
+}
+
+/**
+ * One leg as the CLIENT asks for it.
+ *
+ * A list of LEGS rather than a list of points plus a parallel list of modes.
+ * Parallel arrays can arrive at different lengths or silently misaligned by
+ * one, and a mode attached to the wrong leg would draw a driving route along a
+ * leg somebody chose to walk — wrong in a way nothing would flag. A leg that
+ * carries its own two ends and its own mode cannot come apart. Same reasoning
+ * as set_top_four_content()'s jsonb in migration_v64.
+ */
+export interface CrawlRouteRequestLeg {
+  from_index: number
+  to_index: number
+  from: [number, number]
+  to: [number, number]
+  mode: TravelMode
 }
 
 /** What /api/crawl-route answers with. */
@@ -117,8 +157,13 @@ export interface CrawlRoute {
   segments: CrawlRouteSegment[]
   /**
    * How many legs fell back to a straight line. Zero is the ordinary case; the
-   * builder says something only when it is not, because a route that is partly
+   * map says something only when it is not, because a route that is partly
    * guessed should not look identical to one that is not.
+   *
+   * The count alone is no longer enough to word that message on a mixed route —
+   * which modes failed matters — so the map reads that off `segments`. This
+   * stays because "is any of this guessed?" is the question asked on every
+   * render, and it should not cost a scan.
    */
   fallback_count: number
 }
