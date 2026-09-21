@@ -394,6 +394,17 @@ const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
  * nothing to say the two are meant to match.
  */
 const ROUTE_BLUE = '#3432A8'
+
+/**
+ * The casing drawn under the route line, so the blue reads against the map.
+ *
+ * The same cream createPrimaryMarkerEl() puts around a pin in lib/mapMarkers.ts
+ * and .mp-crawl-pin-num repeats on a stop's badge — this map's style is dark
+ * navy, and a dark blue on it needs a light edge to separate it from the
+ * ground. The pins already solved this; the line now solves it the same way,
+ * which is what keeps the two reading as one object rather than two decisions.
+ */
+const ROUTE_CASING = '#FFFCEC'
 type VenueFilter = 'all' | VenueTab
 type SubFilter = 'closing-soon' | null
 const FILTER_TABS: { label: string; value: VenueFilter }[] = [
@@ -680,10 +691,11 @@ export default function StandaloneMap() {
         data: { type: 'FeatureCollection', features: [] },
       })
 
-      // TWO LAYERS OVER ONE SOURCE, split on `drawn` — whether Mapbox actually
-      // returned a route for this leg. A real routed leg and a guessed straight
-      // line must not look alike; the whole point of the per-leg fallback is
-      // that it is visible.
+      // FOUR LAYERS OVER ONE SOURCE: a casing and a line for each of the two
+      // kinds of leg, split on `drawn` — whether Mapbox actually returned a
+      // route for this one. A real routed leg and a guessed straight line must
+      // not look alike; the whole point of the per-leg fallback is that it is
+      // visible.
       //
       // The split is NOT on the travel mode. A walked leg and a driven leg are
       // both the route somebody chose, and drawing them differently would
@@ -693,6 +705,52 @@ export default function StandaloneMap() {
       //
       // ROUTE_BLUE is the pin blue from lib/mapMarkers.ts, reused rather than
       // re-picked so the line and the stops read as one object.
+      // ── The casings go down FIRST ───────────────────────────────────────
+      //
+      // Mapbox draws layers in the order they are added, so a casing added
+      // after its line would cover it. These two are the light edge that lifts
+      // the blue off a dark navy map — the same trick the pins use, which is
+      // why it keeps the line and the stops looking like one object instead of
+      // two separate decisions about visibility.
+      //
+      // Each is 2.5px wider than the line it sits under, so 1.25px of cream
+      // shows on either side: enough to separate the blue from whatever is
+      // beneath it, not so much that the route reads as a cream line with a
+      // blue core.
+      map.addLayer({
+        id: 'crawl-route-casing-drawn',
+        type: 'line',
+        source: 'crawl-route',
+        filter: ['==', ['get', 'drawn'], 'route'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': ROUTE_CASING, 'line-width': 5, 'line-opacity': 0.9 },
+      })
+
+      // THE FALLBACK'S CASING HAS TO BE DASHED TOO. A solid casing under a
+      // dashed line fills its gaps with cream and the leg reads as solid —
+      // which would erase the one distinction these two layers exist to make.
+      //
+      // AND ITS DASH ARRAY IS NOT THE LINE'S. Mapbox measures dashes in
+      // multiples of the line's own width, so repeating [2, 2.5] at 4.25px
+      // would draw dashes nearly two and a half times longer than the 1.75px
+      // line's and the casing would slide out from under it. The values below
+      // are the line's, scaled by the width ratio, so both layers dash at the
+      // same physical length: 2 × 1.75 = 3.5px of dash, 2.5 × 1.75 = 4.375px
+      // of gap, which at 4.25px wide is [0.824, 1.029].
+      map.addLayer({
+        id: 'crawl-route-casing-straight',
+        type: 'line',
+        source: 'crawl-route',
+        filter: ['==', ['get', 'drawn'], 'straight'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': ROUTE_CASING,
+          'line-width': 4.25,
+          'line-opacity': 0.75,
+          'line-dasharray': [0.824, 1.029],
+        },
+      })
+
       map.addLayer({
         id: 'crawl-route-drawn',
         type: 'line',
