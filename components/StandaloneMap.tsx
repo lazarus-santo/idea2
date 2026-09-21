@@ -12,6 +12,22 @@ import { buildPopupCard, formatArtists, formatEndDate, type PopupCardItem } from
 import { VENUE_TABS, TAB_LABEL, tabMatches, type VenueTab } from '@/lib/institution-types'
 import { groupByPlace } from '@/lib/exhibition-location'
 import AccountNav from '@/components/account/AccountNav'
+import { getSupabaseBrowser } from '@/lib/supabase-browser'
+import {
+  createCrawl,
+  deleteCrawl,
+  renameCrawl,
+  saveCrawlStops,
+  // Aliased: `setCrawlStatus` is also this component's state setter, and the
+  // two would silently shadow each other.
+  setCrawlStatus as writeCrawlStatus,
+} from '@/lib/crawl-writes'
+import {
+  CRAWL_MAX_STOPS,
+  type CrawlRoute,
+  type CrawlStatus,
+  type CrawlStopDetail,
+} from '@/lib/crawl-types'
 
 // ── Holiday detection ──────────────────────────────────────────────────────────
 
@@ -127,6 +143,41 @@ function nowTimeStr(): string {
 function defaultEndTime(): string {
   const h = Math.min(new Date().getHours() + 3, 23)
   return `${String(h).padStart(2, '0')}:00`
+}
+
+// ── Crawl stop pins ────────────────────────────────────────────────────────────
+
+/**
+ * The pin drawn at an itinerary stop: its number and the venue's name, on the
+ * map itself — "1. Gagosian".
+ *
+ * A DOM element handed to a Mapbox Marker, not a symbol layer. A symbol layer
+ * hides labels that collide, which is exactly wrong here: two galleries on the
+ * same block is the normal case in Chelsea, and a route whose stop 4 is
+ * invisible because stop 3 is next door is a route you cannot read. Markers
+ * always draw. They can overlap, which is legible; they cannot silently
+ * disappear, which is not.
+ *
+ * Drawn ON TOP of the ordinary pin already at that point rather than replacing
+ * it — see the crawl marker effect for why the two layers are kept apart.
+ */
+function createCrawlStopEl(position: number, venueName: string): HTMLDivElement {
+  const el = document.createElement('div')
+  el.className = 'mp-crawl-pin'
+
+  const num = document.createElement('span')
+  num.className = 'mp-crawl-pin-num'
+  num.textContent = String(position)
+
+  const label = document.createElement('span')
+  label.className = 'mp-crawl-pin-label'
+  label.textContent = venueName
+
+  el.appendChild(num)
+  el.appendChild(label)
+  // The whole thing is the accessible name, in the form the brief asks for.
+  el.setAttribute('aria-label', `${position}. ${venueName}`)
+  return el
 }
 
 // ── Icons ──────────────────────────────────────────────────────────────────────
@@ -353,6 +404,16 @@ function isClosingSoon(ex: MapExhibition): boolean {
 export default function StandaloneMap() {
   const searchParams = useSearchParams()
   const deepLinkId = searchParams.get('add')
+  /**
+   * ?crawl=<id> — a saved crawl, opened from its owner's profile.
+   *
+   * A query parameter rather than a route of its own, because this IS the
+   * builder now: opening a saved crawl and starting a new one are the same
+   * screen with the itinerary pre-filled or empty. The retired /crawls/[id]
+   * page was a second copy of this one, and two copies of a map is how the
+   * two drift apart.
+   */
+  const crawlParam = searchParams.get('crawl')
 
   const [exhibitions, setExhibitions] = useState<MapExhibition[]>([])
   const [loading, setLoading] = useState(true)
@@ -363,10 +424,48 @@ export default function StandaloneMap() {
   const [windowStart, setWindowStart] = useState(nowTimeStr)
   const [windowEnd, setWindowEnd] = useState(defaultEndTime)
 
+  /**
+   * THE ITINERARY IS ALSO THE CRAWL DRAFT. One list, not two.
+   *
+   * This page already had everything a crawl needs to be built: adding a show
+   * from its pin, dragging stops into order, ↑/↓, removing. A crawl is that
+   * list, in that order, saved. Keeping a second parallel list of "crawl
+   * stops" beside this one would put two orderings on one screen and force
+   * somebody to keep them in step by hand.
+   *
+   * What the itinerary carries that a crawl does not — minutes at each venue,
+   * the date and time window, walk-or-drive per leg, the arrival times and
+   * risk flags — stays exactly as it was and is NOT saved. Those answer "can I
+   * fit this into Saturday afternoon"; a crawl answers "this is the walk". The
+   * crawl keeps the ORDER, which is the part both questions share.
+   */
   const [itinerary, setItinerary] = useState<ItineraryStop[]>([])
   const [legs, setLegs] = useState<DirectionLeg[]>([])
   const [legsLoading, setLegsLoading] = useState(false)
   const [legModes, setLegModes] = useState<('walking' | 'driving')[]>([])
+
+  // ── Crawl state ────────────────────────────────────────────────────────────
+  //
+  // `crawlId` null means the itinerary has never been saved as a crawl. Saving
+  // it creates one; opening ?crawl=<id> adopts an existing one.
+  const [crawlId, setCrawlId] = useState<string | null>(null)
+  const [crawlTitle, setCrawlTitle] = useState('')
+  const [savedCrawlTitle, setSavedCrawlTitle] = useState('')
+  const [crawlStatus, setCrawlStatus] = useState<CrawlStatus>('draft')
+  /** The stop ids as the database last accepted them, for the unsaved marker. */
+  const [savedStopIds, setSavedStopIds] = useState<string[]>([])
+  const [crawlBusy, setCrawlBusy] = useState(false)
+  const [crawlError, setCrawlError] = useState<string | null>(null)
+  const [crawlNotice, setCrawlNotice] = useState<string | null>(null)
+  const [crawlLoading, setCrawlLoading] = useState(Boolean(crawlParam))
+  /** Null until the session is known, then the signed-in id or null. */
+  const [userId, setUserId] = useState<string | null>(null)
+  const [sessionKnown, setSessionKnown] = useState(false)
+
+  /** The traced walking route, and whether the style is ready to draw it. */
+  const [routeData, setRouteData] = useState<CrawlRoute | null>(null)
+  const [routeLoading, setRouteLoading] = useState(false)
+  const [mapReady, setMapReady] = useState(false)
 
   const [isMobile, setIsMobile] = useState(false)
   const [mobileSelected, setMobileSelected] = useState<MapExhibition[] | null>(null)
@@ -378,6 +477,20 @@ export default function StandaloneMap() {
   const mapContainerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<mapboxgl.Map | null>(null)
   const markersRef = useRef<Array<{ marker: mapboxgl.Marker; id: string }>>([])
+  /**
+   * The numbered stop pins, kept in their OWN list and their own effect.
+   *
+   * They could have been folded into the pass above by giving that effect the
+   * itinerary as a dependency. They are not, deliberately: that effect rebuilds
+   * every pin on the map and tears down any open popup, and it would then do so
+   * on every add, drag and removal. Separate layers mean arranging a route
+   * costs one small redraw of the stops, not eighty pins and the popup somebody
+   * is reading.
+   *
+   * Added after the base pins on every pass, so a stop's numbered badge sits on
+   * top of the ordinary dot at the same point rather than behind it.
+   */
+  const crawlMarkersRef = useRef<mapboxgl.Marker[]>([])
   const activePopupRef = useRef<mapboxgl.Popup | null>(null)
 
   const addToItineraryRef = useRef((ex: MapExhibition) => {
@@ -422,6 +535,121 @@ export default function StandaloneMap() {
     if (ex) addToItineraryRef.current(ex)
   }, [deepLinkId, exhibitions])
 
+  // ── Who is looking ─────────────────────────────────────────────────────────
+  //
+  // /map is a PUBLIC page, so this can legitimately be nobody. The crawl bar
+  // uses it to decide between "Save as crawl" and "Sign in to save", and
+  // nothing else on the page depends on it — browsing, the itinerary and the
+  // route all work signed out, exactly as before.
+  //
+  // Read in the browser, like AccountNav, because reading cookies on the server
+  // would make this page render per visitor instead of being cached.
+  useEffect(() => {
+    const supabase = getSupabaseBrowser()
+    let cancelled = false
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // A token refresh is not a change of person.
+      if (event === 'TOKEN_REFRESHED') return
+      if (cancelled) return
+      setUserId(session?.user.id ?? null)
+      setSessionKnown(true)
+    })
+
+    return () => {
+      cancelled = true
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  // ── Opening a saved crawl ──────────────────────────────────────────────────
+  //
+  // Waits for the exhibition feed, because a stop that is still on view should
+  // become the SAME MapExhibition object the pins and popups use — venue hours
+  // and all — so the itinerary's timing, the risk flags and the popup's "add"
+  // button all behave as if the person had clicked the pin themselves.
+  //
+  // A stop whose show has CLOSED is not in that feed, and is synthesised from
+  // what the server sent instead. Dropping it would renumber every stop after
+  // it and quietly turn a saved route into a different one. It carries no
+  // venue_hours, so the itinerary simply has nothing to say about whether it is
+  // open — which is honest, since it is not.
+  useEffect(() => {
+    if (!crawlParam || !exhibitions.length) return
+    let cancelled = false
+
+    // No setCrawlLoading(true) here. The state is initialised to
+    // Boolean(crawlParam), so it is already true on the first render of a page
+    // opened with ?crawl= — before this effect, before the feed arrives, and
+    // before the fetch starts. Setting it again synchronously inside the effect
+    // would say nothing new and would cost a second render pass.
+    fetch(`/api/crawls/${crawlParam}/stops`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error('not_found'))))
+      .then((stops: CrawlStopDetail[]) => {
+        if (cancelled) return
+        const byId = new Map(exhibitions.map(e => [e.id, e]))
+        setItinerary(
+          stops.map(stop => {
+            const live = byId.get(stop.exhibition_id)
+            const exhibition: MapExhibition = live ?? {
+              id: stop.exhibition_id,
+              show_title: stop.show_title,
+              artists: [],
+              institution_name: stop.venue_name,
+              institution_id: null,
+              venue_type: 'gallery',
+              image_url: stop.image_url,
+              start_date: null,
+              end_date: stop.end_date,
+              venue_id: stop.exhibition_id,
+              venue_name: stop.venue_name,
+              venue_lat: stop.lat,
+              venue_lng: stop.lng,
+              venue_hours: null,
+              venue_address: null,
+            }
+            return { exhibitionId: stop.exhibition_id, exhibition, minutesAtVenue: 15 }
+          })
+        )
+        setSavedStopIds(stops.map(s => s.exhibition_id))
+        setCrawlId(crawlParam)
+        setCrawlLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        // "No such crawl" and "not yours" arrive identically from the server,
+        // on purpose, and are reported identically here.
+        setCrawlError('That crawl could not be opened.')
+        setCrawlLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [crawlParam, exhibitions])
+
+  // The crawl's own title, fetched separately because the stops endpoint
+  // answers about stops. Read straight from PostgREST under RLS: a crawl row is
+  // three plain columns and its owner has a SELECT policy on them, so there is
+  // nothing here an API route would add but a hop.
+  useEffect(() => {
+    if (!crawlParam || !userId) return
+    let cancelled = false
+
+    getSupabaseBrowser()
+      .from('crawls')
+      .select('title, status')
+      .eq('id', crawlParam)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data) return
+        const row = data as { title: string; status: CrawlStatus }
+        setCrawlTitle(row.title)
+        setSavedCrawlTitle(row.title)
+        setCrawlStatus(row.status)
+      })
+
+    return () => { cancelled = true }
+  }, [crawlParam, userId])
+
   useEffect(() => {
     if (!mapContainerRef.current) return
     mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN!
@@ -434,10 +662,58 @@ export default function StandaloneMap() {
       bearing: 0,
     })
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left')
+
+    map.on('load', () => {
+      map.addSource('crawl-route', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      })
+
+      // TWO LAYERS OVER ONE SOURCE, filtered on the property the API sets. A
+      // real walking leg and a guessed straight line must not look alike — the
+      // whole point of the per-leg fallback is that it is visible.
+      //
+      // Yellow rather than the pin blue: this map's style is dark navy and
+      // #3432A8 on it is very nearly invisible. --yellow is the palette's other
+      // ink and reads at a glance against that ground.
+      map.addLayer({
+        id: 'crawl-route-walking',
+        type: 'line',
+        source: 'crawl-route',
+        filter: ['==', ['get', 'mode'], 'walking'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#E2CE3A', 'line-width': 4, 'line-opacity': 0.95 },
+      })
+
+      // The same yellow, dashed and dimmer. Same colour because it is the same
+      // route; dashed because this leg is a guess.
+      map.addLayer({
+        id: 'crawl-route-straight',
+        type: 'line',
+        source: 'crawl-route',
+        filter: ['==', ['get', 'mode'], 'straight'],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#E2CE3A',
+          'line-width': 3,
+          'line-opacity': 0.65,
+          'line-dasharray': [1.5, 2],
+        },
+      })
+
+      // The draw effect waits on this. A crawl opened from a profile has its
+      // stops before the style finishes loading, so the first draw has to be
+      // triggered from here rather than from the data, which was already there.
+      setMapReady(true)
+    })
+
     mapRef.current = map
     return () => {
       markersRef.current.forEach(({ marker }) => marker.remove())
       markersRef.current = []
+      crawlMarkersRef.current.forEach(marker => marker.remove())
+      crawlMarkersRef.current = []
+      setMapReady(false)
       map.remove()
       mapRef.current = null
     }
@@ -568,6 +844,122 @@ export default function StandaloneMap() {
     return () => { cancelled = true }
   }, [itinerary])
 
+  // ── The traced route ─────────────────────────────────────────────────────────
+
+  /**
+   * The stops that can actually be placed, with their position in the list.
+   *
+   * A stop with no coordinates is skipped rather than routed through (0, 0) in
+   * the Atlantic, and the legs either side of it join up. It keeps its number
+   * in the panel — it is still a stop, it just cannot be drawn.
+   */
+  const placeable = useMemo(
+    () =>
+      itinerary
+        .map((stop, index) => {
+          const { venue_lat: lat, venue_lng: lng } = stop.exhibition
+          return lat != null && lng != null ? { index, lat, lng } : null
+        })
+        .filter((p): p is { index: number; lat: number; lng: number } => p !== null),
+    [itinerary]
+  )
+
+  const placeableKey = useMemo(
+    () => placeable.map(p => `${p.lng.toFixed(5)},${p.lat.toFixed(5)}`).join('|'),
+    [placeable]
+  )
+
+  /**
+   * THE DRAWN LINE IS ALWAYS THE WALKING ROUTE, whatever the per-leg walk/drive
+   * toggle says, and that is deliberate rather than an oversight.
+   *
+   * A crawl is a walking route between galleries — that is what the feature is.
+   * The drive toggle beside each leg belongs to the ITINERARY's time estimate,
+   * which answers a different question ("can I fit this into the afternoon")
+   * and keeps showing its own driving minutes unchanged. Redrawing the line as
+   * a driving route when somebody checks how long a cab would take would mean
+   * the picture of the walk disappears the moment they ask about not walking.
+   */
+  useEffect(() => {
+    // Nothing to ask for. `crawlRoute` reads as empty on its own, below.
+    if (placeable.length < 2) return
+
+    // Debounced, and aborted: dragging a stop through three slots should ask
+    // for one route, not three, and an earlier request landing late would
+    // otherwise draw an order nobody is looking at.
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      setRouteLoading(true)
+      fetch('/api/crawl-route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          points: placeable.map(p => ({ index: p.index, lng: p.lng, lat: p.lat })),
+        }),
+        signal: controller.signal,
+      })
+        .then(r => (r.ok ? r.json() : { segments: [], fallback_count: 0 }))
+        .then((data: CrawlRoute) => { setRouteData(data); setRouteLoading(false) })
+        .catch(e => {
+          if (e?.name === 'AbortError') return
+          setRouteData({ segments: [], fallback_count: 0 })
+          setRouteLoading(false)
+        })
+    }, 350)
+
+    return () => { clearTimeout(timer); controller.abort() }
+    // placeableKey rather than `placeable`: a new array holding the same
+    // coordinates in the same order is the same route.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placeableKey])
+
+  /**
+   * The route as it should be drawn right now.
+   *
+   * Derived rather than written into state when it empties, so removing the
+   * second-to-last stop erases the line at once instead of leaving the previous
+   * answer on the map until a fetch that will never happen returns.
+   */
+  const crawlRoute: CrawlRoute | null = useMemo(
+    () => (placeable.length < 2 ? { segments: [], fallback_count: 0 } : routeData),
+    [placeable.length, routeData]
+  )
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+    const source = map.getSource('crawl-route') as mapboxgl.GeoJSONSource | undefined
+    if (!source) return
+
+    source.setData({
+      type: 'FeatureCollection',
+      features: (crawlRoute?.segments ?? []).map(seg => ({
+        type: 'Feature' as const,
+        properties: { mode: seg.mode },
+        geometry: { type: 'LineString' as const, coordinates: seg.geometry },
+      })),
+    })
+  }, [crawlRoute, mapReady])
+
+  // The numbered, labelled stop pins. Its own pass — see crawlMarkersRef.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    crawlMarkersRef.current.forEach(marker => marker.remove())
+    crawlMarkersRef.current = []
+
+    itinerary.forEach((stop, i) => {
+      const { venue_lat: lat, venue_lng: lng, institution_name, venue_name } = stop.exhibition
+      if (lat == null || lng == null) return
+      const el = createCrawlStopEl(i + 1, institution_name || venue_name)
+      const marker = new mapboxgl.Marker({ element: el, anchor: 'left' })
+        .setLngLat([lng, lat])
+        .addTo(map)
+      crawlMarkersRef.current.push(marker)
+    })
+  }, [itinerary])
+
   // ── Itinerary mutations ──────────────────────────────────────────────────────
 
   function removeStop(idx: number) {
@@ -623,6 +1015,113 @@ export default function StandaloneMap() {
   function handleDragEnd() {
     setDragOverIdx(null)
     dragIdxRef.current = null
+  }
+
+  // ── Saving the itinerary as a crawl ──────────────────────────────────────────
+
+  const stopIds = useMemo(() => itinerary.map(s => s.exhibitionId), [itinerary])
+
+  const crawlDirty =
+    stopIds.length !== savedStopIds.length ||
+    stopIds.some((id, i) => id !== savedStopIds[i])
+
+  /**
+   * Save the itinerary's ORDER as a crawl, creating one on the first save.
+   *
+   * The stops go in as a whole list, always, because that is the only way in:
+   * migration_v66 grants no row-level writes on crawl_stops, and
+   * set_crawl_stops() empties the crawl and lays the new order down in one
+   * transaction. That is what makes a reorder unable to half-happen and what
+   * keeps positions 1..n gap-free — see lib/crawl-writes.ts. None of that
+   * changed when this moved onto the map; only where the button lives did.
+   */
+  async function saveAsCrawl() {
+    if (!userId || itinerary.length === 0) return
+
+    setCrawlBusy(true)
+    setCrawlError(null)
+    setCrawlNotice(null)
+
+    const supabase = getSupabaseBrowser()
+    let id = crawlId
+
+    if (!id) {
+      const title = crawlTitle.trim() || 'Untitled crawl'
+      const { id: made, error } = await createCrawl(supabase, userId, title)
+      if (error || !made) {
+        setCrawlBusy(false)
+        setCrawlError(error?.message ?? 'Could not save that crawl.')
+        return
+      }
+      id = made
+      setCrawlId(made)
+      setCrawlTitle(title)
+      setSavedCrawlTitle(title)
+    }
+
+    const { error } = await saveCrawlStops(supabase, id, stopIds)
+    setCrawlBusy(false)
+
+    if (error) {
+      // The draft is deliberately kept. The person may be able to fix it by
+      // removing the offending stop, and throwing their arrangement away would
+      // be a second loss on top of the failure.
+      setCrawlError(error.message)
+      return
+    }
+
+    setSavedStopIds(stopIds)
+    setCrawlNotice('Saved.')
+  }
+
+  async function renameThisCrawl() {
+    const next = crawlTitle.trim()
+    if (!crawlId || !next || next === savedCrawlTitle) {
+      if (crawlId) setCrawlTitle(savedCrawlTitle)
+      return
+    }
+    setCrawlBusy(true)
+    setCrawlError(null)
+    const { error } = await renameCrawl(getSupabaseBrowser(), crawlId, next)
+    setCrawlBusy(false)
+    if (error) {
+      setCrawlError(error.message)
+      setCrawlTitle(savedCrawlTitle)
+      return
+    }
+    setSavedCrawlTitle(next)
+  }
+
+  /** Draft ↔ planned. Neither changes who may see it — both are owner-only. */
+  async function toggleCrawlStatus() {
+    if (!crawlId) return
+    const next: CrawlStatus = crawlStatus === 'draft' ? 'planned' : 'draft'
+    setCrawlBusy(true)
+    setCrawlError(null)
+    const { error } = await writeCrawlStatus(getSupabaseBrowser(), crawlId, next)
+    setCrawlBusy(false)
+    if (error) { setCrawlError(error.message); return }
+    setCrawlStatus(next)
+  }
+
+  async function deleteThisCrawl() {
+    if (!crawlId) return
+    // Somebody's arrangement of an afternoon, and the delete cascades to its
+    // stops. There is no undo behind this, so it asks.
+    if (!window.confirm('Delete this crawl? This cannot be undone.')) return
+    setCrawlBusy(true)
+    const { error } = await deleteCrawl(getSupabaseBrowser(), crawlId)
+    setCrawlBusy(false)
+    if (error) { setCrawlError(error.message); return }
+    // The itinerary stays on screen. The crawl is gone, but the afternoon
+    // somebody just planned is not the thing they asked to delete, and wiping
+    // the map as a side effect would take it from them.
+    setCrawlId(null)
+    setSavedStopIds([])
+    setCrawlTitle('')
+    setSavedCrawlTitle('')
+    setCrawlStatus('draft')
+    setCrawlNotice('Crawl deleted. These stops are still here.')
   }
 
   // ── Derived state ────────────────────────────────────────────────────────────
@@ -763,7 +1262,18 @@ export default function StandaloneMap() {
           {itinerary.length === 0 ? (
             <div className="mp-empty-state">
               <p className="mp-empty-title">Your itinerary</p>
-              <p className="mp-empty-hint">add an itinerary stop by clicking onto a pin and adding it to the itinerary</p>
+              <p className="mp-empty-hint">
+                {crawlLoading
+                  ? 'Loading your crawl…'
+                  : 'add an itinerary stop by clicking onto a pin and adding it to the itinerary'}
+              </p>
+              {/* Two stops is where a crawl starts being a walk rather than a
+                  destination, which is also when the line appears. */}
+              <p className="mp-empty-hint">
+                Add two or more and the walk between them is drawn on the map —
+                save it as a crawl to come back to it.
+              </p>
+              {crawlError && <p className="mp-crawl-error">{crawlError}</p>}
             </div>
           ) : (
             <>
@@ -871,6 +1381,105 @@ export default function StandaloneMap() {
 
               <div className="mp-footer">
                 Estimated total: <strong>{formatMinutes(totalMinutes)}</strong>
+              </div>
+
+              {/* ── Save this as a crawl ────────────────────────────────────
+                  Below the itinerary because it is about the whole list: the
+                  stops above ARE the crawl, in the order they are shown. */}
+              <div className="mp-crawl">
+                <div className="mp-crawl-head">
+                  <h2 className="mp-crawl-title">
+                    {crawlId ? 'Crawl' : 'Save as a crawl'}
+                  </h2>
+                  <span className="mp-crawl-count">
+                    {itinerary.length} of {CRAWL_MAX_STOPS}
+                  </span>
+                </div>
+
+                {/* The walking line and the labels are already on the map for
+                    everyone; only KEEPING it needs an account. */}
+                {!sessionKnown ? (
+                  <p className="mp-crawl-hint">&nbsp;</p>
+                ) : !userId ? (
+                  <p className="mp-crawl-hint">
+                    <Link href="/login?next=%2Fmap">Sign in</Link> to save this
+                    walk as a crawl you can come back to.
+                  </p>
+                ) : (
+                  <>
+                    <input
+                      className="mp-crawl-name"
+                      value={crawlTitle}
+                      maxLength={120}
+                      placeholder="Name this crawl"
+                      aria-label="Crawl name"
+                      disabled={crawlBusy}
+                      onChange={e => setCrawlTitle(e.target.value)}
+                      onBlur={() => { if (crawlId) renameThisCrawl() }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        if (e.key === 'Escape' && crawlId) setCrawlTitle(savedCrawlTitle)
+                      }}
+                    />
+
+                    <div className="mp-crawl-actions">
+                      <button
+                        type="button"
+                        className="mp-crawl-save"
+                        onClick={saveAsCrawl}
+                        disabled={crawlBusy || itinerary.length === 0 || (!!crawlId && !crawlDirty)}
+                      >
+                        {crawlBusy
+                          ? 'Saving…'
+                          : !crawlId
+                            ? 'Save as crawl'
+                            : crawlDirty ? 'Save changes' : 'Saved'}
+                      </button>
+
+                      {crawlId && (
+                        <>
+                          <button
+                            type="button"
+                            className="mp-crawl-status"
+                            onClick={toggleCrawlStatus}
+                            disabled={crawlBusy}
+                          >
+                            {crawlStatus === 'draft' ? 'Draft' : 'Planned'}
+                          </button>
+                          <button
+                            type="button"
+                            className="mp-crawl-delete"
+                            onClick={deleteThisCrawl}
+                            disabled={crawlBusy}
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+
+                      {crawlId && crawlDirty && !crawlBusy && (
+                        <span className="mp-crawl-note">Unsaved changes</span>
+                      )}
+                      {!crawlDirty && crawlNotice && (
+                        <span className="mp-crawl-note">{crawlNotice}</span>
+                      )}
+                    </div>
+
+                    <p className="mp-crawl-hint">
+                      Only you can see your crawls.
+                      {routeLoading
+                        ? ' Working out the walk…'
+                        : (crawlRoute?.fallback_count ?? 0) > 0
+                          // Said plainly rather than hidden. A dashed leg is a
+                          // straight line because no walking route came back
+                          // for it, and it is not in the walking total.
+                          ? ` ${crawlRoute!.fallback_count} leg${crawlRoute!.fallback_count === 1 ? '' : 's'} shown as a straight line — no walking directions available.`
+                          : ''}
+                    </p>
+                  </>
+                )}
+
+                {crawlError && <p className="mp-crawl-error">{crawlError}</p>}
               </div>
             </>
           )}

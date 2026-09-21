@@ -23,9 +23,11 @@ import RelationshipMenu from '@/components/account/RelationshipMenu'
 import ProfileLog from '@/components/account/ProfileLog'
 import ProfileReadingLog from '@/components/account/ProfileReadingLog'
 import ProfileTopFour from '@/components/account/ProfileTopFour'
+import ProfileCrawls from '@/components/account/ProfileCrawls'
 import { getProfileLog } from '@/lib/exhibition-logs'
 import { getProfileReadingLog } from '@/lib/reading-logs'
 import { getTopFourExhibitions, getTopFourContent } from '@/lib/top-four'
+import { getOwnCrawls } from '@/lib/crawls'
 import '@/app/account.css'
 
 interface Props {
@@ -167,7 +169,12 @@ export default async function ProfilePage({ params }: Props) {
   // whatever this page believes. They are NOT derived from the logs above —
   // that would be a second idea of what is in somebody's Top Four, kept in
   // step by hand.
-  const [counts, relationship, requests, muted, log, readingLog, topShows, topReads] =
+  // Crawls are fetched ONLY for your own profile, and getOwnCrawls() takes no
+  // id — it reads the caller's own rows under RLS and there is no version of it
+  // that can be pointed at somebody else. That is the whole privacy story for
+  // this section, which is why ProfileCrawls has no visitor branch: a visitor
+  // never reaches it, and the database would hand them nothing if they did.
+  const [counts, relationship, requests, muted, log, readingLog, topShows, topReads, crawls] =
     await Promise.all([
       getFollowCounts(card.id),
       getFollowRelationship(viewer?.id ?? null, card.id),
@@ -177,6 +184,7 @@ export default async function ProfilePage({ params }: Props) {
       getProfileReadingLog(card.id),
       getTopFourExhibitions(card.id),
       getTopFourContent(card.id),
+      isOwnProfile ? getOwnCrawls() : Promise.resolve([]),
     ])
 
   return (
@@ -287,6 +295,14 @@ export default async function ProfilePage({ params }: Props) {
               isOwnProfile={isOwnProfile}
               displayName={profileDisplayName(card)}
             />
+
+            {/* Last of the four, and only ever on your own profile. A crawl is
+                a plan rather than a record — the three sections above are an
+                account of what somebody has already seen and read, and this is
+                what they mean to do next, so it reads better after them than
+                among them. Phase 2, when crawls can be shared, is when it
+                becomes something a visitor sees at all. */}
+            {isOwnProfile && <ProfileCrawls crawls={crawls} />}
           </>
         )}
 

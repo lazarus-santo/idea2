@@ -3411,6 +3411,172 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
 
 .gp-itinerary-cta:hover { opacity: 0.5; }
 
+/* ── Crawls, on the map ──────────────────────────────────────
+ *
+ * Crawl-building lives on /map: the itinerary IS the crawl draft, so these
+ * styles dress the numbered stop pins and the save bar under the stop list.
+ * They sit with the other .mp- rules rather than in their own stylesheet
+ * because StandaloneMap has no stylesheet of its own — it takes globals.css
+ * from the layout, like every other page.
+ *
+ * #E2CE3A is --yellow. This page's Mapbox style is dark navy and the pin blue
+ * #3432A8 all but vanishes against it, which is why the route line is yellow;
+ * see the layer paint in StandaloneMap.
+ */
+
+/* The numbered pin: "1. Gagosian", drawn on the map at the stop. */
+.mp-crawl-pin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Nothing on a stop pin is clickable — the ordinary pin underneath owns the
+     popup. Without this, the labels of neighbouring stops would swallow drags
+     of the map itself across a block where three galleries share a doorway. */
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translateX(-11px);
+}
+
+.mp-crawl-pin-num {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: #3432A8;
+  border: 2px solid #FFFCEC;
+  color: #FFFCEC;
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.mp-crawl-pin-label {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #000;
+  /*
+   * Opaque, not translucent. Two galleries sharing a doorway is the normal
+   * case in Chelsea, so labels DO collide — see createCrawlStopEl for why they
+   * are markers rather than a symbol layer that would hide one of them. A
+   * translucent background lets the label underneath bleed through and the two
+   * become one unreadable smear; opaque, the front one stays legible and the
+   * one behind is plainly just behind it.
+   */
+  background: #FFFCEC;
+  border-radius: 4px;
+  padding: 1px 5px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The save bar, under the itinerary. */
+.mp-crawl {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  font-family: var(--font-inter-tight), sans-serif;
+}
+
+.mp-crawl-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mp-crawl-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #000;
+  margin: 0;
+}
+
+.mp-crawl-count { font-size: 13px; color: #6B665D; }
+
+.mp-crawl-name {
+  font-family: inherit;
+  font-size: 14px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+  background: #FFFCEC;
+  color: #000;
+}
+
+.mp-crawl-name:focus { outline: none; border-color: #3432A8; }
+
+.mp-crawl-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.mp-crawl-save {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #FFFCEC;
+  background: #3432A8;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 18px;
+  cursor: pointer;
+}
+
+.mp-crawl-save:hover:not(:disabled) { background: #26248a; }
+.mp-crawl-save:disabled {
+  background: rgba(0, 0, 0, 0.1);
+  color: #6B665D;
+  cursor: default;
+}
+
+.mp-crawl-status,
+.mp-crawl-delete {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: transparent;
+  color: #45413A;
+  cursor: pointer;
+}
+
+.mp-crawl-status:hover:not(:disabled) { border-color: #3432A8; color: #3432A8; }
+.mp-crawl-delete:hover:not(:disabled) { border-color: #8a2020; color: #8a2020; }
+.mp-crawl-status:disabled,
+.mp-crawl-delete:disabled { opacity: 0.45; cursor: default; }
+
+.mp-crawl-note { font-size: 13px; color: #6B665D; }
+
+.mp-crawl-hint {
+  font-size: 13px;
+  color: #6B665D;
+  margin: 10px 0 0;
+}
+
+.mp-crawl-hint a { color: #3432A8; }
+
+.mp-crawl-error {
+  font-size: 13px;
+  color: #8a2020;
+  margin: 10px 0 0;
+}
+
+@media (max-width: 767px) {
+  .mp-crawl-pin-label { max-width: 120px; }
+}
+
 /* ── Map page responsive ─────────────────────────────────────── */
 
 @media (max-width: 900px) {

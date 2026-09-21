@@ -122,13 +122,3 @@ export interface CrawlRoute {
    */
   fallback_count: number
 }
-
-/** One exhibition the builder can offer as a stop. */
-export interface CrawlCandidate {
-  id: string
-  title: string
-  venue_name: string
-  lat: number
-  lng: number
-  end_date: string | null
-}
