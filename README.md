@@ -32,5 +32,5 @@ Copy `.env.local.example` to `.env.local` and fill in each value.
 
 - **Agent 1 — Exhibition Scraper** (`POST /api/scrape`): Renders gallery pages via Browserbase, extracts exhibitions with Claude, writes to Supabase. Runs on `check_back_date` schedule (daily check) plus a weekly force scrape of all venues.
 - **Agent 2 — Prereads Generator**: Fires on exhibition publish, generates 2–4 editorial prereads per show via Claude web search.
-- **Agent 3 — Readings Curator** (`POST /api/curate`): Daily job — RSS feeds → keyword filter → Claude relevance check → writes to `readings` table, prunes to 7 days.
+- **Agent 3 — Readings Curator** (`/api/curate/hourly`): Hourly job over every active publication — RSS feeds → keyword filter → Claude relevance check and classification → writes to `readings` (kept for good; the River shows 7 days) → groups Top Stories.
 - **Agent 4 — Editor's Picks**: Every Saturday surfaces 5 exhibition and 5 article suggestions; Franklin approves, goes live Monday.

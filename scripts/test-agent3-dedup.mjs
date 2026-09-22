@@ -179,7 +179,7 @@ const { curateReadings } = await import(pathToFileURL(curatorPath).href)
 async function run() {
   haiku = { relevance: [], classify: [] }
   const errors = []
-  const result = await curateReadings('t1', errors)
+  const result = await curateReadings(errors)
   // Story grouping (lib/story-groups.ts, migration_v68) is another piece of work
   // and its tables are not faked here, so its errors are set aside.
   const all = result.errors ?? errors

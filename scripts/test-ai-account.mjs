@@ -139,7 +139,7 @@ async function run() {
   haiku = { relevance: [], classify: [], refused: 0 }
   console.log = () => {}; console.error = () => {}; console.warn = () => {}
   try {
-    const result = await curateReadings('t1', [])
+    const result = await curateReadings([])
     return { result, errors: result.errors.filter((e) => e.item !== '(story grouping)') }
   } finally {
     console.log = quiet

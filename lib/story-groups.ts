@@ -53,6 +53,9 @@ import type { TopStory, TopStoryOutlet } from './types'
 // silently drops stories.
 export const MATCH_THRESHOLD = 0.55
 export const WINDOW_DAYS = 3
+// Readings embedded per Voyage call in the grouping pass — Voyage's own batch
+// size (lib/voyage.ts), so each slice is exactly one call.
+const EMBED_SLICE = 64
 export const MIN_OUTLETS = 3
 export const VISIBLE_DAYS = 7
 export const MAX_LLM_CANDIDATES = 8
@@ -278,8 +281,12 @@ export interface GroupingOptions {
   threshold?: number
   confirm?: ConfirmFn
   limit?: number
-  /** Stop starting new readings after this long; the rest wait for the next run. */
-  timeBudgetMs?: number
+  /**
+   * Stop starting new readings at this moment (ms since epoch); the rest wait
+   * for the next run. Agent 3 passes a point in ITS run, so time the feed pass
+   * already used comes out of grouping's share instead of adding to it.
+   */
+  deadline?: number
   /** Checked before embedding and before each reading; true stops the pass, leaving the rest unchecked. */
   shouldStop?: () => boolean
 }
@@ -287,13 +294,18 @@ export interface GroupingOptions {
 export async function assignStoryGroups(store: StoryStore, opts: GroupingOptions = {}): Promise<GroupingSummary> {
   const threshold = opts.threshold ?? MATCH_THRESHOLD
   const confirm = opts.confirm ?? haikuConfirm
-  const started = Date.now()
   const summary: GroupingSummary = {
     checked: 0, embedded: 0, embeddingTokens: 0, llmCalls: 0,
     joinedGroup: 0, startedGroup: 0, leadsSet: 0, digestsFlagged: 0,
     splitSignals: [], stoppedForTime: false, stoppedForAccount: false, errors: [],
   }
 
+  const outOfTime = () => opts.deadline !== undefined && Date.now() >= opts.deadline
+
+  if (outOfTime()) {
+    summary.stoppedForTime = true
+    return summary
+  }
   const pending = await store.pending(opts.limit ?? 500)
   if (pending.length === 0) return summary
   if (opts.shouldStop?.()) {
@@ -301,26 +313,39 @@ export async function assignStoryGroups(store: StoryStore, opts: GroupingOptions
     return summary
   }
 
-  // Embed everything pending up front, in batches. If Voyage is down nothing
-  // is marked checked, so the whole batch is retried next run.
+  // Embed what is pending up front. If Voyage is down nothing is marked
+  // checked, so every pending reading is retried next run.
   const vectors = await store.embeddings(pending.map((r) => r.id))
   const missing = pending.filter((r) => !vectors.has(r.id))
-  if (missing.length > 0) {
+  // A slice at a time, oldest first, so the deadline holds here too: a large
+  // backlog (309 readings after the September pause) is several Voyage calls.
+  // Each slice is saved as it arrives, so a slice embedded in a run that then
+  // stops is not paid for again.
+  for (let i = 0; i < missing.length; i += EMBED_SLICE) {
+    if (outOfTime()) {
+      summary.stoppedForTime = true
+      break
+    }
+    const slice = missing.slice(i, i + EMBED_SLICE)
     try {
-      const { embeddings, tokens } = await embedTexts(missing.map(embeddingText))
-      const rows = missing.map((r, i) => ({ reading_id: r.id, embedding: embeddings[i] }))
+      const { embeddings, tokens } = await embedTexts(slice.map(embeddingText))
+      const rows = slice.map((r, j) => ({ reading_id: r.id, embedding: embeddings[j] }))
       await store.saveEmbeddings(rows)
       for (const row of rows) vectors.set(row.reading_id, row.embedding)
-      summary.embedded = rows.length
-      summary.embeddingTokens = tokens
+      summary.embedded += rows.length
+      summary.embeddingTokens += tokens
     } catch (err) {
       summary.errors.push(`embedding: ${err instanceof Error ? err.message : String(err)}`)
       return summary
     }
   }
+  // Readings are grouped oldest first, so stop at the first one not embedded:
+  // it and everything after it stay unchecked for the next run.
+  const firstUnembedded = pending.findIndex((r) => !vectors.has(r.id))
+  const ready = firstUnembedded === -1 ? pending : pending.slice(0, firstUnembedded)
 
-  for (const reading of pending) {
-    if (opts.timeBudgetMs && Date.now() - started > opts.timeBudgetMs) {
+  for (const reading of ready) {
+    if (outOfTime()) {
       summary.stoppedForTime = true
       break
     }

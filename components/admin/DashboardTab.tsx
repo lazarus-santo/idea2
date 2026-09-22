@@ -123,25 +123,27 @@ const AGENT_META: Record<AgentName, { title: string; description: string; trigge
     description: 'Runs or repairs prereads and coverage for every published show that needs it',
     triggerPath: '/api/admin/audit-prereads',
   },
+  // Retired: every publication is now checked in the hourly run. Kept only so
+  // the type still covers the old agent3_daily rows in agent_runs; not shown.
   agent3_daily: {
-    title: 'Agent 3 Daily — Readings Curator',
-    description: 'Non-T1 publications, once daily',
-    triggerPath: '/api/curate',
+    title: 'Agent 3 Daily — Readings Curator (retired)',
+    description: 'Merged into the hourly run',
+    triggerPath: null,
   },
   agent3_hourly: {
-    title: 'Agent 3 Hourly — Readings Curator',
-    description: 'T1 publications, hourly',
+    title: 'Agent 3 — Readings Curator',
+    description: 'Every active publication, hourly',
     triggerPath: '/api/curate/hourly',
   },
 }
 
-const AGENT_ORDER: AgentName[] = ['agent1', 'agent2', 'agent3_daily', 'agent3_hourly']
+const AGENT_ORDER: AgentName[] = ['agent1', 'agent2', 'agent3_hourly']
 
 const AGENT_LOGIC: Record<AgentName, string> = {
   agent1: `Every 15 minutes, scrapes the venues due that day. Each venue has its own fixed day of the week, so the roster is spread evenly across the week instead of piling up on one day. Venues are scraped one at a time, and a run stops before starting a venue that likely won't finish in the time left. For each venue it renders the exhibitions page, pulls out show titles, dates, artists, and images using Claude, then verifies the extracted details actually appear on the page so hallucinated results get thrown out. Shows outside NYC or already closed are filtered out before anything is saved. New gallery shows get editorial prereads in the same pass; museum and fair shows get press coverage links. A venue that fails to scrape is retried automatically about 6 hours later, up to 3 attempts in a row; after the third failure it stops retrying and appears on the Scrape Issues tab. To scrape one venue right away, use Retry Scrape on that tab.`,
   agent2: `Finds reading for each show: editorial prereads for galleries, press coverage for museums and fairs. It runs automatically when Agent 1 adds or re-scrapes a show, and Run Now sweeps every published show that has never been run, last failed, or needs review. Shows already complete, or that ran and found nothing, are left alone. A gallery show with no artists or no press release is blocked until that is filled in. Any article whose quality check could not run is kept but hidden from the site and marked for review; the next run re-checks it and, if it still fails, searches for a replacement. Per-show Retrigger, and per-article Replace and Blank, are on each show in the Published and Pending tabs.`,
-  agent3_daily: `Once a day, pulls the RSS feeds for all approved, non-hourly art publications, filters out anything that doesn't mention art/gallery/museum keywords, then asks Claude to judge which remaining articles are genuinely relevant to the NYC art world. Relevant articles get classified into one of seven categories (breaking news, institutional news, art market, interview, opinion, show review, or show roundup), scored for art and NYC relevance, flagged for major-artist/significant-announcement status, and saved to the Readings feed — duplicates are skipped automatically. Show roundups with no NYC angle at all are excluded outright. Articles are also scanned for mentions of known artists or venues so they can be cross-linked to related exhibition pages. Nothing is ever deleted: articles older than 7 days stay in the database and simply drop off the River page, which only shows the last 7 days.`,
-  agent3_hourly: `Runs the same pipeline as Agent 3 Daily, but every hour and scoped only to Tier 1 publications — the highest-priority art outlets. Any article that meets the Top Stories eligibility rules for its category (e.g. breaking news, a significant institutional announcement, a major-artist interview) is marked as a Top Story immediately, without waiting for the separate cross-source verification step that other articles go through.`,
+  agent3_daily: `Retired. Every publication is now checked in the hourly run below.`,
+  agent3_hourly: `Every hour, pulls the RSS feeds of every approved, active art publication, several at a time, and skips anything that doesn't mention art/gallery/museum keywords, anything already saved, anything it has already turned down, and anything older than 7 days. Claude then judges which of the rest are genuinely about the art world, and sorts each one into one of seven categories (breaking news, institutional news, art market, interview, opinion, show review, or show roundup), scored for art and NYC relevance. Show roundups with no NYC angle at all are excluded. Articles it turns down are remembered so they are never sent to Claude twice. After saving, it groups new readings into Top Stories: 3 or more outlets covering the same event within three days, with the highest-tier outlet's article as the lead. Each run has to finish within 5 minutes, so sorting, image fetching and Top Stories grouping each stop at a fixed point in the run; anything they don't reach is picked up the next hour. Nothing is ever deleted: articles older than 7 days stay in the database and simply drop off the River page.`,
 }
 
 const STATUS_COLORS: Record<string, string> = {

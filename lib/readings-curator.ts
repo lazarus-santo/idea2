@@ -410,10 +410,60 @@ async function classifyArticles(
 // art_relevance_score >= 0.8 — flagged 204 of 309 readings, let gossip columns
 // in and kept multi-outlet stories from non-T1 outlets out.
 
-// Grouping runs after the inserts, inside the same function invocation as the
-// feed pass (maxDuration 300s). Anything it does not reach stays unchecked and
-// is picked up on the next run.
-const STORY_GROUPING_BUDGET_MS = 90_000
+// ─── One run inside 300 seconds ──────────────────────────────────────────────
+//
+// Every active feed is checked in one hourly run (app/api/curate/hourly), and
+// the route allows 300s. Each slow stage stops at a fixed point in the run —
+// counted from the run's start, not from when the stage began — so a slow
+// early stage leaves the later ones less time instead of pushing the run past
+// the limit. Anything a stage does not reach is left untouched and the next
+// run picks it up: articles not yet sorted are neither saved nor rejected,
+// readings not yet grouped stay unchecked.
+//
+// A stage only stops STARTING work at its mark; what is already in flight
+// finishes. The gaps between marks, and the 60s after the last one, cover
+// that: one Haiku batch, one round of image fetches (5s timeout each), one
+// grouping comparison.
+//
+// scripts/test-agent3-hourly-timing.mjs, 2026-09-22. Live, against the real
+// backlog left by the three-week pause (175 new articles, 309 readings never
+// grouped): feeds done by ~18s, all 175 sorted by ~72s, images by ~90s, then
+// Top Stories grouped 80 readings until its mark — 240s in all. Offline, with
+// every service slower than ever measured at once: 244s, sorting stopped with
+// 345 articles left for later runs.
+const SORTING_STOP_AT_MS = 150_000   // no new chunk of articles sorted
+const IMAGES_STOP_AT_MS = 230_000    // later articles keep their RSS image, if any
+const GROUPING_STOP_AT_MS = 240_000  // no new Top Stories comparison
+
+// Articles go through relevance and classification this many at a time: one
+// relevance call and at most two classification calls, ~10–25s in all.
+const SORT_CHUNK = 25
+
+// Feeds and article pages are fetched this many at a time. One at a time, the
+// 30 feeds took ~41s and one outlet timing out (15s) held up every feed behind
+// it; six at a time, the whole pass is about as long as the slowest feed.
+const FEED_CONCURRENCY = 6
+const IMAGE_CONCURRENCY = 8
+
+// Undated articles sort last: the river never shows them anyway.
+function publishedMs(item: RssItem): number {
+  const t = item.pubDate ? new Date(item.pubDate).getTime() : NaN
+  return Number.isNaN(t) ? 0 : t
+}
+
+// Runs fn over items, `limit` at a time, returning results in input order.
+async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
 
 // ─── Stopping on an account problem ──────────────────────────────────────────
 //
@@ -476,6 +526,10 @@ export interface CurationResult {
   nycRoundupsExcluded: number
   // Approved as art but not sorted into a category this run: not saved, tried again next run.
   awaitingClassification: number
+  // Not yet checked for relevance when the run reached SORTING_STOP_AT_MS; tried again next run.
+  leftForNextRun: number
+  // Each stage that stopped at its mark in the run rather than finishing.
+  stoppedForTime: { sorting: boolean; images: boolean }
   // The billing/key/limit error that stopped this run's AI calls, if any.
   accountError: AiAccountError | null
   errors: AgentRunError[]
@@ -562,75 +616,75 @@ async function recordRejections(
   return rows.length
 }
 
-export async function curateReadings(
-  tierFilter: 't1' | 'non-t1' = 'non-t1',
-  errors: AgentRunError[] = []
-): Promise<CurationResult> {
+// Every approved, active publication with a feed, every run. publications.
+// scrape_frequency (migration_v13) used to split them into an hourly T1 run and
+// a daily run for the rest; nothing reads it any more. tier is still loaded:
+// it picks a Top Story's lead article.
+export async function curateReadings(errors: AgentRunError[] = []): Promise<CurationResult> {
   const db = getSupabaseAdmin()
   const runStart = Date.now()
   const accountStop = () => accountErrorSince(runStart)
 
-  let query = db
+  const { data: publications } = await db
     .from('publications')
     .select('id, name, rss_url, tier')
     .eq('status', 'approved')
     .eq('active', true)
     .not('rss_url', 'is', null)
 
-  if (tierFilter === 't1') {
-    query = query.eq('scrape_frequency', 'hourly')
-  } else {
-    query = query.neq('scrape_frequency', 'hourly')
-  }
-
-  const { data: publications } = await query
-
   if (!publications || publications.length === 0) {
-    console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
+    console.log('Agent 3: no active publications with RSS URLs')
     return {
       written: 0, classified: 0, candidatesConsidered: 0, staleSkipped: 0,
       alreadySaved: 0, rejectedSkipped: 0, rejectionsRecorded: 0, awaitingClassification: 0, accountError: null,
+      leftForNextRun: 0, stoppedForTime: { sorting: false, images: false },
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
     }
   }
 
+  // Every feed page, fetched FEED_CONCURRENCY at a time. Results come back in
+  // publication order whatever order they finish in, so which feed "owns" an
+  // article that appears in two is the same as when they were read one by one.
+  const pages = publications.flatMap((pub) =>
+    feedPages(pub.rss_url as string).map((url, page) => ({
+      pub,
+      url,
+      label: page === 0 ? (pub.name as string) : `${pub.name} (page ${page + 1})`,
+    }))
+  )
+  const fetched = await mapConcurrent(pages, FEED_CONCURRENCY, async ({ pub, url, label }) => {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Idea2-Art-Curator/1.0' },
+        signal: AbortSignal.timeout(15000),
+      })
+      if (!res.ok) {
+        console.warn(`RSS fetch failed for ${label}: HTTP ${res.status}`)
+        errors.push({ item: label, step: 'fetch', message: `RSS fetch failed: HTTP ${res.status}` })
+        return { pub, items: [] as RssItem[] }
+      }
+      return { pub, items: parseRss(await res.text(), url) }
+    } catch (err) {
+      console.error(`RSS error for ${label}:`, err)
+      errors.push({
+        item: label,
+        step: 'fetch',
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return { pub, items: [] as RssItem[] }
+    }
+  })
+
   // Every keyword-matching item across all feeds, one entry per link — the same
   // article in two feeds is only considered once.
   const feedItems = new Map<string, { pubId: string; pubTier: string; item: RssItem }>()
-
-  for (const pub of publications) {
-    const pages = feedPages(pub.rss_url as string)
-    for (let page = 0; page < pages.length; page++) {
-      const url = pages[page]
-      const label = page === 0 ? (pub.name as string) : `${pub.name} (page ${page + 1})`
-      try {
-        const res = await fetch(url, {
-          headers: { 'User-Agent': 'Idea2-Art-Curator/1.0' },
-          signal: AbortSignal.timeout(15000),
-        })
-        if (!res.ok) {
-          console.warn(`RSS fetch failed for ${label}: HTTP ${res.status}`)
-          errors.push({ item: label, step: 'fetch', message: `RSS fetch failed: HTTP ${res.status}` })
-          continue
-        }
-        const xml = await res.text()
-        const items = parseRss(xml, url)
-
-        for (const item of items) {
-          if (feedItems.has(item.link)) continue
-          if (!passesKeywordFilter(item.title, item.description)) continue
-          feedItems.set(item.link, { pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
-        }
-      } catch (err) {
-        console.error(`RSS error for ${label}:`, err)
-        errors.push({
-          item: label,
-          step: 'fetch',
-          message: err instanceof Error ? err.message : String(err),
-        })
-      }
+  for (const { pub, items } of fetched) {
+    for (const item of items) {
+      if (feedItems.has(item.link)) continue
+      if (!passesKeywordFilter(item.title, item.description)) continue
+      feedItems.set(item.link, { pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
     }
   }
 
@@ -661,39 +715,67 @@ export async function curateReadings(
     candidates.push(entry)
   }
 
-  console.log(`Agent 3 [${tierFilter}]: ${alreadySaved} already saved, ${rejectedSkipped} already turned down`)
-  console.log(`Agent 3 [${tierFilter}]: ${candidates.length} candidate(s) across ${publications.length} feed(s); ${staleSkipped} skipped as older than ${RETENTION_DAYS} days`)
+  console.log(`Agent 3: ${alreadySaved} already saved, ${rejectedSkipped} already turned down`)
+  console.log(`Agent 3: ${candidates.length} candidate(s) across ${publications.length} feed(s); ${staleSkipped} skipped as older than ${RETENTION_DAYS} days`)
 
   if (candidates.length === 0) {
     return {
       written: 0, classified: 0, candidatesConsidered: 0, staleSkipped,
       alreadySaved, rejectedSkipped, rejectionsRecorded: 0, awaitingClassification: 0, accountError: null,
+      leftForNextRun: 0, stoppedForTime: { sorting: false, images: false },
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
     }
   }
 
-  // Stage 2 — relevance check
-  const { relevant: relevantIndices, judged: judgedIndices } = await checkRelevance(
-    candidates.map((c) => ({ title: c.item.title, description: c.item.description })),
-    errors,
-    accountStop
-  )
-  const approved = candidates.filter((_, i) => relevantIndices.has(i))
-  console.log(`Agent 3 [${tierFilter}]: ${approved.length} article(s) passed relevance check`)
+  // Stages 2 and 3 — relevance, then classification — a chunk at a time,
+  // newest articles first. Each chunk is sorted all the way through before the
+  // next one starts, and no chunk starts past SORTING_STOP_AT_MS. Stopping
+  // between chunks rather than between stages is what makes a big backlog
+  // shrink: an article approved but never classified is neither saved nor
+  // rejected, so a run that did every relevance check and then ran out of time
+  // would leave the next run the same backlog, to run out of time on again.
+  const byNewest = [...candidates].sort((a, b) => publishedMs(b.item) - publishedMs(a.item))
+  const approved: typeof candidates = []
+  const classifications = new Map<string, ClassificationResult>()
+  const rejections: RejectionRow[] = []
+  let leftForTime = 0
+  let sortingStoppedForTime = false
 
-  const rejections: RejectionRow[] = candidates
-    .filter((_, i) => judgedIndices.has(i) && !relevantIndices.has(i))
-    .map((c) => ({ article_url: c.item.link, publication_id: c.pubId, headline: c.item.title, reason: 'not_relevant' }))
-
-  // Stage 3 — classification
-  const classifications = await classifyArticles(
-    approved.map((c) => ({ url: c.item.link, title: c.item.title, description: c.item.description })),
-    errors,
-    accountStop
-  )
-  console.log(`Agent 3 [${tierFilter}]: ${classifications.size} article(s) classified`)
+  for (let i = 0; i < byNewest.length; i += SORT_CHUNK) {
+    if (Date.now() - runStart >= SORTING_STOP_AT_MS) {
+      leftForTime = byNewest.length - i
+      sortingStoppedForTime = true
+      console.log(`Agent 3: out of time — ${leftForTime} article(s) left for the next run`)
+      break
+    }
+    const blocked = accountStop()
+    if (blocked) {
+      errors.push(accountStopError('relevance', byNewest.length - i, blocked))
+      break
+    }
+    const chunk = byNewest.slice(i, i + SORT_CHUNK)
+    const { relevant, judged } = await checkRelevance(
+      chunk.map((c) => ({ title: c.item.title, description: c.item.description })),
+      errors,
+      accountStop
+    )
+    const chunkApproved = chunk.filter((_, j) => relevant.has(j))
+    approved.push(...chunkApproved)
+    for (const [j, c] of chunk.entries()) {
+      if (judged.has(j) && !relevant.has(j)) {
+        rejections.push({ article_url: c.item.link, publication_id: c.pubId, headline: c.item.title, reason: 'not_relevant' })
+      }
+    }
+    const sorted = await classifyArticles(
+      chunkApproved.map((c) => ({ url: c.item.link, title: c.item.title, description: c.item.description })),
+      errors,
+      accountStop
+    )
+    for (const [url, cls] of sorted) classifications.set(url, cls)
+  }
+  console.log(`Agent 3: ${approved.length} article(s) passed relevance check, ${classifications.size} classified`)
 
   const { data: institutionRows } = await db.from('institutions').select('name')
   const institutionNames = (institutionRows ?? []).map((r) => r.name as string)
@@ -706,6 +788,7 @@ export async function curateReadings(
   let significantAnnouncements = 0
   let nycRoundupsExcluded = 0
   let awaitingClassification = 0
+  const toSave: Array<{ pubId: string; pubTier: string; item: RssItem; cls: ClassificationResult; plainSummary: string | null }> = []
 
   for (const { pubId, pubTier, item } of approved) {
     const cls = classifications.get(item.link)
@@ -727,11 +810,26 @@ export async function curateReadings(
       rejections.push({ article_url: item.link, publication_id: pubId, headline: item.title, reason: 'nyc_roundup' })
       continue
     }
+    toSave.push({ pubId, pubTier, item, cls, plainSummary })
+  }
 
+  // Article images, IMAGE_CONCURRENCY pages at a time. Past IMAGES_STOP_AT_MS
+  // the rest are not fetched; those articles are saved with their RSS image
+  // (enclosure) if the feed gave one, as when a page has no og:image.
+  const imagesOutOfTime = () => Date.now() - runStart >= IMAGES_STOP_AT_MS
+  let imagesStoppedForTime = false
+  const ogImages = await mapConcurrent(toSave, IMAGE_CONCURRENCY, async ({ item }) => {
+    if (imagesOutOfTime()) {
+      imagesStoppedForTime = true
+      return null
+    }
+    return fetchOgImage(item.link)
+  })
+
+  for (const [i, { pubId, pubTier, item, cls, plainSummary }] of toSave.entries()) {
     const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : null
-    const ogImage = await fetchOgImage(item.link)
     const rawEnclosure = item.enclosure ? item.enclosure.replace(/[?&]w=\d+/, '') : null
-    const thumbnailUrl = ogImage ?? rawEnclosure
+    const thumbnailUrl = ogImages[i] ?? rawEnclosure
 
     const { error } = await db
       .from('readings')
@@ -784,7 +882,7 @@ export async function curateReadings(
   let storyGrouping: GroupingSummary | null = null
   try {
     storyGrouping = await assignStoryGroups(supabaseStoryStore(db), {
-      timeBudgetMs: STORY_GROUPING_BUDGET_MS,
+      deadline: runStart + GROUPING_STOP_AT_MS,
       shouldStop: () => accountStop() !== null,
     })
     for (const message of storyGrouping.errors) {
@@ -798,10 +896,11 @@ export async function curateReadings(
     })
   }
 
-  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, grouped: ${storyGrouping?.checked ?? 0}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
+  console.log(`Agent 3 done — written: ${written}, classified: ${classified}, grouped: ${storyGrouping?.checked ?? 0}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
     written, classified, candidatesConsidered: candidates.length, staleSkipped,
     alreadySaved, rejectedSkipped, rejectionsRecorded, awaitingClassification, accountError: accountStop(),
+    leftForNextRun: leftForTime, stoppedForTime: { sorting: sortingStoppedForTime, images: imagesStoppedForTime },
     byCategory, byRiverGroup, storyGrouping, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
@@ -811,13 +910,15 @@ export async function curateReadings(
 // "Items" here are keyword-filtered RSS candidates considered this run.
 // itemsSucceeded is readings actually written; the gap between the two is
 // mostly articles the relevance check filtered out, not failures.
-export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunResult> {
-  const agent = tierFilter === 't1' ? 'agent3_hourly' : 'agent3_daily'
-  const runId = await startAgentRun(agent)
+//
+// One run covers every feed and is recorded as agent3_hourly. agent3_daily
+// is no longer written; it stays in AgentName so its past runs still load.
+export async function runAgent3(): Promise<AgentRunResult> {
+  const runId = await startAgentRun('agent3_hourly')
   const errors: AgentRunError[] = []
 
   try {
-    const curation = await curateReadings(tierFilter, errors)
+    const curation = await curateReadings(errors)
     const result: AgentRunResult = {
       itemsProcessed: curation.candidatesConsidered,
       itemsSucceeded: curation.written,
@@ -846,6 +947,8 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
         significant_announcements: curation.significantAnnouncements,
         nyc_roundups_excluded: curation.nycRoundupsExcluded,
         awaiting_classification: curation.awaitingClassification,
+        left_for_next_run: curation.leftForNextRun,
+        stopped_for_time: curation.stoppedForTime,
       },
     }
     await finishAgentRun(runId, result)
