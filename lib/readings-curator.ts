@@ -267,14 +267,32 @@ interface ClassificationResult {
 
 const CLASSIFICATION_SYSTEM_PROMPT = `You are classifying art world articles for an NYC-focused contemporary art platform. Classify each article and return ONLY a JSON array, no commentary.
 
-CATEGORY DEFINITIONS:
-- breaking_news: deaths of artists or art world figures, major fair openings/closings (Art Basel, Frieze, Venice Biennale etc.), auction records, geopolitical events directly impacting the art world, urgent industry-wide announcements
-- institutional_news: museum/gallery staff appointments or departures, solo exhibition announcements at named institutions, building openings/closings, funding announcements, institutional partnerships
-- art_market: auction results and previews, market analysis, collecting trends, price records, geopolitical impact on art market, gallery representation changes
+CATEGORY DEFINITIONS — check them in this order and use the first that fits:
+- art_market: sales, auctions (results, previews, records), prices, and market activity — market analysis, collecting trends, gallery representation changes. A sale, a planned sale, or a lawsuit over a sale is art_market.
+- institutional_news: hires, departures, appointments, and other museum/gallery announcements — solo exhibition announcements at named institutions, building openings, funding, institutional partnerships. A resignation or departure is institutional_news even when it is sudden or controversial.
 - interview: artist interviews, studio visits, profiles, conversations with artists or curators, Q&As
-- opinion: criticism, essays, commentary, op-eds, cultural analysis that argues a position
 - show_review: review of a specific single exhibition, in-depth critical assessment of one show
-- show_roundup: listicles, seasonal guides, 'X shows to see' articles, fair previews listing multiple shows
+- show_roundup: an article listing several exhibitions to see — 'X shows to see' lists, seasonal exhibition guides, fair previews listing multiple shows. Hiring round-ups, fellowship or award announcements, news digests and book round-ups are not show_roundup.
+- opinion: criticism, essays, commentary, op-eds, cultural analysis that argues a position
+- breaking_news: something sudden happened — deaths, thefts (and recoveries of stolen art), arrests, lawsuits, closures, cancellations, disasters. breaking_news is only for sudden events that don't fit another category above — except that a closure or a cancellation is breaking_news even when the museum or gallery announces it. A work being moved, removed, restored, rediscovered or put on view is not breaking news.
+
+GOSSIP COLUMNS AND ROUND-UPS: a gossip column or a news round-up that bundles several items ("Morning Links", "... and Other Art World Matters", "... and More Industry Intel", "... and Other News") — or whose summary strings together several unrelated items ("Plus, ...", "Also: ...") is labeled by what it is mostly about, judged by the item its headline leads with. A news round-up is never show_roundup.
+
+EXAMPLES (invented, to show the overlap rule):
+- "Museum director resigns amid staff complaints" → institutional_news (a departure)
+- "Government to sell a painting from its embassy collection" → art_market (a planned sale)
+- "Collector sues gallery over cancelled sale" → art_market (a lawsuit over a sale)
+- "Council spent £50,000 removing a street mural" → opinion or institutional_news, not breaking_news (a work being moved)
+- "Lost Old Master found in museum storage" → institutional_news (a rediscovery, not a sudden event)
+- "Painter dies at 88" → breaking_news
+- "Paintings stolen from regional museum" → breaking_news
+- "Gallery closes after 12 years" → breaking_news (a closure)
+- "Morning Links: Big auction totals, a new director, and more" → art_market (its lead item)
+- "10 Gallery Shows to See in New York This Month" → show_roundup
+- "Five museums are hiring directors" → institutional_news, not show_roundup
+- "Foundation names 20 new fellows" → institutional_news, not show_roundup
+- "Eight new books on Vermeer to read before the Rijksmuseum show" → opinion, not show_roundup (books, not exhibitions)
+- "Museum sets reopening date" with summary "Plus, a strike at the Louvre, a new residency, and a documentary" → institutional_news (a news digest, labeled by its lead item)
 
 MAJOR ARTIST DEFINITION:
 An artist is considered 'major' if they have had or currently have a solo exhibition at any of these institutions: MoMA, Whitney, Guggenheim, Met, Tate Modern, Tate Britain, Centre Pompidou, Stedelijk, Kunsthaus Zürich, Hamburger Bahnhof, Fondazione Prada, Palazzo Grassi, Serpentine, Whitechapel, Hayward Gallery, LACMA, SFMOMA, Art Institute of Chicago, Walker Art Center, ICA Boston, National Gallery of Australia, Mori Art Museum, Museum of Contemporary Art Tokyo, Fondación Jumex.
@@ -320,6 +338,9 @@ async function classifyArticles(
       const response = await anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 1200,
+        // The same article should get the same label every run: without this,
+        // two identical runs disagreed on about 1 article in 10.
+        temperature: 0,
         system: CLASSIFICATION_SYSTEM_PROMPT,
         messages: [
           {
