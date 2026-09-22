@@ -42,9 +42,10 @@
 // store without writing to the database. This file only uses relative imports
 // for the same reason.
 
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { embedTexts, EMBEDDING_MODEL } from './voyage'
+import { createAnthropic } from './ai-account'
 import type { TopStory, TopStoryOutlet } from './types'
 
 // Starting guess, to be tuned from story_match_log. Haiku confirms every
@@ -153,6 +154,9 @@ export interface GroupingSummary {
   // shape a split story takes, since groups never merge.
   splitSignals: Array<{ readingId: string; groupIds: string[] }>
   stoppedForTime: boolean
+  // The caller's shouldStop said so — an AI account problem (lib/ai-account.ts).
+  // Whatever was not reached stays unchecked and is retried next run.
+  stoppedForAccount: boolean
   errors: string[]
 }
 
@@ -223,7 +227,7 @@ function describe(r: StoryReading): string {
 let _anthropic: Anthropic | null = null
 
 export const haikuConfirm: ConfirmFn = async (reading, targets) => {
-  _anthropic ??= new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  _anthropic ??= createAnthropic()
   const stories = targets
     .map((t, i) => `[${i + 1}]\n${t.readings.map((r) => `  - ${describe(r)}`).join('\n')}`)
     .join('\n\n')
@@ -276,6 +280,8 @@ export interface GroupingOptions {
   limit?: number
   /** Stop starting new readings after this long; the rest wait for the next run. */
   timeBudgetMs?: number
+  /** Checked before embedding and before each reading; true stops the pass, leaving the rest unchecked. */
+  shouldStop?: () => boolean
 }
 
 export async function assignStoryGroups(store: StoryStore, opts: GroupingOptions = {}): Promise<GroupingSummary> {
@@ -285,11 +291,15 @@ export async function assignStoryGroups(store: StoryStore, opts: GroupingOptions
   const summary: GroupingSummary = {
     checked: 0, embedded: 0, embeddingTokens: 0, llmCalls: 0,
     joinedGroup: 0, startedGroup: 0, leadsSet: 0, digestsFlagged: 0,
-    splitSignals: [], stoppedForTime: false, errors: [],
+    splitSignals: [], stoppedForTime: false, stoppedForAccount: false, errors: [],
   }
 
   const pending = await store.pending(opts.limit ?? 500)
   if (pending.length === 0) return summary
+  if (opts.shouldStop?.()) {
+    summary.stoppedForAccount = true
+    return summary
+  }
 
   // Embed everything pending up front, in batches. If Voyage is down nothing
   // is marked checked, so the whole batch is retried next run.
@@ -312,6 +322,10 @@ export async function assignStoryGroups(store: StoryStore, opts: GroupingOptions
   for (const reading of pending) {
     if (opts.timeBudgetMs && Date.now() - started > opts.timeBudgetMs) {
       summary.stoppedForTime = true
+      break
+    }
+    if (opts.shouldStop?.()) {
+      summary.stoppedForAccount = true
       break
     }
     try {

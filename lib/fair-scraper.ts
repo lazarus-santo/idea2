@@ -1,7 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk'
 import Browserbase from '@browserbasehq/sdk'
+import { createAnthropic } from './ai-account'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const anthropic = createAnthropic()
 
 const FETCH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 

@@ -1,13 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
+import { createAnthropic } from './ai-account'
 import { loggedExaSearch } from './exa-log'
 import { analyzeListingPage, sizingFor } from './listing-prepass'
 import type { ExhibitionRaw, Preread, CoverageItem, ExhibitionLink, ExhibitionDetailExtracted, QualityFlag } from './types'
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-})
+const anthropic = createAnthropic()
 
 const BETA_HEADERS = { 'anthropic-beta': 'prompt-caching-2024-07-31' }
 

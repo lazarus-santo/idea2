@@ -1,6 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk'
 import Exa from 'exa-js'
 import { getSupabaseAdmin } from './supabase'
+import { createAnthropic } from './ai-account'
 import {
   extractJsonObject,
   publicationFromUrl,
@@ -18,7 +18,7 @@ import { MUSEUM_TARGET_DOMAINS, publicationImportanceRank } from './coverage-ran
 import { loggedExaSearch } from './exa-log'
 import type { CoverageItem, CoverageType } from './types'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const anthropic = createAnthropic()
 const exa = new Exa(process.env.EXA_API_KEY!)
 
 // MUSEUM_TARGET_DOMAINS and publicationImportanceRank live in lib/coverage-ranking.ts,

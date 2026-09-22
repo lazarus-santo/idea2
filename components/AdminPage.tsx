@@ -10,6 +10,7 @@ import SeedTool from '@/components/admin/SeedTool'
 import ScrapeIssuesTab from '@/components/admin/ScrapeIssuesTab'
 import VenueHealthTab from '@/components/admin/VenueHealthTab'
 import FairsTab from '@/components/admin/FairsTab'
+import AiAccountBanner from '@/components/admin/AiAccountBanner'
 import { adminFetch, setAdminSecret } from '@/lib/admin-fetch'
 
 type Tab = 'dashboard' | 'pending' | 'publications' | 'picks' | 'published' | 'seed' | 'issues' | 'health' | 'fairs'
@@ -93,6 +94,8 @@ export default function AdminPage({ adminPw }: { adminPw: string }) {
             </a>
           </div>
         </div>
+
+        <AiAccountBanner />
 
         <div style={{ display: 'flex', gap: 32, borderBottom: '1px solid rgba(0,0,0,0.12)', marginBottom: 36 }}>
           {(['dashboard', 'pending', 'publications', 'picks', 'published', 'issues', 'health', 'fairs', 'seed'] as Tab[]).map(t => (

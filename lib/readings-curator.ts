@@ -1,10 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk'
 import he from 'he'
 import { getSupabaseAdmin } from './supabase'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import { assignStoryGroups, supabaseStoryStore, type GroupingSummary } from './story-groups'
+import { createAnthropic, accountErrorSince, type AiAccountError } from './ai-account'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const anthropic = createAnthropic()
 
 // ─── RSS parsing ──────────────────────────────────────────────────────────────
 
@@ -168,13 +168,19 @@ export async function fetchOgImage(url: string): Promise<string | null> {
 // tried again next run.
 async function checkRelevance(
   articles: Array<{ title: string; description: string | null }>,
-  errors: AgentRunError[] = []
+  errors: AgentRunError[] = [],
+  stopFor: () => AiAccountError | null = () => null
 ): Promise<{ relevant: Set<number>; judged: Set<number> }> {
   const relevant = new Set<number>()
   const judged = new Set<number>()
   if (articles.length === 0) return { relevant, judged }
 
   for (let i = 0; i < articles.length; i += 25) {
+    const blocked = stopFor()
+    if (blocked) {
+      errors.push(accountStopError('relevance', articles.length - i, blocked))
+      break
+    }
     const batch = articles.slice(i, i + 25)
     const list = batch
       .map((a, j) => `[${j}] ${a.title}${a.description ? ` — ${stripHtml(a.description).slice(0, 200)}` : ''}`)
@@ -291,12 +297,18 @@ significant_announcement is true only for institutional_news that meets the sign
 
 async function classifyArticles(
   articles: Array<{ url: string; title: string; description: string | null }>,
-  errors: AgentRunError[] = []
+  errors: AgentRunError[] = [],
+  stopFor: () => AiAccountError | null = () => null
 ): Promise<Map<string, ClassificationResult>> {
   const results = new Map<string, ClassificationResult>()
   if (articles.length === 0) return results
 
   for (let i = 0; i < articles.length; i += 15) {
+    const blocked = stopFor()
+    if (blocked) {
+      errors.push(accountStopError('classification', articles.length - i, blocked))
+      break
+    }
     const batch = articles.slice(i, i + 15)
     const list = batch
       .map((a, j) =>
@@ -319,7 +331,14 @@ async function classifyArticles(
 
       const text = response.content[0].type === 'text' ? response.content[0].text : ''
       const match = text.match(/\[\s*\{[\s\S]*\}\s*\]/)
-      if (!match) continue
+      if (!match) {
+        errors.push({
+          item: `(classification batch of ${batch.length}, offset ${i})`,
+          step: 'classification',
+          message: `Response unparseable — stop_reason: ${response.stop_reason}`,
+        })
+        continue
+      }
       const parsed = JSON.parse(match[0]) as Array<{
         index: number
         category: string
@@ -344,7 +363,8 @@ async function classifyArticles(
         })
       }
     } catch (err) {
-      // classification failures are non-fatal; articles still get written without scores
+      // The batch's articles are left unsorted: curateReadings does not save
+      // them, and the next run tries them again.
       console.error('Classification batch failed:', err)
       errors.push({
         item: `(classification batch of ${batch.length})`,
@@ -374,6 +394,49 @@ async function classifyArticles(
 // is picked up on the next run.
 const STORY_GROUPING_BUDGET_MS = 90_000
 
+// ─── Stopping on an account problem ──────────────────────────────────────────
+//
+// Once Anthropic or Voyage refuses for billing, a rejected key or a usage limit
+// (lib/ai-account.ts), every further call this run would be refused too. The
+// run stops calling and says how many articles it left; they are neither saved
+// nor rejected, so the next run picks them up. The admin panel shows the
+// problem until a run's AI calls succeed again (app/api/admin/ai-status).
+function accountStopError(stage: string, left: number, e: AiAccountError): AgentRunError {
+  return {
+    item: `(${stage}: ${left} article(s) left for the next run)`,
+    step: 'classification',
+    message: `Stopped — ${e.provider} ${e.problem} error (HTTP ${e.status}): ${e.message}`,
+  }
+}
+
+// ─── Feeds read past their first page ────────────────────────────────────────
+//
+// Mousse Magazine's feed is not in date order and shows 4 articles a page: on
+// 2026-09-21 a 10 Sep review sat on page 2 behind three from 28 Aug, where a
+// page-1-only check could miss it. Pages 2 and 3 are read on every run.
+// Anything already saved or turned down is skipped as usual, and anything
+// older than RETENTION_DAYS is dropped before it reaches Haiku. WordPress
+// serves page n at ?paged=n.
+const FEED_PAGES: Record<string, number> = {
+  'www.moussemagazine.it': 3,
+}
+
+function feedPages(rssUrl: string): string[] {
+  let base: URL
+  try {
+    base = new URL(rssUrl)
+  } catch {
+    return [rssUrl]
+  }
+  const urls = [rssUrl]
+  for (let page = 2; page <= (FEED_PAGES[base.hostname] ?? 1); page++) {
+    const url = new URL(base)
+    url.searchParams.set('paged', String(page))
+    urls.push(url.href)
+  }
+  return urls
+}
+
 // ─── Main Agent 3 pipeline ────────────────────────────────────────────────────
 
 export interface CurationResult {
@@ -390,6 +453,10 @@ export interface CurationResult {
   majorArtistArticles: number
   significantAnnouncements: number
   nycRoundupsExcluded: number
+  // Approved as art but not sorted into a category this run: not saved, tried again next run.
+  awaitingClassification: number
+  // The billing/key/limit error that stopped this run's AI calls, if any.
+  accountError: AiAccountError | null
   errors: AgentRunError[]
 }
 
@@ -479,6 +546,8 @@ export async function curateReadings(
   errors: AgentRunError[] = []
 ): Promise<CurationResult> {
   const db = getSupabaseAdmin()
+  const runStart = Date.now()
+  const accountStop = () => accountErrorSince(runStart)
 
   let query = db
     .from('publications')
@@ -499,7 +568,7 @@ export async function curateReadings(
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
     return {
       written: 0, classified: 0, candidatesConsidered: 0, staleSkipped: 0,
-      alreadySaved: 0, rejectedSkipped: 0, rejectionsRecorded: 0,
+      alreadySaved: 0, rejectedSkipped: 0, rejectionsRecorded: 0, awaitingClassification: 0, accountError: null,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -511,31 +580,36 @@ export async function curateReadings(
   const feedItems = new Map<string, { pubId: string; pubTier: string; item: RssItem }>()
 
   for (const pub of publications) {
-    try {
-      const res = await fetch(pub.rss_url as string, {
-        headers: { 'User-Agent': 'Idea2-Art-Curator/1.0' },
-        signal: AbortSignal.timeout(15000),
-      })
-      if (!res.ok) {
-        console.warn(`RSS fetch failed for ${pub.name}: HTTP ${res.status}`)
-        errors.push({ item: pub.name as string, step: 'fetch', message: `RSS fetch failed: HTTP ${res.status}` })
-        continue
-      }
-      const xml = await res.text()
-      const items = parseRss(xml, pub.rss_url as string)
+    const pages = feedPages(pub.rss_url as string)
+    for (let page = 0; page < pages.length; page++) {
+      const url = pages[page]
+      const label = page === 0 ? (pub.name as string) : `${pub.name} (page ${page + 1})`
+      try {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'Idea2-Art-Curator/1.0' },
+          signal: AbortSignal.timeout(15000),
+        })
+        if (!res.ok) {
+          console.warn(`RSS fetch failed for ${label}: HTTP ${res.status}`)
+          errors.push({ item: label, step: 'fetch', message: `RSS fetch failed: HTTP ${res.status}` })
+          continue
+        }
+        const xml = await res.text()
+        const items = parseRss(xml, url)
 
-      for (const item of items) {
-        if (feedItems.has(item.link)) continue
-        if (!passesKeywordFilter(item.title, item.description)) continue
-        feedItems.set(item.link, { pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
+        for (const item of items) {
+          if (feedItems.has(item.link)) continue
+          if (!passesKeywordFilter(item.title, item.description)) continue
+          feedItems.set(item.link, { pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
+        }
+      } catch (err) {
+        console.error(`RSS error for ${label}:`, err)
+        errors.push({
+          item: label,
+          step: 'fetch',
+          message: err instanceof Error ? err.message : String(err),
+        })
       }
-    } catch (err) {
-      console.error(`RSS error for ${pub.name}:`, err)
-      errors.push({
-        item: pub.name as string,
-        step: 'fetch',
-        message: err instanceof Error ? err.message : String(err),
-      })
     }
   }
 
@@ -572,7 +646,7 @@ export async function curateReadings(
   if (candidates.length === 0) {
     return {
       written: 0, classified: 0, candidatesConsidered: 0, staleSkipped,
-      alreadySaved, rejectedSkipped, rejectionsRecorded: 0,
+      alreadySaved, rejectedSkipped, rejectionsRecorded: 0, awaitingClassification: 0, accountError: null,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -582,7 +656,8 @@ export async function curateReadings(
   // Stage 2 — relevance check
   const { relevant: relevantIndices, judged: judgedIndices } = await checkRelevance(
     candidates.map((c) => ({ title: c.item.title, description: c.item.description })),
-    errors
+    errors,
+    accountStop
   )
   const approved = candidates.filter((_, i) => relevantIndices.has(i))
   console.log(`Agent 3 [${tierFilter}]: ${approved.length} article(s) passed relevance check`)
@@ -594,7 +669,8 @@ export async function curateReadings(
   // Stage 3 — classification
   const classifications = await classifyArticles(
     approved.map((c) => ({ url: c.item.link, title: c.item.title, description: c.item.description })),
-    errors
+    errors,
+    accountStop
   )
   console.log(`Agent 3 [${tierFilter}]: ${classifications.size} article(s) classified`)
 
@@ -608,15 +684,24 @@ export async function curateReadings(
   let majorArtistArticles = 0
   let significantAnnouncements = 0
   let nycRoundupsExcluded = 0
+  let awaitingClassification = 0
 
   for (const { pubId, pubTier, item } of approved) {
     const cls = classifications.get(item.link)
+    // Never saved without a category. If sorting failed for any reason — an
+    // API error, an unparseable answer, an article Haiku left out, an account
+    // stop — the article is neither saved nor rejected, so the next run tries
+    // it again while it is still in its feed and inside RETENTION_DAYS.
+    if (!cls) {
+      awaitingClassification++
+      continue
+    }
     const plainSummary = item.description ? stripHtml(item.description).slice(0, 500) : null
     const articleText = `${item.title} ${plainSummary ?? ''}`
 
     // Part 6: the one hard geographic filter in the system — a show_roundup
     // with zero NYC angle never touches the readings table.
-    if (cls && isNycIrrelevantRoundup(cls.category, cls.nyc_relevance_score, articleText, institutionNames)) {
+    if (isNycIrrelevantRoundup(cls.category, cls.nyc_relevance_score, articleText, institutionNames)) {
       nycRoundupsExcluded++
       rejections.push({ article_url: item.link, publication_id: pubId, headline: item.title, reason: 'nyc_roundup' })
       continue
@@ -637,12 +722,12 @@ export async function curateReadings(
         rss_summary:               plainSummary,
         thumbnail_url:             thumbnailUrl,
         published_at:              publishedAt,
-        category:                  cls?.category ?? null,
-        river_group:               cls?.river_group ?? null,
-        art_relevance_score:       cls?.art_relevance_score ?? null,
-        nyc_relevance_score:       cls?.nyc_relevance_score ?? null,
-        major_artist:              cls?.major_artist ?? false,
-        significant_announcement:  cls?.significant_announcement ?? false,
+        category:                  cls.category,
+        river_group:               cls.river_group,
+        art_relevance_score:       cls.art_relevance_score,
+        nyc_relevance_score:       cls.nyc_relevance_score,
+        major_artist:              cls.major_artist,
+        significant_announcement:  cls.significant_announcement,
         tier:                      pubTier,
       })
       .select('id')
@@ -657,13 +742,11 @@ export async function curateReadings(
     }
 
     written++
-    if (cls) {
-      classified++
-      byCategory[cls.category]++
-      byRiverGroup[cls.river_group]++
-      if (cls.major_artist) majorArtistArticles++
-      if (cls.significant_announcement) significantAnnouncements++
-    }
+    classified++
+    byCategory[cls.category]++
+    byRiverGroup[cls.river_group]++
+    if (cls.major_artist) majorArtistArticles++
+    if (cls.significant_announcement) significantAnnouncements++
   }
 
   const rejectionsRecorded = await recordRejections(db, rejections, errors)
@@ -679,7 +762,10 @@ export async function curateReadings(
   // costs the readings already written; they stay unchecked and retry.
   let storyGrouping: GroupingSummary | null = null
   try {
-    storyGrouping = await assignStoryGroups(supabaseStoryStore(db), { timeBudgetMs: STORY_GROUPING_BUDGET_MS })
+    storyGrouping = await assignStoryGroups(supabaseStoryStore(db), {
+      timeBudgetMs: STORY_GROUPING_BUDGET_MS,
+      shouldStop: () => accountStop() !== null,
+    })
     for (const message of storyGrouping.errors) {
       errors.push({ item: '(story grouping)', step: 'classification', message })
     }
@@ -694,7 +780,7 @@ export async function curateReadings(
   console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, grouped: ${storyGrouping?.checked ?? 0}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
     written, classified, candidatesConsidered: candidates.length, staleSkipped,
-    alreadySaved, rejectedSkipped, rejectionsRecorded,
+    alreadySaved, rejectedSkipped, rejectionsRecorded, awaitingClassification, accountError: accountStop(),
     byCategory, byRiverGroup, storyGrouping, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
@@ -733,10 +819,12 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
           leads_set: curation.storyGrouping.leadsSet,
           split_signals: curation.storyGrouping.splitSignals.length,
           stopped_for_time: curation.storyGrouping.stoppedForTime,
+          stopped_for_account: curation.storyGrouping.stoppedForAccount,
         },
         major_artist_articles: curation.majorArtistArticles,
         significant_announcements: curation.significantAnnouncements,
         nyc_roundups_excluded: curation.nycRoundupsExcluded,
+        awaiting_classification: curation.awaitingClassification,
       },
     }
     await finishAgentRun(runId, result)

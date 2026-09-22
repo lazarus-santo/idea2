@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from './supabase'
+import { aiActivitySince } from './ai-account'
 
 export type AgentName = 'agent1' | 'agent2' | 'agent3_daily' | 'agent3_hourly'
 // 'timed_out' is never derived: it marks runs the platform killed before they
@@ -19,10 +20,15 @@ export interface AgentRunResult {
   summary?: Record<string, unknown>
 }
 
+// When each run started, by this instance's clock, so finishAgentRun can ask
+// lib/ai-account.ts what the AI clients saw during the run.
+const runStarts = new Map<string, number>()
+
 // Inserts a 'running' row at the start of an agent run. Returns the row id
 // (or null if the insert failed — callers should not let bookkeeping
 // failures block the underlying agent work).
 export async function startAgentRun(agent: AgentName): Promise<string | null> {
+  const startedAt = Date.now()
   const db = getSupabaseAdmin()
   const { data, error } = await db
     .from('agent_runs')
@@ -34,6 +40,7 @@ export async function startAgentRun(agent: AgentName): Promise<string | null> {
     console.error(`Failed to start agent_runs row for ${agent}:`, error?.message)
     return null
   }
+  runStarts.set(data.id as string, startedAt)
   return data.id as string
 }
 
@@ -66,6 +73,14 @@ export async function finishAgentRun(
 
   const status = overrideStatus ?? deriveStatus(result.itemsProcessed, result.itemsFailed)
 
+  // summary.ai: successful Anthropic/Voyage calls during the run, and any
+  // billing/key/limit error they hit. The admin banner reads it
+  // (app/api/admin/ai-status). Recorded for every agent, whatever the agent's
+  // own code did with the error.
+  const runStart = runStarts.get(runId) ?? startedAt
+  runStarts.delete(runId)
+  const summary = { ...(result.summary ?? {}), ai: aiActivitySince(runStart) }
+
   const { error } = await db
     .from('agent_runs')
     .update({
@@ -75,7 +90,7 @@ export async function finishAgentRun(
       items_succeeded: result.itemsSucceeded,
       items_failed: result.itemsFailed,
       errors: result.errors,
-      summary: result.summary ?? {},
+      summary,
       duration_ms: durationMs,
     })
     .eq('id', runId)
