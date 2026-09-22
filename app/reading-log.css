@@ -132,21 +132,7 @@
 /* A River row: time, entry, pill. The entry takes the slack. */
 .rd-river-row .rl-compact { flex: 0 0 auto; margin-left: auto; }
 
-/*
- * A Top Stories card. The pill is laid over the image's top-right corner
- * rather than added to the text block: those text blocks have fixed heights
- * and clip their overflow, so anything added inside them disappears.
- */
-.rl-over-img {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 30;
-}
-
-/* The fallback card used on mobile and for incomplete groups is ordinary flow,
-   so the pill goes after the source line instead. */
-.rd-card-body .rl-compact { margin-top: 6px; align-self: flex-start; }
+/* Top Stories places its pills itself — see app/top-stories.css. */
 
 /* ── The reading log on a profile ────────────────────────── */
 

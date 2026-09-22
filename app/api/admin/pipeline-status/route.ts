@@ -38,7 +38,11 @@ export async function GET(request: Request) {
     db.from('exhibitions').select('id').eq('status', 'published').eq('preread_type', 'full'),
     db.from('prereads').select('exhibition_id'),
     db.from('readings').select('id', { count: 'exact', head: true }).gte('created_at', today),
-    db.from('readings').select('id', { count: 'exact', head: true }).eq('top_story', true),
+    // Top Stories on the page right now: story groups with a lead (3+ outlets)
+    // whose first article is under seven days old — see lib/story-groups.ts.
+    db.from('story_groups').select('id', { count: 'exact', head: true })
+      .not('lead_reading_id', 'is', null)
+      .gt('first_published_at', new Date(Date.now() - 7 * 86_400_000).toISOString()),
     db.from('readings').select('id', { count: 'exact', head: true }).is('category', null),
     ...AGENTS.map((agent) =>
       db

@@ -38,7 +38,12 @@ interface RunError {
 
 interface Agent3Summary {
   by_category?: Record<string, number>
-  top_story_candidates?: number
+  story_grouping?: {
+    checked?: number
+    started_group?: number
+    joined_group?: number
+    leads_set?: number
+  } | null
   major_artist_articles?: number
   significant_announcements?: number
   nyc_roundups_excluded?: number
@@ -71,7 +76,7 @@ function Agent3Breakdown({ summary }: { summary: Agent3Summary }) {
   const byCategory = Object.entries(summary.by_category ?? {}).filter(([, n]) => n > 0)
   const hasBreakdown = byCategory.length > 0
   const hasFlags =
-    (summary.top_story_candidates ?? 0) > 0 ||
+    (summary.story_grouping?.checked ?? 0) > 0 ||
     (summary.major_artist_articles ?? 0) > 0 ||
     (summary.significant_announcements ?? 0) > 0 ||
     (summary.nyc_roundups_excluded ?? 0) > 0
@@ -94,7 +99,7 @@ function Agent3Breakdown({ summary }: { summary: Agent3Summary }) {
       )}
       {hasFlags && (
         <p style={{ fontFamily: F, fontSize: 11, color: 'rgba(0,0,0,0.45)', margin: 0 }}>
-          {summary.top_story_candidates ?? 0} candidates · {summary.major_artist_articles ?? 0} major artist · {summary.significant_announcements ?? 0} significant · {summary.nyc_roundups_excluded ?? 0} roundups excluded
+          {summary.story_grouping?.checked ?? 0} grouped · {summary.story_grouping?.leads_set ?? 0} new top stories · {summary.major_artist_articles ?? 0} major artist · {summary.significant_announcements ?? 0} significant · {summary.nyc_roundups_excluded ?? 0} roundups excluded
         </p>
       )}
     </div>

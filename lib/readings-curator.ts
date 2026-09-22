@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import he from 'he'
 import { getSupabaseAdmin } from './supabase'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
-import { mentionsMajorMuseum } from './agent3-constants'
+import { assignStoryGroups, supabaseStoryStore, type GroupingSummary } from './story-groups'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
@@ -250,29 +250,6 @@ interface ClassificationResult {
   nyc_relevance_score: number
   major_artist: boolean
   significant_announcement: boolean
-  top_story_candidate: boolean
-}
-
-// Top Stories candidacy is derived deterministically from category +
-// major_artist + significant_announcement rather than trusted from the
-// model's own top_story_candidate output — the rules are mechanical enough
-// (Part 3 of the Agent 3 spec) that re-deriving them in code is more
-// reliable than hoping the model applies all seven consistently.
-function deriveTopStoryCandidate(
-  category: ReadingCategory,
-  majorArtist: boolean,
-  significantAnnouncement: boolean,
-  articleText: string
-): boolean {
-  switch (category) {
-    case 'breaking_news': return true
-    case 'art_market': return true
-    case 'institutional_news': return significantAnnouncement
-    case 'interview': return majorArtist
-    case 'show_review': return majorArtist || mentionsMajorMuseum(articleText)
-    case 'opinion': return false // opinion is never a Top Story on its own
-    case 'show_roundup': return false
-  }
 }
 
 const CLASSIFICATION_SYSTEM_PROMPT = `You are classifying art world articles for an NYC-focused contemporary art platform. Classify each article and return ONLY a JSON array, no commentary.
@@ -350,17 +327,13 @@ async function classifyArticles(
         const category = VALID_CATEGORIES.has(item.category as ReadingCategory)
           ? (item.category as ReadingCategory)
           : 'opinion'
-        const majorArtist = Boolean(item.major_artist)
-        const significantAnnouncement = Boolean(item.significant_announcement)
-        const articleText = `${article.title} ${article.description ?? ''}`
         results.set(article.url, {
           category,
           river_group: CATEGORY_TO_RIVER_GROUP[category],
           art_relevance_score: Math.min(1, Math.max(0, item.art_relevance_score ?? 0.5)),
           nyc_relevance_score: Math.min(1, Math.max(0, item.nyc_relevance_score ?? 0.5)),
-          major_artist: majorArtist,
-          significant_announcement: significantAnnouncement,
-          top_story_candidate: deriveTopStoryCandidate(category, majorArtist, significantAnnouncement, articleText),
+          major_artist: Boolean(item.major_artist),
+          significant_announcement: Boolean(item.significant_announcement),
         })
       }
     } catch (err) {
@@ -379,36 +352,31 @@ async function classifyArticles(
 
 // ─── Top Stories ─────────────────────────────────────────────────────────────
 //
-// A reading is a Top Story when it is a candidate (deriveTopStoryCandidate), from
-// a T1 publication, and scores at least TOP_STORY_MIN_RELEVANCE. That decision is
-// made inline at insert time; there is no second pass.
+// Top Stories are no longer a flag on a reading. A Top Story is a group of 3+
+// different outlets covering the same event within three days, built by
+// lib/story-groups.ts after each run's inserts (see curateReadings). Category,
+// tier and art_relevance_score no longer decide anything here; tier only picks
+// a group's lead article.
 //
-// There used to be one: detectTopStories() ran an Exa search per article and
-// promoted anything whose top 10 results spanned 3+ unique domains. It was removed
-// because the gate never actually gated. Nothing checked that the results were
-// about the same story, or even excluded the article's own domain, so any
-// headline-shaped query cleared the bar — measured at 11 of 11 on the last run and
-// 98.8% across the historical sample. It cost one Exa search per article (140+ on
-// a daily run) to produce a decision it never really made.
-//
-// The knock-on was worse than the noise. The prune of the day only deleted rows
-// with top_story = false, so flagging everything silently disabled the 7-day
-// retention policy: 261 of 288 readings were older than a week and none could be
-// removed. That prune no longer exists — readings are kept for good — so the flag
-// now only decides what the river promotes.
-const TOP_STORY_MIN_RELEVANCE = 0.8
+// The rule this replaced — a category-based candidate AND a T1 outlet AND
+// art_relevance_score >= 0.8 — flagged 204 of 309 readings, let gossip columns
+// in and kept multi-outlet stories from non-T1 outlets out.
+
+// Grouping runs after the inserts, inside the same function invocation as the
+// feed pass (maxDuration 300s). Anything it does not reach stays unchecked and
+// is picked up on the next run.
+const STORY_GROUPING_BUDGET_MS = 90_000
 
 // ─── Main Agent 3 pipeline ────────────────────────────────────────────────────
 
 export interface CurationResult {
   written: number
   classified: number
-  topStories: number
   staleSkipped: number
   candidatesConsidered: number
   byCategory: Record<ReadingCategory, number>
   byRiverGroup: Record<RiverGroup, number>
-  topStoryCandidates: number
+  storyGrouping: GroupingSummary | null
   majorArtistArticles: number
   significantAnnouncements: number
   nycRoundupsExcluded: number
@@ -468,9 +436,9 @@ export async function curateReadings(
   if (!publications || publications.length === 0) {
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
     return {
-      written: 0, classified: 0, topStories: 0, candidatesConsidered: 0, staleSkipped: 0,
+      written: 0, classified: 0, candidatesConsidered: 0, staleSkipped: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
-      topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
+      storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
     }
   }
@@ -515,9 +483,9 @@ export async function curateReadings(
 
   if (candidates.length === 0) {
     return {
-      written: 0, classified: 0, topStories: 0, candidatesConsidered: 0, staleSkipped,
+      written: 0, classified: 0, candidatesConsidered: 0, staleSkipped,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
-      topStoryCandidates: 0, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
+      storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
     }
   }
@@ -541,11 +509,9 @@ export async function curateReadings(
   const institutionNames = (institutionRows ?? []).map((r) => r.name as string)
 
   let written = 0
-  let topStories = 0
   let classified = 0
   const byCategory = emptyCategoryBreakdown()
   const byRiverGroup = emptyRiverGroupBreakdown()
-  let topStoryCandidates = 0
   let majorArtistArticles = 0
   let significantAnnouncements = 0
   let nycRoundupsExcluded = 0
@@ -567,16 +533,6 @@ export async function curateReadings(
     const rawEnclosure = item.enclosure ? item.enclosure.replace(/[?&]w=\d+/, '') : null
     const thumbnailUrl = ogImage ?? rawEnclosure
 
-    // Top Stories, in full. Candidacy alone is not enough: deriveTopStoryCandidate
-    // returns true unconditionally for breaking_news and art_market, so on its own
-    // this promoted every market and breaking item from every publication. The spec
-    // gates it on a T1 source and a high art-relevance score, and neither check had
-    // ever been written — which is how 288 of 288 readings ended up flagged.
-    const isTopStory =
-      cls?.top_story_candidate === true &&
-      pubTier === 't1' &&
-      (cls?.art_relevance_score ?? 0) >= TOP_STORY_MIN_RELEVANCE
-
     const { error } = await db
       .from('readings')
       .insert({
@@ -593,9 +549,7 @@ export async function curateReadings(
         nyc_relevance_score:       cls?.nyc_relevance_score ?? null,
         major_artist:              cls?.major_artist ?? false,
         significant_announcement:  cls?.significant_announcement ?? false,
-        top_story_candidate:       cls?.top_story_candidate ?? false,
         tier:                      pubTier,
-        top_story:                 isTopStory,
       })
       .select('id')
       .single()
@@ -613,16 +567,10 @@ export async function curateReadings(
       classified++
       byCategory[cls.category]++
       byRiverGroup[cls.river_group]++
-      if (cls.top_story_candidate) topStoryCandidates++
       if (cls.major_artist) majorArtistArticles++
       if (cls.significant_announcement) significantAnnouncements++
     }
     existingUrls.add(item.link)
-
-    if (isTopStory) {
-      topStories++
-      console.log(`Top Story: ${item.title} (${cls?.category}, relevance ${cls?.art_relevance_score})`)
-    }
   }
 
   // Nothing is deleted here any more. Readings are kept indefinitely: the river
@@ -630,10 +578,28 @@ export async function curateReadings(
   // reading later — an editor's pick, a search, a person's log — needs the row to
   // still exist. The old prune deleted past the same 7 days and had already cost
   // one editor's pick, which quietly stopped rendering when its article went.
-  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, topStories: ${topStories}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
+  //
+  // Top Stories: group whatever has not been grouped yet — this run's new
+  // readings, plus any a previous run left unchecked. A failure here never
+  // costs the readings already written; they stay unchecked and retry.
+  let storyGrouping: GroupingSummary | null = null
+  try {
+    storyGrouping = await assignStoryGroups(supabaseStoryStore(db), { timeBudgetMs: STORY_GROUPING_BUDGET_MS })
+    for (const message of storyGrouping.errors) {
+      errors.push({ item: '(story grouping)', step: 'classification', message })
+    }
+  } catch (err) {
+    errors.push({
+      item: '(story grouping)',
+      step: 'classification',
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
+
+  console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, grouped: ${storyGrouping?.checked ?? 0}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
-    written, classified, topStories, candidatesConsidered: candidates.length, staleSkipped,
-    byCategory, byRiverGroup, topStoryCandidates, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
+    written, classified, candidatesConsidered: candidates.length, staleSkipped,
+    byCategory, byRiverGroup, storyGrouping, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
 }
@@ -656,11 +622,19 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
       errors: curation.errors,
       summary: {
         classified: curation.classified,
-        topStories: curation.topStories,
         stale_skipped: curation.staleSkipped,
         by_category: curation.byCategory,
         by_river_group: curation.byRiverGroup,
-        top_story_candidates: curation.topStoryCandidates,
+        story_grouping: curation.storyGrouping && {
+          checked: curation.storyGrouping.checked,
+          embedded: curation.storyGrouping.embedded,
+          llm_calls: curation.storyGrouping.llmCalls,
+          joined_group: curation.storyGrouping.joinedGroup,
+          started_group: curation.storyGrouping.startedGroup,
+          leads_set: curation.storyGrouping.leadsSet,
+          split_signals: curation.storyGrouping.splitSignals.length,
+          stopped_for_time: curation.storyGrouping.stoppedForTime,
+        },
         major_artist_articles: curation.majorArtistArticles,
         significant_announcements: curation.significantAnnouncements,
         nyc_roundups_excluded: curation.nycRoundupsExcluded,

@@ -347,8 +347,6 @@ export interface Reading {
   article_url: string
   thumbnail_url: string | null
   rss_summary: string | null
-  top_story: boolean
-  top_story_candidate: boolean
   published_at: string | null
   created_at: string
   category:
@@ -366,4 +364,27 @@ export interface Reading {
   major_artist: boolean
   significant_announcement: boolean
   tier: string | null
+}
+
+// A Top Story is a group of readings from 3+ different outlets on one event
+// (lib/story-groups.ts). The page shows the lead article's headline, outlet,
+// author and image, and one link per other outlet. No summary: nothing users
+// read on it is text a feed or a model wrote.
+export interface TopStoryOutlet {
+  reading_id: string
+  publication_name: string | null
+  headline: string
+  article_url: string
+}
+
+export interface TopStory {
+  id: string
+  category: string | null
+  outlet_count: number
+  first_published_at: string
+  lead: TopStoryOutlet & {
+    author: string | null
+    thumbnail_url: string | null
+  }
+  more: TopStoryOutlet[]
 }

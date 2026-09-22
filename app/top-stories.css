@@ -1,0 +1,106 @@
+/*
+ * Top Stories — a Techmeme-style list (components/ReadingsPage.tsx).
+ *
+ * Each story is the lead article (outlet, headline, image) followed by a
+ * "More:" line naming every other outlet on the story. Stories are separated
+ * by spacing alone, like the River and the feed.
+ */
+
+.ts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
+  max-width: 1040px;
+  padding-top: 8px;
+}
+
+.ts-story {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  column-gap: 32px;
+  align-items: start;
+}
+
+/* No image: the text takes the full width instead of leaving a hole. */
+.ts-story:not(:has(.ts-image-link)) { grid-template-columns: 1fr; }
+
+.ts-image-link { display: block; }
+
+.ts-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  background: #c4c0b0;
+}
+
+.ts-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-inter-tight), sans-serif;
+  color: #000;
+}
+
+.ts-source {
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 400;
+  margin: 0;
+}
+
+.ts-headline-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.ts-headline {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 700;
+  color: #000;
+  text-decoration: none;
+  transition: opacity 150ms ease;
+}
+
+.ts-headline:hover { opacity: 0.55; }
+
+.ts-lead-log { flex: 0 0 auto; padding-top: 2px; }
+
+.ts-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  font-size: 13px;
+  line-height: 24px;
+  margin: 4px 0 0;
+}
+
+.ts-more-label { font-weight: 700; }
+
+.ts-more-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ts-more-link {
+  color: #000;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  transition: opacity 150ms ease;
+}
+
+.ts-more-link:hover { opacity: 0.55; }
+
+@media (max-width: 900px) {
+  .ts-list { gap: 40px; }
+  .ts-story { grid-template-columns: 1fr; row-gap: 12px; }
+  .ts-headline { font-size: 18px; line-height: 24px; }
+}
