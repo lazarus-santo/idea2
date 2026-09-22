@@ -161,12 +161,18 @@ export async function fetchOgImage(url: string): Promise<string | null> {
 // large candidate list produces an index array that gets cut off mid-array,
 // the closing-bracket regex then matches nothing, and the batch quietly
 // resolves to zero relevant articles with no error surfaced anywhere.
+//
+// `judged` holds every index in a batch that came back parseable. An index
+// that is judged but not relevant is a real "no" and is remembered in
+// readings_rejected; one from a failed batch is in neither set and is simply
+// tried again next run.
 async function checkRelevance(
   articles: Array<{ title: string; description: string | null }>,
   errors: AgentRunError[] = []
-): Promise<Set<number>> {
+): Promise<{ relevant: Set<number>; judged: Set<number> }> {
   const relevant = new Set<number>()
-  if (articles.length === 0) return relevant
+  const judged = new Set<number>()
+  if (articles.length === 0) return { relevant, judged }
 
   for (let i = 0; i < articles.length; i += 25) {
     const batch = articles.slice(i, i + 25)
@@ -203,6 +209,7 @@ ${list}`,
         continue
       }
       for (const idx of JSON.parse(match[0]) as number[]) relevant.add(i + idx)
+      for (let j = 0; j < batch.length; j++) judged.add(i + j)
     } catch (err) {
       console.error('Relevance check failed:', err)
       errors.push({
@@ -213,7 +220,7 @@ ${list}`,
     }
   }
 
-  return relevant
+  return { relevant, judged }
 }
 
 // ─── Stage 3: per-article classification ─────────────────────────────────────
@@ -373,6 +380,9 @@ export interface CurationResult {
   written: number
   classified: number
   staleSkipped: number
+  alreadySaved: number
+  rejectedSkipped: number
+  rejectionsRecorded: number
   candidatesConsidered: number
   byCategory: Record<ReadingCategory, number>
   byRiverGroup: Record<RiverGroup, number>
@@ -412,6 +422,58 @@ function isNycIrrelevantRoundup(
   return true
 }
 
+// ─── Already-seen lookups ────────────────────────────────────────────────────
+//
+// Agent 3 used to load every saved article_url and check feed links against
+// that set. Supabase returns at most 1,000 rows per request, so past 1,000
+// readings the set was silently incomplete — and readings are kept forever now.
+// Instead, only this run's feed links are looked up, a slice at a time: the
+// links travel in the request URL, and 50 keeps it well under length limits.
+const URL_LOOKUP_CHUNK = 50
+
+async function findKnownUrls(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  table: 'readings' | 'readings_rejected',
+  urls: string[]
+): Promise<Set<string>> {
+  const known = new Set<string>()
+  for (let i = 0; i < urls.length; i += URL_LOOKUP_CHUNK) {
+    const chunk = urls.slice(i, i + URL_LOOKUP_CHUNK)
+    const { data, error } = await db.from(table).select('article_url').in('article_url', chunk)
+    // A failed lookup must not read as "nothing saved": that would send every
+    // article in the feeds to Haiku again. The caller decides what it costs.
+    if (error) throw new Error(`${table} lookup failed: ${error.message}`)
+    for (const row of data ?? []) known.add(row.article_url as string)
+  }
+  return known
+}
+
+interface RejectionRow {
+  article_url: string
+  publication_id: string
+  headline: string
+  reason: 'not_relevant' | 'nyc_roundup'
+}
+
+// Remember articles a check actually ruled against (migration_v69), so the next
+// run skips them instead of paying Haiku to turn them down again. Failing to
+// write is a run error, never a failed run: the readings are already saved.
+async function recordRejections(
+  db: ReturnType<typeof getSupabaseAdmin>,
+  rows: RejectionRow[],
+  errors: AgentRunError[]
+): Promise<number> {
+  if (rows.length === 0) return 0
+  const { error } = await db
+    .from('readings_rejected')
+    .upsert(rows, { onConflict: 'article_url', ignoreDuplicates: true })
+  if (error) {
+    errors.push({ item: `(${rows.length} rejected article(s))`, step: 'upsert', message: error.message })
+    return 0
+  }
+  return rows.length
+}
+
 export async function curateReadings(
   tierFilter: 't1' | 'non-t1' = 'non-t1',
   errors: AgentRunError[] = []
@@ -437,17 +499,16 @@ export async function curateReadings(
     console.log(`Agent 3 [${tierFilter}]: no active publications with RSS URLs`)
     return {
       written: 0, classified: 0, candidatesConsidered: 0, staleSkipped: 0,
+      alreadySaved: 0, rejectedSkipped: 0, rejectionsRecorded: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
     }
   }
 
-  const { data: existingRows } = await db.from('readings').select('article_url')
-  const existingUrls = new Set((existingRows ?? []).map((r) => r.article_url as string))
-
-  const candidates: Array<{ pubId: string; pubTier: string; item: RssItem }> = []
-  let staleSkipped = 0
+  // Every keyword-matching item across all feeds, one entry per link — the same
+  // article in two feeds is only considered once.
+  const feedItems = new Map<string, { pubId: string; pubTier: string; item: RssItem }>()
 
   for (const pub of publications) {
     try {
@@ -464,10 +525,9 @@ export async function curateReadings(
       const items = parseRss(xml, pub.rss_url as string)
 
       for (const item of items) {
-        if (existingUrls.has(item.link)) continue
+        if (feedItems.has(item.link)) continue
         if (!passesKeywordFilter(item.title, item.description)) continue
-        if (isOutsideRetention(item.pubDate)) { staleSkipped++; continue }
-        candidates.push({ pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
+        feedItems.set(item.link, { pubId: pub.id as string, pubTier: (pub.tier as string) ?? 'unknown', item })
       }
     } catch (err) {
       console.error(`RSS error for ${pub.name}:`, err)
@@ -479,11 +539,40 @@ export async function curateReadings(
     }
   }
 
+  const feedLinks = [...feedItems.keys()]
+  const existingUrls = await findKnownUrls(db, 'readings', feedLinks)
+  // A missing or unreadable rejection list costs money, not correctness: every
+  // rejection is re-checked, as before migration_v69. So it is a run error, not
+  // a failed run.
+  let rejectedUrls = new Set<string>()
+  try {
+    rejectedUrls = await findKnownUrls(db, 'readings_rejected', feedLinks)
+  } catch (err) {
+    errors.push({
+      item: '(rejected-articles lookup)',
+      step: 'fetch',
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
+
+  const candidates: Array<{ pubId: string; pubTier: string; item: RssItem }> = []
+  let staleSkipped = 0
+  let alreadySaved = 0
+  let rejectedSkipped = 0
+  for (const [link, entry] of feedItems) {
+    if (existingUrls.has(link)) { alreadySaved++; continue }
+    if (rejectedUrls.has(link)) { rejectedSkipped++; continue }
+    if (isOutsideRetention(entry.item.pubDate)) { staleSkipped++; continue }
+    candidates.push(entry)
+  }
+
+  console.log(`Agent 3 [${tierFilter}]: ${alreadySaved} already saved, ${rejectedSkipped} already turned down`)
   console.log(`Agent 3 [${tierFilter}]: ${candidates.length} candidate(s) across ${publications.length} feed(s); ${staleSkipped} skipped as older than ${RETENTION_DAYS} days`)
 
   if (candidates.length === 0) {
     return {
       written: 0, classified: 0, candidatesConsidered: 0, staleSkipped,
+      alreadySaved, rejectedSkipped, rejectionsRecorded: 0,
       byCategory: emptyCategoryBreakdown(), byRiverGroup: emptyRiverGroupBreakdown(),
       storyGrouping: null, majorArtistArticles: 0, significantAnnouncements: 0, nycRoundupsExcluded: 0,
       errors,
@@ -491,12 +580,16 @@ export async function curateReadings(
   }
 
   // Stage 2 — relevance check
-  const relevantIndices = await checkRelevance(
+  const { relevant: relevantIndices, judged: judgedIndices } = await checkRelevance(
     candidates.map((c) => ({ title: c.item.title, description: c.item.description })),
     errors
   )
   const approved = candidates.filter((_, i) => relevantIndices.has(i))
   console.log(`Agent 3 [${tierFilter}]: ${approved.length} article(s) passed relevance check`)
+
+  const rejections: RejectionRow[] = candidates
+    .filter((_, i) => judgedIndices.has(i) && !relevantIndices.has(i))
+    .map((c) => ({ article_url: c.item.link, publication_id: c.pubId, headline: c.item.title, reason: 'not_relevant' }))
 
   // Stage 3 — classification
   const classifications = await classifyArticles(
@@ -525,6 +618,7 @@ export async function curateReadings(
     // with zero NYC angle never touches the readings table.
     if (cls && isNycIrrelevantRoundup(cls.category, cls.nyc_relevance_score, articleText, institutionNames)) {
       nycRoundupsExcluded++
+      rejections.push({ article_url: item.link, publication_id: pubId, headline: item.title, reason: 'nyc_roundup' })
       continue
     }
 
@@ -570,8 +664,9 @@ export async function curateReadings(
       if (cls.major_artist) majorArtistArticles++
       if (cls.significant_announcement) significantAnnouncements++
     }
-    existingUrls.add(item.link)
   }
+
+  const rejectionsRecorded = await recordRejections(db, rejections, errors)
 
   // Nothing is deleted here any more. Readings are kept indefinitely: the river
   // shows the last 7 days and ignores the rest, but anything that references a
@@ -599,6 +694,7 @@ export async function curateReadings(
   console.log(`Agent 3 [${tierFilter}] done — written: ${written}, classified: ${classified}, grouped: ${storyGrouping?.checked ?? 0}, nycRoundupsExcluded: ${nycRoundupsExcluded}`)
   return {
     written, classified, candidatesConsidered: candidates.length, staleSkipped,
+    alreadySaved, rejectedSkipped, rejectionsRecorded,
     byCategory, byRiverGroup, storyGrouping, majorArtistArticles, significantAnnouncements, nycRoundupsExcluded,
     errors,
   }
@@ -623,6 +719,9 @@ export async function runAgent3(tierFilter: 't1' | 'non-t1'): Promise<AgentRunRe
       summary: {
         classified: curation.classified,
         stale_skipped: curation.staleSkipped,
+        already_saved: curation.alreadySaved,
+        rejected_skipped: curation.rejectedSkipped,
+        rejections_recorded: curation.rejectionsRecorded,
         by_category: curation.byCategory,
         by_river_group: curation.byRiverGroup,
         story_grouping: curation.storyGrouping && {
