@@ -17,7 +17,11 @@ import {
   createCrawl,
   deleteCrawl,
   renameCrawl,
-  saveCrawlStops,
+  saveCrawlRoute,
+  completeCrawl,
+  recreateCrawl,
+  setCrawlLiked,
+  setCrawlSaved,
   // Aliased: `setCrawlStatus` is also this component's state setter, and the
   // two would silently shadow each other.
   setCrawlStatus as writeCrawlStatus,
@@ -26,7 +30,9 @@ import {
   CRAWL_MAX_STOPS,
   type CrawlRoute,
   type CrawlStatus,
-  type CrawlStopDetail,
+  type CrawlView,
+  type EditableCrawlStatus,
+  type TravelMode,
 } from '@/lib/crawl-types'
 
 // ── Holiday detection ──────────────────────────────────────────────────────────
@@ -380,6 +386,11 @@ function TimePicker({ value, onChange, label }: { value: string; onChange: (v: s
   )
 }
 
+/** "Sep 20, 2026" — when a crawl was completed. */
+function formatCompletedDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 const MAPBOX_STYLE = 'mapbox://styles/santolazarus/cmq35s95r002h01qlhnj88ivd'
@@ -427,7 +438,8 @@ export default function StandaloneMap() {
   const searchParams = useSearchParams()
   const deepLinkId = searchParams.get('add')
   /**
-   * ?crawl=<id> — a saved crawl, opened from its owner's profile.
+   * ?crawl=<id> — a saved crawl, opened from a profile. Your own opens
+   * editable; somebody else's COMPLETED crawl opens read-only (Phase 2).
    *
    * A query parameter rather than a route of its own, because this IS the
    * builder now: opening a saved crawl and starting a new one are the same
@@ -480,6 +492,21 @@ export default function StandaloneMap() {
   const [crawlError, setCrawlError] = useState<string | null>(null)
   const [crawlNotice, setCrawlNotice] = useState<string | null>(null)
   const [crawlLoading, setCrawlLoading] = useState(Boolean(crawlParam))
+  /** The leg modes as the database last accepted them, for the unsaved marker. */
+  const [savedLegModes, setSavedLegModes] = useState<TravelMode[]>([])
+
+  // ── Phase 2: completed crawls and other people's ───────────────────────────
+  //
+  // `crawlOwned` is false only while viewing somebody else's crawl, which the
+  // server only ever hands over once it is completed. It picks the controls;
+  // it grants nothing — every write is refused by the database for a
+  // non-owner whatever this says.
+  const [crawlOwned, setCrawlOwned] = useState(true)
+  const [crawlOwner, setCrawlOwner] = useState<{ username: string | null; displayName: string | null } | null>(null)
+  const [crawlCompletedAt, setCrawlCompletedAt] = useState<string | null>(null)
+  const [likeCount, setLikeCount] = useState<number | null>(null)
+  const [liked, setLiked] = useState(false)
+  const [savedByMe, setSavedByMe] = useState(false)
   /** Null until the session is known, then the signed-in id or null. */
   const [userId, setUserId] = useState<string | null>(null)
   const [sessionKnown, setSessionKnown] = useState(false)
@@ -515,7 +542,20 @@ export default function StandaloneMap() {
   const crawlMarkersRef = useRef<mapboxgl.Marker[]>([])
   const activePopupRef = useRef<mapboxgl.Popup | null>(null)
 
+  /**
+   * True while the itinerary holds a COMPLETED crawl — yours or somebody
+   * else's. Its route is a fixed record (set_crawl_route() refuses it), so
+   * adding a stop from a pin is stopped here rather than letting somebody
+   * build up changes that could never be saved. A ref, because the pin popups
+   * are built once per marker pass and read it when clicked.
+   */
+  const routeLockedRef = useRef(false)
+
   const addToItineraryRef = useRef((ex: MapExhibition) => {
+    if (routeLockedRef.current) {
+      setCrawlNotice('This crawl is completed, so its stops are fixed. Recreate it to make an editable copy.')
+      return
+    }
     setItinerary(prev =>
       prev.some(s => s.exhibitionId === ex.id)
         ? prev
@@ -607,7 +647,7 @@ export default function StandaloneMap() {
     // would say nothing new and would cost a second render pass.
     fetch(`/api/crawls/${crawlParam}/stops`)
       .then(r => (r.ok ? r.json() : Promise.reject(new Error('not_found'))))
-      .then((stops: CrawlStopDetail[]) => {
+      .then(({ crawl, stops }: CrawlView) => {
         if (cancelled) return
         const byId = new Map(exhibitions.map(e => [e.id, e]))
         setItinerary(
@@ -634,13 +674,30 @@ export default function StandaloneMap() {
           })
         )
         setSavedStopIds(stops.map(s => s.exhibition_id))
+        // arrive_by is the leg INTO a stop; legModes[i] is the leg OUT of stop
+        // i. So the modes are every stop's arrive_by but the first's. Set in
+        // the same pass as the itinerary, so the length-sync effect finds them
+        // already the right length and leaves them alone.
+        const modes = stops.slice(1).map(s => s.arrive_by ?? 'walking')
+        setLegModes(modes)
+        setSavedLegModes(modes)
         setCrawlId(crawlParam)
+        setCrawlTitle(crawl.title)
+        setSavedCrawlTitle(crawl.title)
+        setCrawlStatus(crawl.status)
+        setCrawlOwned(crawl.is_owner)
+        setCrawlOwner({ username: crawl.owner_username, displayName: crawl.owner_display_name })
+        setCrawlCompletedAt(crawl.completed_at)
+        setLikeCount(crawl.like_count)
+        setLiked(crawl.liked)
+        setSavedByMe(crawl.saved)
         setCrawlLoading(false)
       })
       .catch(() => {
         if (cancelled) return
-        // "No such crawl" and "not yours" arrive identically from the server,
-        // on purpose, and are reported identically here.
+        // "No such crawl", "somebody's draft" and "a profile you may not see"
+        // arrive identically from the server, on purpose, and are reported
+        // identically here.
         setCrawlError('That crawl could not be opened.')
         setCrawlLoading(false)
       })
@@ -648,29 +705,13 @@ export default function StandaloneMap() {
     return () => { cancelled = true }
   }, [crawlParam, exhibitions])
 
-  // The crawl's own title, fetched separately because the stops endpoint
-  // answers about stops. Read straight from PostgREST under RLS: a crawl row is
-  // three plain columns and its owner has a SELECT policy on them, so there is
-  // nothing here an API route would add but a hop.
-  useEffect(() => {
-    if (!crawlParam || !userId) return
-    let cancelled = false
+  // The crawl's title, status and owner arrive with its stops (CrawlView), so
+  // there is no second read for them — and none that would need a session: a
+  // completed crawl on a public profile opens for signed-out visitors too.
 
-    getSupabaseBrowser()
-      .from('crawls')
-      .select('title, status')
-      .eq('id', crawlParam)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (cancelled || !data) return
-        const row = data as { title: string; status: CrawlStatus }
-        setCrawlTitle(row.title)
-        setSavedCrawlTitle(row.title)
-        setCrawlStatus(row.status)
-      })
-
-    return () => { cancelled = true }
-  }, [crawlParam, userId])
+  // A completed crawl's route is frozen; see routeLockedRef.
+  const routeLocked = !!crawlId && crawlStatus === 'completed'
+  useEffect(() => { routeLockedRef.current = routeLocked }, [routeLocked])
 
   useEffect(() => {
     if (!mapContainerRef.current) return
@@ -1157,9 +1198,18 @@ export default function StandaloneMap() {
 
   const stopIds = useMemo(() => itinerary.map(s => s.exhibitionId), [itinerary])
 
+  // Leg modes count as a change since v67 saves them. legModes can briefly be
+  // longer or shorter than the itinerary needs while the length-sync effect
+  // catches up, so it is compared at the length the route actually has.
+  const currentLegModes = useMemo(
+    () => Array.from({ length: Math.max(0, itinerary.length - 1) }, (_, i) => legModes[i] ?? 'walking'),
+    [itinerary.length, legModes]
+  )
+
   const crawlDirty =
     stopIds.length !== savedStopIds.length ||
-    stopIds.some((id, i) => id !== savedStopIds[i])
+    stopIds.some((id, i) => id !== savedStopIds[i]) ||
+    currentLegModes.some((m, i) => m !== savedLegModes[i])
 
   /**
    * Save the itinerary's ORDER as a crawl, creating one on the first save.
@@ -1195,7 +1245,17 @@ export default function StandaloneMap() {
       setSavedCrawlTitle(title)
     }
 
-    const { error } = await saveCrawlStops(supabase, id, stopIds)
+    // Each stop carries the mode of the leg INTO it: stop i+1 arrives by
+    // legModes[i]. The first stop's is ignored by the database.
+    const modes = currentLegModes
+    const { error } = await saveCrawlRoute(
+      supabase,
+      id,
+      stopIds.map((exhibition_id, i) => ({
+        exhibition_id,
+        arrive_by: i === 0 ? 'walking' : modes[i - 1],
+      }))
+    )
     setCrawlBusy(false)
 
     if (error) {
@@ -1207,6 +1267,7 @@ export default function StandaloneMap() {
     }
 
     setSavedStopIds(stopIds)
+    setSavedLegModes(modes)
     setCrawlNotice('Saved.')
   }
 
@@ -1231,7 +1292,8 @@ export default function StandaloneMap() {
   /** Draft ↔ planned. Neither changes who may see it — both are owner-only. */
   async function toggleCrawlStatus() {
     if (!crawlId) return
-    const next: CrawlStatus = crawlStatus === 'draft' ? 'planned' : 'draft'
+    if (crawlStatus === 'completed') return
+    const next: EditableCrawlStatus = crawlStatus === 'draft' ? 'planned' : 'draft'
     setCrawlBusy(true)
     setCrawlError(null)
     const { error } = await writeCrawlStatus(getSupabaseBrowser(), crawlId, next)
@@ -1254,10 +1316,104 @@ export default function StandaloneMap() {
     // the map as a side effect would take it from them.
     setCrawlId(null)
     setSavedStopIds([])
+    setSavedLegModes([])
+    setCrawlCompletedAt(null)
+    setLikeCount(null)
     setCrawlTitle('')
     setSavedCrawlTitle('')
     setCrawlStatus('draft')
     setCrawlNotice('Crawl deleted. These stops are still here.')
+  }
+
+  /**
+   * Mark this crawl completed — which also logs every stop as seen.
+   *
+   * Only offered on a saved crawl with no unsaved changes: completing freezes
+   * the route AS SAVED, and a person looking at an edited list on screen would
+   * reasonably believe that was what they were completing.
+   *
+   * It asks first, and says what will happen, because none of it can be
+   * undone from here: the route stops being editable, becomes visible to
+   * people who can see the profile, and the shows land in the log.
+   */
+  async function markCompleted() {
+    if (!crawlId || crawlDirty || crawlStatus === 'completed') return
+    const n = itinerary.length
+    const ok = window.confirm(
+      `Mark this crawl completed?\n\n` +
+      `• ${n === 1 ? 'Its show' : `All ${n} shows`} will be logged as seen ` +
+      `(anything you've already logged as seen stays exactly as it is).\n` +
+      `• The route becomes fixed — no more adding, removing or reordering.\n` +
+      `• It becomes visible to anyone who can see your profile.`
+    )
+    if (!ok) return
+
+    setCrawlBusy(true)
+    setCrawlError(null)
+    setCrawlNotice(null)
+    const { result, error } = await completeCrawl(getSupabaseBrowser(), crawlId)
+    setCrawlBusy(false)
+    if (error || !result) { setCrawlError(error?.message ?? 'Could not complete that crawl.'); return }
+
+    setCrawlStatus('completed')
+    setCrawlCompletedAt(new Date().toISOString())
+    setLikeCount(0)
+
+    const newlySeen = result.logged + result.upgraded
+    const parts = [
+      newlySeen > 0
+        ? `${newlySeen} show${newlySeen === 1 ? '' : 's'} marked as seen`
+        : 'Nothing new to log',
+    ]
+    if (result.unchanged > 0) parts.push(`${result.unchanged} already logged`)
+    if (result.skipped > 0) parts.push(`${result.skipped} no longer listed`)
+    setCrawlNotice(`Completed — ${parts.join(', ')}.`)
+  }
+
+  /**
+   * Copy this completed crawl into a new draft of your own and open it.
+   *
+   * A full navigation rather than a client-side one: every piece of crawl
+   * state on this page belongs to the crawl being viewed, and loading the new
+   * one fresh is simpler to trust than resetting each of them by hand.
+   */
+  async function recreateThisCrawl() {
+    if (!crawlId || !userId) return
+    setCrawlBusy(true)
+    setCrawlError(null)
+    const { id, error } = await recreateCrawl(getSupabaseBrowser(), crawlId)
+    if (error || !id) {
+      setCrawlBusy(false)
+      setCrawlError(error?.message ?? 'Could not recreate that crawl.')
+      return
+    }
+    window.location.assign(`/map?crawl=${id}`)
+  }
+
+  /** Like / unlike. Optimistic, and put back if the database says no. */
+  async function toggleLike() {
+    if (!crawlId || !userId || crawlOwned) return
+    const next = !liked
+    setLiked(next)
+    setLikeCount(c => (c ?? 0) + (next ? 1 : -1))
+    const { error } = await setCrawlLiked(getSupabaseBrowser(), userId, crawlId, next)
+    if (error) {
+      setLiked(!next)
+      setLikeCount(c => (c ?? 0) + (next ? -1 : 1))
+      setCrawlError(error.message)
+    }
+  }
+
+  /** "Want to do this" — a bookmark, nothing copied. */
+  async function toggleSave() {
+    if (!crawlId || !userId || crawlOwned) return
+    const next = !savedByMe
+    setSavedByMe(next)
+    const { error } = await setCrawlSaved(getSupabaseBrowser(), userId, crawlId, next)
+    if (error) {
+      setSavedByMe(!next)
+      setCrawlError(error.message)
+    }
   }
 
   // ── Derived state ────────────────────────────────────────────────────────────
@@ -1400,7 +1556,7 @@ export default function StandaloneMap() {
               <p className="mp-empty-title">Your itinerary</p>
               <p className="mp-empty-hint">
                 {crawlLoading
-                  ? 'Loading your crawl…'
+                  ? 'Loading crawl…'
                   : 'add an itinerary stop by clicking onto a pin and adding it to the itinerary'}
               </p>
               {/* Two stops is where a crawl starts being a walk rather than a
@@ -1418,13 +1574,13 @@ export default function StandaloneMap() {
                   <div key={stop.exhibitionId}>
                     <div
                       className={`mp-stop${dragOverIdx === i ? ' mp-stop--drag-over' : ''}`}
-                      draggable
-                      onDragStart={() => handleDragStart(i)}
-                      onDragOver={e => handleDragOver(e, i)}
-                      onDrop={e => handleDrop(e, i)}
-                      onDragEnd={handleDragEnd}
+                      draggable={!routeLocked}
+                      onDragStart={routeLocked ? undefined : () => handleDragStart(i)}
+                      onDragOver={routeLocked ? undefined : e => handleDragOver(e, i)}
+                      onDrop={routeLocked ? undefined : e => handleDrop(e, i)}
+                      onDragEnd={routeLocked ? undefined : handleDragEnd}
                     >
-                      <div className="mp-stop-drag" aria-hidden="true">⠿</div>
+                      {!routeLocked && <div className="mp-stop-drag" aria-hidden="true">⠿</div>}
                       <div className="mp-stop-main">
                         <span className="mp-stop-num">{i + 1}</span>
                         <div className="mp-stop-text">
@@ -1437,6 +1593,11 @@ export default function StandaloneMap() {
                           </Link>
                         </div>
                       </div>
+                      {/* A completed route is a fixed record: no reorder, no
+                          removal, and no minutes-at-venue either — the
+                          timings are a planning aid for a route you can
+                          still change. */}
+                      {!routeLocked && (
                       <div className="mp-stop-controls">
                         <div className="mp-stop-arrows">
                           <button
@@ -1467,6 +1628,7 @@ export default function StandaloneMap() {
                         </div>
                         <button className="mp-stop-remove" onClick={() => removeStop(i)} aria-label="Remove stop">×</button>
                       </div>
+                      )}
                     </div>
 
                     {i < itinerary.length - 1 && (
@@ -1479,6 +1641,7 @@ export default function StandaloneMap() {
                               type="button"
                               className={`mp-leg-mode-btn${(legModes[i] ?? 'walking') === 'walking' ? ' mp-leg-mode-btn--active' : ''}`}
                               onClick={() => setLegMode(i, 'walking')}
+                              disabled={routeLocked}
                               aria-label="Walk"
                               title={legs[i].walkingMinutes != null ? `Walk ${legs[i].walkingMinutes}m` : 'Walking'}
                             >
@@ -1494,6 +1657,7 @@ export default function StandaloneMap() {
                               type="button"
                               className={`mp-leg-mode-btn${legModes[i] === 'driving' ? ' mp-leg-mode-btn--active' : ''}`}
                               onClick={() => setLegMode(i, 'driving')}
+                              disabled={routeLocked}
                               aria-label="Drive"
                               title={legs[i].drivingMinutes != null ? `Drive ${legs[i].drivingMinutes}m` : 'Driving'}
                             >
@@ -1528,21 +1692,90 @@ export default function StandaloneMap() {
                     {crawlId ? 'Crawl' : 'Save as a crawl'}
                   </h2>
                   <span className="mp-crawl-count">
-                    {itinerary.length} of {CRAWL_MAX_STOPS}
+                    {routeLocked
+                      ? `Completed${crawlCompletedAt ? ` ${formatCompletedDate(crawlCompletedAt)}` : ''}`
+                      : `${itinerary.length} of ${CRAWL_MAX_STOPS}`}
                   </span>
                 </div>
 
-                {/* The walking line and the labels are already on the map for
-                    everyone; only KEEPING it needs an account. */}
-                {!sessionKnown ? (
+                {!crawlOwned ? (
+                  // ── Somebody else's completed crawl: read-only ──────────
+                  // The route above is drawn by the same code as the builder;
+                  // only the controls differ. Like, save and recreate need an
+                  // account; looking does not.
+                  <>
+                    <p className="mp-crawl-name-static">{crawlTitle}</p>
+                    {crawlOwner?.username && (
+                      <p className="mp-crawl-by">
+                        by{' '}
+                        <Link href={`/u/${crawlOwner.username}`}>
+                          {crawlOwner.displayName || `@${crawlOwner.username}`}
+                        </Link>
+                      </p>
+                    )}
+
+                    {!sessionKnown ? (
+                      <p className="mp-crawl-hint">&nbsp;</p>
+                    ) : userId ? (
+                      <div className="mp-crawl-actions">
+                        <button
+                          type="button"
+                          className={`mp-crawl-toggle${liked ? ' mp-crawl-toggle--on' : ''}`}
+                          aria-pressed={liked}
+                          onClick={toggleLike}
+                        >
+                          {liked ? '♥ Liked' : '♡ Like'}
+                          {likeCount ? ` · ${likeCount}` : ''}
+                        </button>
+                        <button
+                          type="button"
+                          className={`mp-crawl-toggle${savedByMe ? ' mp-crawl-toggle--on' : ''}`}
+                          aria-pressed={savedByMe}
+                          onClick={toggleSave}
+                        >
+                          {savedByMe ? '✓ Want to do' : '+ Want to do this'}
+                        </button>
+                        <button
+                          type="button"
+                          className="mp-crawl-save"
+                          onClick={recreateThisCrawl}
+                          disabled={crawlBusy}
+                        >
+                          {crawlBusy ? 'Copying…' : 'Recreate'}
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="mp-crawl-hint">
+                        {likeCount ? `${likeCount} like${likeCount === 1 ? '' : 's'}. ` : ''}
+                        <Link href={`/login?next=${encodeURIComponent(`/map?crawl=${crawlId}`)}`}>Sign in</Link>{' '}
+                        to like, save or recreate this crawl.
+                      </p>
+                    )}
+
+                    <p className="mp-crawl-hint">
+                      This route is a completed crawl, so it can&rsquo;t be edited.
+                      Recreate copies its stops into a new crawl of your own.
+                      {crawlNotice ? ` ${crawlNotice}` : ''}
+                      {routeLoading
+                        ? ' Working out the route…'
+                        // Said plainly rather than hidden, and naming the mode
+                        // that failed — see fallbackNotice.
+                        : fallbackNotice ? ` ${fallbackNotice}` : ''}
+                    </p>
+                  </>
+                ) : !sessionKnown ? (
                   <p className="mp-crawl-hint">&nbsp;</p>
                 ) : !userId ? (
+                  // The walking line and the labels are already on the map for
+                  // everyone; only KEEPING it needs an account.
                   <p className="mp-crawl-hint">
                     <Link href="/login?next=%2Fmap">Sign in</Link> to save this
                     walk as a crawl you can come back to.
                   </p>
                 ) : (
                   <>
+                    {/* Renaming stays open after completion — a name is not
+                        part of the route. */}
                     <input
                       className="mp-crawl-name"
                       value={crawlTitle}
@@ -1558,51 +1791,92 @@ export default function StandaloneMap() {
                       }}
                     />
 
-                    <div className="mp-crawl-actions">
-                      <button
-                        type="button"
-                        className="mp-crawl-save"
-                        onClick={saveAsCrawl}
-                        disabled={crawlBusy || itinerary.length === 0 || (!!crawlId && !crawlDirty)}
-                      >
-                        {crawlBusy
-                          ? 'Saving…'
-                          : !crawlId
-                            ? 'Save as crawl'
-                            : crawlDirty ? 'Save changes' : 'Saved'}
-                      </button>
+                    {routeLocked ? (
+                      // ── Your own completed crawl ───────────────────────────
+                      <div className="mp-crawl-actions">
+                        <span className="mp-crawl-note">
+                          {likeCount ?? 0} like{likeCount === 1 ? '' : 's'}
+                        </span>
+                        <button
+                          type="button"
+                          className="mp-crawl-status"
+                          onClick={recreateThisCrawl}
+                          disabled={crawlBusy}
+                        >
+                          Recreate as new
+                        </button>
+                        <button
+                          type="button"
+                          className="mp-crawl-delete"
+                          onClick={deleteThisCrawl}
+                          disabled={crawlBusy}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="mp-crawl-actions">
+                        <button
+                          type="button"
+                          className="mp-crawl-save"
+                          onClick={saveAsCrawl}
+                          disabled={crawlBusy || itinerary.length === 0 || (!!crawlId && !crawlDirty)}
+                        >
+                          {crawlBusy
+                            ? 'Saving…'
+                            : !crawlId
+                              ? 'Save as crawl'
+                              : crawlDirty ? 'Save changes' : 'Saved'}
+                        </button>
 
-                      {crawlId && (
-                        <>
-                          <button
-                            type="button"
-                            className="mp-crawl-status"
-                            onClick={toggleCrawlStatus}
-                            disabled={crawlBusy}
-                          >
-                            {crawlStatus === 'draft' ? 'Draft' : 'Planned'}
-                          </button>
-                          <button
-                            type="button"
-                            className="mp-crawl-delete"
-                            onClick={deleteThisCrawl}
-                            disabled={crawlBusy}
-                          >
-                            Delete
-                          </button>
-                        </>
-                      )}
+                        {crawlId && (
+                          <>
+                            <button
+                              type="button"
+                              className="mp-crawl-status"
+                              onClick={toggleCrawlStatus}
+                              disabled={crawlBusy}
+                            >
+                              {crawlStatus === 'draft' ? 'Draft' : 'Planned'}
+                            </button>
+                            {/* Completing freezes the route AS SAVED, so it
+                                waits for unsaved changes to be saved. */}
+                            <button
+                              type="button"
+                              className="mp-crawl-status"
+                              onClick={markCompleted}
+                              disabled={crawlBusy || crawlDirty || itinerary.length === 0}
+                              title={crawlDirty ? 'Save your changes first' : undefined}
+                            >
+                              Mark completed
+                            </button>
+                            <button
+                              type="button"
+                              className="mp-crawl-delete"
+                              onClick={deleteThisCrawl}
+                              disabled={crawlBusy}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
 
-                      {crawlId && crawlDirty && !crawlBusy && (
-                        <span className="mp-crawl-note">Unsaved changes</span>
-                      )}
-                      {!crawlDirty && crawlNotice && (
-                        <span className="mp-crawl-note">{crawlNotice}</span>
-                      )}
-                    </div>
+                        {crawlId && crawlDirty && !crawlBusy && (
+                          <span className="mp-crawl-note">Unsaved changes</span>
+                        )}
+                      </div>
+                    )}
+
+                    {!crawlDirty && crawlNotice && (
+                      <p className="mp-crawl-hint">{crawlNotice}</p>
+                    )}
 
                     <p className="mp-crawl-hint">
-                      Only you can see your crawls.
+                      {routeLocked
+                        ? 'Completed — anyone who can see your profile can see this crawl. The route is fixed.'
+                        : crawlId
+                          ? 'Only you can see this crawl until you mark it completed.'
+                          : 'Only you can see your crawls until you mark them completed.'}
                       {routeLoading
                         ? ' Working out the route…'
                         // Said plainly rather than hidden, and naming the mode

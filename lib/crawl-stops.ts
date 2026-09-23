@@ -2,11 +2,14 @@ import 'server-only'
 
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { getCurrentUser } from '@/lib/auth'
 import { resolveExhibitionLocation } from '@/lib/exhibition-location'
-import type { CrawlStopDetail } from '@/lib/crawl-types'
+import type { CrawlStatus, CrawlStopDetail, CrawlView, TravelMode } from '@/lib/crawl-types'
 
 /**
- * One crawl's stops, with everything needed to draw and label them.
+ * One crawl as this visitor may see it: the crawl, its owner, the visitor's
+ * own like and save, and its stops with everything needed to draw and label
+ * them.
  *
  * ── WHY THIS IS NOT A DATABASE FUNCTION ────────────────────────────────────
  *
@@ -31,12 +34,15 @@ import type { CrawlStopDetail } from '@/lib/crawl-types'
  *
  * ── THE TWO CLIENTS, AND WHICH ONE DECIDES ANYTHING ────────────────────────
  *
- * THE SESSION CLIENT answers "is this your crawl". Both reads that could leak
- * go through it, so migration_v66's policies are what refuse — there is no
- * ownership comparison written out in this file, because a hand-written one is
- * a second privacy model that can drift from the first.
+ * THE SESSION CLIENT answers "may you see this crawl". Every read that could
+ * leak goes through it, so migration_v66/v67's policies are what refuse — the
+ * owner always; anybody can_view_profile() lets through, for a COMPLETED crawl
+ * only. There is no visibility rule written out in this file, because a
+ * hand-written one is a second privacy model that can drift from the first.
+ * (`is_owner` below is compared by hand, but it only chooses which controls
+ * the page draws; it grants nothing.)
  *
- * THE ADMIN CLIENT is used for the exhibitions, and only after ownership is
+ * THE ADMIN CLIENT is used for the exhibitions, and only after visibility is
  * settled. What it reads is public: every field below is already on the show's
  * own page and on the map for signed-out visitors. It is the GRANT that is
  * missing for `authenticated`, not the secrecy.
@@ -48,15 +54,29 @@ import type { CrawlStopDetail } from '@/lib/crawl-types'
  * explanation and quietly turn a route somebody saved into a different route.
  * The builder draws them muted, says they have closed, and lets them be removed.
  */
-export async function getCrawlStopDetails(crawlId: string): Promise<CrawlStopDetail[] | null> {
-  const supabase = await getSupabaseServer()
+export async function getCrawlView(crawlId: string): Promise<CrawlView | null> {
+  // A malformed id would come back from PostgREST as a 22P02 error rather than
+  // an empty result. Answer it the same way as a missing crawl.
+  if (!/^[0-9a-f-]{36}$/i.test(crawlId)) return null
 
-  // Ownership, decided by RLS. "No such crawl" and "not yours" are the same
-  // answer on purpose: telling them apart would confirm that an id names a
-  // real crawl belonging to someone.
-  const { data: crawl, error: crawlError } = await supabase
+  const supabase = await getSupabaseServer()
+  const viewer = await getCurrentUser()
+
+  // Visibility, decided by RLS. "No such crawl", "somebody's draft" and "a
+  // profile you may not see" are the same answer on purpose: telling them
+  // apart would confirm that an id names a real crawl belonging to someone.
+  //
+  // The owner's profile is embedded under the same session. Anybody who can
+  // see a completed crawl can see its owner's profile — the crawl's policy IS
+  // can_view_profile() — so this cannot return a name the profile would hide.
+  //
+  // The embed NAMES its foreign key. crawl_likes and crawl_saves (v67) each
+  // join a crawl to a profile too, so PostgREST sees three routes from crawls
+  // to profiles and refuses a bare `profiles(...)` as ambiguous — which would
+  // make every crawl fail to open.
+  const { data: crawlRow, error: crawlError } = await supabase
     .from('crawls')
-    .select('id')
+    .select('id, user_id, title, status, completed_at, profiles!crawls_user_id_fkey(username, display_name)')
     .eq('id', crawlId)
     .maybeSingle()
 
@@ -64,13 +84,60 @@ export async function getCrawlStopDetails(crawlId: string): Promise<CrawlStopDet
     console.error('[crawl-stops] crawl lookup failed:', crawlError.message)
     return null
   }
-  if (!crawl) return null
+  if (!crawlRow) return null
 
-  // Also under the session: crawl_stops' select policy asks the same question
-  // of the same table, so this cannot return rows the check above would refuse.
+  const crawl = crawlRow as unknown as {
+    id: string
+    user_id: string
+    title: string
+    status: CrawlStatus
+    completed_at: string | null
+    profiles: { username: string | null; display_name: string | null } | null
+  }
+  const isOwner = viewer?.id === crawl.user_id
+  const completed = crawl.status === 'completed'
+
+  // The like count, and the viewer's own like and save. Only a completed crawl
+  // has any of them. The two first-person reads return the viewer's own rows
+  // and nothing else, whatever is asked (RLS); the count asks
+  // can_view_profile() itself.
+  let likeCount: number | null = null
+  let liked = false
+  let saved = false
+  if (completed) {
+    const [countRes, likeRes, saveRes] = await Promise.all([
+      supabase.rpc('crawl_like_counts', { p_crawl_ids: [crawl.id] }),
+      viewer && !isOwner
+        ? supabase.from('crawl_likes').select('crawl_id').eq('crawl_id', crawl.id).eq('user_id', viewer.id)
+        : Promise.resolve({ data: [], error: null }),
+      viewer && !isOwner
+        ? supabase.from('crawl_saves').select('crawl_id').eq('crawl_id', crawl.id).eq('user_id', viewer.id)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    if (countRes.error) console.error('[crawl-stops] like count failed:', countRes.error.message)
+    likeCount = ((countRes.data ?? []) as { like_count: number }[])[0]?.like_count ?? 0
+    liked = (likeRes.data ?? []).length > 0
+    saved = (saveRes.data ?? []).length > 0
+  }
+
+  const meta: CrawlView['crawl'] = {
+    id: crawl.id,
+    title: crawl.title,
+    status: crawl.status,
+    completed_at: crawl.completed_at,
+    is_owner: isOwner,
+    owner_username: crawl.profiles?.username ?? null,
+    owner_display_name: crawl.profiles?.display_name ?? null,
+    like_count: likeCount,
+    liked,
+    saved,
+  }
+
+  // Also under the session: crawl_stops' select policies ask the same question
+  // of the same crawl, so this cannot return rows the check above would refuse.
   const { data: stopRows, error: stopsError } = await supabase
     .from('crawl_stops')
-    .select('exhibition_id, position')
+    .select('exhibition_id, position, arrive_by')
     .eq('crawl_id', crawlId)
     .order('position', { ascending: true })
 
@@ -79,8 +146,12 @@ export async function getCrawlStopDetails(crawlId: string): Promise<CrawlStopDet
     return null
   }
 
-  const stops = (stopRows ?? []) as { exhibition_id: string; position: number }[]
-  if (stops.length === 0) return []
+  const stops = (stopRows ?? []) as {
+    exhibition_id: string
+    position: number
+    arrive_by: TravelMode | null
+  }[]
+  if (stops.length === 0) return { crawl: meta, stops: [] }
 
   const { data: shows, error: showsError } = await getSupabaseAdmin()
     .from('exhibitions')
@@ -120,7 +191,7 @@ export async function getCrawlStopDetails(crawlId: string): Promise<CrawlStopDet
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byId = new Map<string, any>(((shows ?? []) as any[]).map((s) => [s.id, s]))
 
-  return stops.map((stop) => {
+  const details: CrawlStopDetail[] = stops.map((stop) => {
     const show = byId.get(stop.exhibition_id)
 
     if (!show) {
@@ -134,6 +205,7 @@ export async function getCrawlStopDetails(crawlId: string): Promise<CrawlStopDet
         end_date: null,
         image_url: null,
         on_view: false,
+        arrive_by: stop.arrive_by,
       }
     }
 
@@ -153,6 +225,9 @@ export async function getCrawlStopDetails(crawlId: string): Promise<CrawlStopDet
       end_date: show.end_date ?? null,
       image_url: show.image_url ?? null,
       on_view: Boolean(show.is_ongoing) || !show.end_date || show.end_date >= today,
+      arrive_by: stop.arrive_by,
     }
   })
+
+  return { crawl: meta, stops: details }
 }

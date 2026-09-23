@@ -23,11 +23,11 @@ import RelationshipMenu from '@/components/account/RelationshipMenu'
 import ProfileLog from '@/components/account/ProfileLog'
 import ProfileReadingLog from '@/components/account/ProfileReadingLog'
 import ProfileTopFour from '@/components/account/ProfileTopFour'
-import ProfileCrawls from '@/components/account/ProfileCrawls'
+import ProfileCrawls, { ProfileSavedCrawls } from '@/components/account/ProfileCrawls'
 import { getProfileLog } from '@/lib/exhibition-logs'
 import { getProfileReadingLog } from '@/lib/reading-logs'
 import { getTopFourExhibitions, getTopFourContent } from '@/lib/top-four'
-import { getOwnCrawls } from '@/lib/crawls'
+import { getOwnCrawls, getProfileCrawls, getSavedCrawls } from '@/lib/crawls'
 import '@/app/account.css'
 
 interface Props {
@@ -169,12 +169,15 @@ export default async function ProfilePage({ params }: Props) {
   // whatever this page believes. They are NOT derived from the logs above —
   // that would be a second idea of what is in somebody's Top Four, kept in
   // step by hand.
-  // Crawls are fetched ONLY for your own profile, and getOwnCrawls() takes no
-  // id — it reads the caller's own rows under RLS and there is no version of it
-  // that can be pointed at somebody else. That is the whole privacy story for
-  // this section, which is why ProfileCrawls has no visitor branch: a visitor
-  // never reaches it, and the database would hand them nothing if they did.
-  const [counts, relationship, requests, muted, log, readingLog, topShows, topReads, crawls] =
+  // Crawls: your own profile gets every crawl you have (getOwnCrawls() reads
+  // the caller's own rows and takes no id); anybody else's gets that person's
+  // COMPLETED crawls through getProfileCrawls(), under the visitor's session,
+  // so migration_v67's policy — can_view_profile() — decides, the same gate as
+  // the logs. Fetched for a locked profile too, like the logs, and empty there
+  // because the database says so rather than because this page does.
+  //
+  // "Want to do" (saved crawls) is private, so only ever fetched for yourself.
+  const [counts, relationship, requests, muted, log, readingLog, topShows, topReads, crawls, savedCrawls] =
     await Promise.all([
       getFollowCounts(card.id),
       getFollowRelationship(viewer?.id ?? null, card.id),
@@ -184,7 +187,8 @@ export default async function ProfilePage({ params }: Props) {
       getProfileReadingLog(card.id),
       getTopFourExhibitions(card.id),
       getTopFourContent(card.id),
-      isOwnProfile ? getOwnCrawls() : Promise.resolve([]),
+      isOwnProfile ? getOwnCrawls() : getProfileCrawls(card.id),
+      isOwnProfile ? getSavedCrawls() : Promise.resolve([]),
     ])
 
   return (
@@ -296,13 +300,17 @@ export default async function ProfilePage({ params }: Props) {
               displayName={profileDisplayName(card)}
             />
 
-            {/* Last of the four, and only ever on your own profile. A crawl is
-                a plan rather than a record — the three sections above are an
-                account of what somebody has already seen and read, and this is
-                what they mean to do next, so it reads better after them than
-                among them. Phase 2, when crawls can be shared, is when it
-                becomes something a visitor sees at all. */}
-            {isOwnProfile && <ProfileCrawls crawls={crawls} />}
+            {/* Last, after the logs: the sections above are an account of what
+                somebody has seen and read, and crawls are routes — planned or
+                walked. Visitors see completed crawls only (see ProfileCrawls).
+                "Want to do" follows on your own profile: other people's routes
+                you bookmarked, kept apart from your own. */}
+            <ProfileCrawls
+              crawls={crawls}
+              isOwnProfile={isOwnProfile}
+              displayName={profileDisplayName(card)}
+            />
+            {isOwnProfile && <ProfileSavedCrawls saved={savedCrawls} />}
           </>
         )}
 

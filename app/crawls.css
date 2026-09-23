@@ -107,3 +107,8 @@
   color: #FFFCEC;
   background: #3432A8;
 }
+
+.pc-badge--completed {
+  color: #3432A8;
+  background: rgba(52, 50, 168, 0.1);
+}

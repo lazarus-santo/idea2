@@ -3573,6 +3573,59 @@ a.gp-address:hover { opacity: 0.5; text-decoration: underline; text-underline-of
   margin: 10px 0 0;
 }
 
+/* Phase 2 — somebody else's completed crawl, shown read-only. The name is text
+   rather than a disabled input, so it does not look like a control that
+   happens to be switched off. */
+.mp-crawl-name-static {
+  font-size: 16px;
+  font-weight: 600;
+  color: #000;
+  margin: 10px 0 0;
+}
+
+.mp-crawl-by {
+  font-size: 13px;
+  color: #6B665D;
+  margin: 2px 0 0;
+}
+
+.mp-crawl-by a { color: #3432A8; text-decoration: none; }
+.mp-crawl-by a:hover { text-decoration: underline; }
+
+/* Like and "want to do this": pill toggles, filled when on. Same outline pill
+   as the status button so the row reads as one set of controls. */
+.mp-crawl-toggle {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: transparent;
+  color: #45413A;
+  cursor: pointer;
+}
+
+.mp-crawl-toggle:hover { border-color: #3432A8; color: #3432A8; }
+
+.mp-crawl-toggle--on,
+.mp-crawl-toggle--on:hover {
+  border-color: #3432A8;
+  background: rgba(52, 50, 168, 0.08);
+  color: #3432A8;
+}
+
+.mp-leg-mode-btn:disabled { cursor: default; }
+/* On a completed route the mode is shown, not chosen, so hovering changes nothing. */
+.mp-leg-mode-btn:disabled:hover {
+  color: rgba(0, 0, 0, 0.3);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+.mp-leg-mode-btn--active:disabled:hover {
+  color: #3432A8;
+  border-color: #3432A8;
+}
+
 @media (max-width: 767px) {
   .mp-crawl-pin-label { max-width: 120px; }
 }

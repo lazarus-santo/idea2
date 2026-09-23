@@ -15,12 +15,13 @@
  * that differs from the Top Four, which looks structurally identical and is
  * making the opposite kind of claim.
  *
- * ── PHASE 1 ────────────────────────────────────────────────────────────────
+ * ── PHASE 2 (migration_v67) ────────────────────────────────────────────────
  *
- * Building and saving. There is no 'completed' status, no sharing, no like and
- * no connection to exhibition_logs; all of that is Phase 2. Where a type here
- * would obviously grow a field for it, the omission is noted rather than
- * stubbed, because a field nothing writes is a field somebody will later trust.
+ * A crawl can be COMPLETED — by complete_crawl() only, which also logs its
+ * shows as seen — and a completed crawl is readable by whoever may see its
+ * owner's profile. Its route is then frozen. Other people can like it, save it
+ * ("want to do this") and recreate it as a draft of their own. Each leg's
+ * walk/drive choice is now saved with the stops (arrive_by).
  */
 
 /**
@@ -36,16 +37,21 @@ export const CRAWL_MAX_STOPS = 25
 
 /**
  * draft = still being put together. planned = the owner considers it finished.
+ * completed = walked.
  *
- * Phase 2 adds 'completed'. It is absent from the union AND from the database
- * CHECK deliberately: a status the database accepts but nothing can set or act
- * on is a value that will eventually arrive from somewhere and mean nothing.
+ * Draft and planned are OWNER-ONLY. Completed is visible to whoever may see
+ * the owner's profile (can_view_profile()), and its stops can no longer change.
  *
- * NEITHER STATE AFFECTS WHO MAY SEE THE CRAWL in this phase. Both are
- * owner-only. 'planned' is the owner's note to themselves that they are done
- * fiddling, not a publishing step.
+ * 'completed' is never written by a status update — complete_crawl() is the
+ * only way there, because completing also logs the stops as seen, and
+ * migration_v67's crawls_completed_at_consistent CHECK refuses a direct write
+ * in either direction. So setCrawlStatus() in lib/crawl-writes.ts takes
+ * EditableCrawlStatus, not this.
  */
-export type CrawlStatus = 'draft' | 'planned'
+export type CrawlStatus = 'draft' | 'planned' | 'completed'
+
+/** The two states the owner may toggle between directly. */
+export type EditableCrawlStatus = Exclude<CrawlStatus, 'completed'>
 
 /** One crawl as its owner sees it in a list. */
 export interface Crawl {
@@ -53,9 +59,30 @@ export interface Crawl {
   title: string
   status: CrawlStatus
   created_at: string
-  /** Bumped by renames AND by stop changes — set_crawl_stops() touches the row. */
+  /** Bumped by renames AND by stop changes — set_crawl_route() touches the row. */
   updated_at: string
+  /** Set exactly when status is 'completed'. */
+  completed_at: string | null
   stop_count: number
+  /**
+   * Likes, from crawl_like_counts(). Null for a crawl that is not completed —
+   * only completed crawls can be liked, so there is no count to show.
+   */
+  like_count: number | null
+}
+
+/**
+ * A completed crawl somebody bookmarked ("want to do this"), as their own
+ * profile lists it. Carries the owner, because it is somebody else's.
+ */
+export interface SavedCrawl {
+  id: string
+  title: string
+  completed_at: string | null
+  stop_count: number
+  owner_username: string | null
+  owner_display_name: string | null
+  saved_at: string
 }
 
 /**
@@ -88,6 +115,39 @@ export interface CrawlStopDetail {
    * become a different route. The builder shows it and says so instead.
    */
   on_view: boolean
+  /**
+   * How you get to this stop from the one before. Null on stop 1 only.
+   * Saved since migration_v67; stops saved before it were backfilled to
+   * walking, which is what the map drew for them.
+   */
+  arrive_by: TravelMode | null
+}
+
+/**
+ * One crawl as a particular VIEWER is allowed to see it — what
+ * /api/crawls/[id]/stops answers with.
+ *
+ * `is_owner` decides between the editable builder and the read-only view.
+ * It is worked out on the server from the verified session, but it is a
+ * convenience for the UI and nothing more: every write is refused by the
+ * database for a non-owner whatever the page believes.
+ */
+export interface CrawlView {
+  crawl: {
+    id: string
+    title: string
+    status: CrawlStatus
+    completed_at: string | null
+    is_owner: boolean
+    owner_username: string | null
+    owner_display_name: string | null
+    /** Null unless completed. */
+    like_count: number | null
+    /** The viewer's own like and save. Always false signed out or for the owner. */
+    liked: boolean
+    saved: boolean
+  }
+  stops: CrawlStopDetail[]
 }
 
 /**

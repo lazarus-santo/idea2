@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
-import { getCrawlStopDetails } from '@/lib/crawl-stops'
+import { getCrawlView } from '@/lib/crawl-stops'
 
 /**
- * GET /api/crawls/[id]/stops — one crawl's stops, with what it takes to draw
- * and label them.
+ * GET /api/crawls/[id]/stops — one crawl as the caller may see it: the crawl
+ * (title, status, owner, like count, the caller's own like and save, whether
+ * the caller owns it) and its stops, with what it takes to draw and label them.
+ * See CrawlView in lib/crawl-types.ts.
  *
  * WHY A ROUTE RATHER THAN A SERVER COMPONENT PROP. /map is a client component
  * — it has to be, it owns a Mapbox instance — and it is a PUBLIC page that
@@ -22,12 +24,13 @@ import { getCrawlStopDetails } from '@/lib/crawl-stops'
  * it — which is the silent rewrite lib/crawl-stops.ts exists to prevent. This
  * route returns every stop, closed ones included, flagged with on_view.
  *
- * ALL AUTHORISATION IS INSIDE getCrawlStopDetails(), which reads the crawl
- * under the caller's own session so migration_v66's policies decide. There is
- * no ownership check written out here, because a second one could drift from
- * the first. null means "no such crawl, or not yours" — deliberately the same
- * answer, since telling them apart would confirm that an id names a real
- * crawl belonging to someone.
+ * ALL AUTHORISATION IS INSIDE getCrawlView(), which reads the crawl under the
+ * caller's own session so migration_v66/v67's policies decide: the owner, or —
+ * for a COMPLETED crawl — anybody can_view_profile() lets through, signed-out
+ * visitors included for a public profile. There is no check written out here,
+ * because a second one could drift from the first. null means "no such crawl,
+ * or not one you may see" — deliberately the same answer, since telling them
+ * apart would confirm that an id names a real crawl belonging to someone.
  */
 export async function GET(
   _request: Request,
@@ -35,8 +38,9 @@ export async function GET(
 ) {
   const { id } = await params
 
-  const stops = await getCrawlStopDetails(id)
-  if (!stops) return NextResponse.json({ error: 'not_found' }, { status: 404 })
+  const view = await getCrawlView(id)
+  if (!view) return NextResponse.json({ error: 'not_found' }, { status: 404 })
 
-  return NextResponse.json(stops)
+  // Per viewer — the answer depends on who is asking — so never cached.
+  return NextResponse.json(view, { headers: { 'Cache-Control': 'private, no-store' } })
 }
