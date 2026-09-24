@@ -2,7 +2,7 @@ import he from 'he'
 import { getSupabaseAdmin } from './supabase'
 import { startAgentRun, finishAgentRun, failAgentRun, type AgentRunError, type AgentRunResult } from './agent-runs'
 import { assignStoryGroups, supabaseStoryStore, type GroupingSummary } from './story-groups'
-import { createAnthropic, accountErrorSince, type AiAccountError } from './ai-account'
+import { createAnthropic, accountErrorSince, callOptions, CALL_TIMEOUT_MAX_MS, type AiAccountError } from './ai-account'
 
 const anthropic = createAnthropic()
 
@@ -169,7 +169,8 @@ export async function fetchOgImage(url: string): Promise<string | null> {
 async function checkRelevance(
   articles: Array<{ title: string; description: string | null }>,
   errors: AgentRunError[] = [],
-  stopFor: () => AiAccountError | null = () => null
+  stopFor: () => AiAccountError | null = () => null,
+  msLeft: () => number = () => CALL_TIMEOUT_MAX_MS * 2
 ): Promise<{ relevant: Set<number>; judged: Set<number> }> {
   const relevant = new Set<number>()
   const judged = new Set<number>()
@@ -201,7 +202,7 @@ Articles:
 ${list}`,
           },
         ],
-      })
+      }, callOptions(msLeft()))
 
       const text = response.content[0].type === 'text' ? response.content[0].text : ''
       const match = text.match(/\[[\d,\s]*\]/)
@@ -316,7 +317,8 @@ significant_announcement is true only for institutional_news that meets the sign
 async function classifyArticles(
   articles: Array<{ url: string; title: string; description: string | null }>,
   errors: AgentRunError[] = [],
-  stopFor: () => AiAccountError | null = () => null
+  stopFor: () => AiAccountError | null = () => null,
+  msLeft: () => number = () => CALL_TIMEOUT_MAX_MS * 2
 ): Promise<Map<string, ClassificationResult>> {
   const results = new Map<string, ClassificationResult>()
   if (articles.length === 0) return results
@@ -348,7 +350,7 @@ async function classifyArticles(
             content: `Articles:\n${list}`,
           },
         ],
-      })
+      }, callOptions(msLeft()))
 
       const text = response.content[0].type === 'text' ? response.content[0].text : ''
       const match = text.match(/\[\s*\{[\s\S]*\}\s*\]/)
@@ -432,12 +434,17 @@ async function classifyArticles(
 // every service slower than ever measured at once: 244s, sorting stopped with
 // 345 articles left for later runs.
 const SORTING_STOP_AT_MS = 150_000   // no new chunk of articles sorted
+const SORTING_HARD_STOP_MS = 200_000 // the chunk in flight gives up by here
 const IMAGES_STOP_AT_MS = 230_000    // later articles keep their RSS image, if any
 const GROUPING_STOP_AT_MS = 240_000  // no new Top Stories comparison
 
 // Articles go through relevance and classification this many at a time: one
 // relevance call and at most two classification calls, ~10–25s in all.
 const SORT_CHUNK = 25
+
+// Each Haiku call gets the time left before SORTING_HARD_STOP_MS (see
+// callOptions in ai-account): the chunk in flight when SORTING_STOP_AT_MS
+// passes still has to end, hung or rate-limited call or not.
 
 // Feeds and article pages are fetched this many at a time. One at a time, the
 // 30 feeds took ~41s and one outlet timing out (15s) held up every feed behind
@@ -756,10 +763,12 @@ export async function curateReadings(errors: AgentRunError[] = []): Promise<Cura
       break
     }
     const chunk = byNewest.slice(i, i + SORT_CHUNK)
+    const sortingMsLeft = () => SORTING_HARD_STOP_MS - (Date.now() - runStart)
     const { relevant, judged } = await checkRelevance(
       chunk.map((c) => ({ title: c.item.title, description: c.item.description })),
       errors,
-      accountStop
+      accountStop,
+      sortingMsLeft
     )
     const chunkApproved = chunk.filter((_, j) => relevant.has(j))
     approved.push(...chunkApproved)
@@ -771,7 +780,8 @@ export async function curateReadings(errors: AgentRunError[] = []): Promise<Cura
     const sorted = await classifyArticles(
       chunkApproved.map((c) => ({ url: c.item.link, title: c.item.title, description: c.item.description })),
       errors,
-      accountStop
+      accountStop,
+      sortingMsLeft
     )
     for (const [url, cls] of sorted) classifications.set(url, cls)
   }

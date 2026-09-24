@@ -199,6 +199,34 @@ function runVerdict(run: AiRunRow): Verdict {
   return (run.items_succeeded ?? 0) > 0 ? { kind: 'ok' } : { kind: 'silent' }
 }
 
+/**
+ * How long one AI call may take, and how many tries it gets.
+ *
+ * A run's stopping points only stop NEW work, so without a limit here a single
+ * call that never answers outlasts the whole run: the SDK waits 10 minutes by
+ * default. `msLeft` is the time the caller has before its own hard stop, and
+ * the limit is that, capped at CALL_TIMEOUT_MAX_MS.
+ *
+ * NO RETRIES, so the limit really is the whole call. The SDK's own retry obeys
+ * a rate-limited response's retry-after header exactly, with no cap and no way
+ * to interrupt the wait — "just do what it says" (client.js retryRequest).
+ * A live run on 2026-09-22 was told to wait ~170s and ended at 346s, past the
+ * route's 300s ceiling, with the per-attempt limit doing nothing about it.
+ *
+ * A call that runs out of time, or is refused, throws; the caller records it
+ * like any other failed call. Nothing is saved on a guess, and the articles or
+ * readings it covered are picked up by the next hourly run.
+ */
+export const CALL_TIMEOUT_MAX_MS = 40_000
+const CALL_TIMEOUT_MIN_MS = 5_000
+
+export function callOptions(msLeft: number): { timeout: number; maxRetries: number } {
+  return {
+    timeout: Math.min(CALL_TIMEOUT_MAX_MS, Math.max(CALL_TIMEOUT_MIN_MS, msLeft)),
+    maxRetries: 0,
+  }
+}
+
 /** runs: one agent's finished runs, newest first. Null when the agent is not blocked. */
 export function currentAiBlock(runs: AiRunRow[]): AiBlock | null {
   let latest: { error: AiAccountError; run: string } | null = null

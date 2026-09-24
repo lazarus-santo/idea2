@@ -45,7 +45,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { embedTexts, EMBEDDING_MODEL } from './voyage'
-import { createAnthropic } from './ai-account'
+import { createAnthropic, callOptions } from './ai-account'
 import type { TopStory, TopStoryOutlet } from './types'
 
 // Starting guess, to be tuned from story_match_log. Haiku confirms every
@@ -56,6 +56,8 @@ export const WINDOW_DAYS = 3
 // Readings embedded per Voyage call in the grouping pass — Voyage's own batch
 // size (lib/voyage.ts), so each slice is exactly one call.
 const EMBED_SLICE = 64
+// How long past the grouping deadline a confirmation in flight may still run.
+const CONFIRM_GRACE_MS = 20_000
 export const MIN_OUTLETS = 3
 export const VISIBLE_DAYS = 7
 export const MAX_LLM_CANDIDATES = 8
@@ -142,7 +144,12 @@ export interface ConfirmResult {
   verdicts: ConfirmVerdict[]
 }
 
-export type ConfirmFn = (reading: StoryReading, targets: ConfirmTarget[]) => Promise<ConfirmResult>
+export type ConfirmFn = (
+  reading: StoryReading,
+  targets: ConfirmTarget[],
+  /** How long this one call may take (callOptions in ai-account). */
+  call?: { timeout: number; maxRetries: number },
+) => Promise<ConfirmResult>
 
 export interface GroupingSummary {
   checked: number
@@ -229,7 +236,7 @@ function describe(r: StoryReading): string {
 
 let _anthropic: Anthropic | null = null
 
-export const haikuConfirm: ConfirmFn = async (reading, targets) => {
+export const haikuConfirm: ConfirmFn = async (reading, targets, call) => {
   _anthropic ??= createAnthropic()
   const stories = targets
     .map((t, i) => `[${i + 1}]\n${t.readings.map((r) => `  - ${describe(r)}`).join('\n')}`)
@@ -243,7 +250,7 @@ export const haikuConfirm: ConfirmFn = async (reading, targets) => {
       role: 'user',
       content: `NEW ARTICLE:\n  ${describe(reading)}\n\nCANDIDATE STORIES:\n${stories}`,
     }],
-  })
+  }, call)
 
   const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
   const match = text.match(/\{[\s\S]*\}/)
@@ -354,7 +361,7 @@ export async function assignStoryGroups(store: StoryStore, opts: GroupingOptions
       break
     }
     try {
-      await groupOne(reading, store, vectors, threshold, confirm, summary)
+      await groupOne(reading, store, vectors, threshold, confirm, summary, opts.deadline)
       summary.checked++
     } catch (err) {
       // Left unchecked: retried on the next run.
@@ -371,7 +378,8 @@ async function groupOne(
   vectors: Map<string, number[]>,
   threshold: number,
   confirm: ConfirmFn,
-  summary: GroupingSummary
+  summary: GroupingSummary,
+  deadline?: number
 ): Promise<void> {
   const at = new Date(reading.published).getTime()
   const window = (await store.window(
@@ -415,7 +423,10 @@ async function groupOne(
   let verdicts: ConfirmVerdict[] = []
   let isDigest: boolean | null = null
   if (targets.length > 0) {
-    const result = await confirm(reading, targets)
+    // The confirmation for the reading in flight may run past the deadline,
+    // but not past CONFIRM_GRACE_MS after it.
+    const graceEnds = (deadline ?? Date.now()) + CONFIRM_GRACE_MS
+    const result = await confirm(reading, targets, callOptions(graceEnds - Date.now()))
     verdicts = result.verdicts
     isDigest = result.isDigest
     summary.llmCalls++

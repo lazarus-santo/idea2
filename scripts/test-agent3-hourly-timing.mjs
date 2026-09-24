@@ -19,6 +19,8 @@
  *   - Haiku: 8s per relevance call, 20s per classification call, 5s per
  *     Top Stories confirmation; Voyage: 5s per embedding call
  *   - article pages: 1 in 3 hangs until the 5s image timeout
+ *   - one Haiku relevance call never answers at all, and one classification
+ *     call is rate-limited with "retry-after: 120"
  *   - 500 readings waiting for Top Stories grouping, every one close enough
  *     to the others to need a Haiku confirmation
  *   - 80ms for every database request
@@ -35,6 +37,8 @@
  *      Top Stories comparison after 240s
  *   3. the run still saves articles (the backlog shrinks), and says how many
  *      it left for the next run
+ *   4. a Haiku call that never answers, or that is rate-limited with a long
+ *      retry-after, costs one batch, not the run
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -158,6 +162,11 @@ const HUNG_FEEDS = 4
 const PER_FEED = 15
 const PENDING_GROUPING = 500
 const LATENCY = { relevance: 8000, classify: 20000, confirm: 5000, embed: 5000 }
+// One batch's relevance call never answers; one classification call comes back
+// rate-limited, asking for a 120s wait (see fakeAnthropic). Both are answers a
+// run has to survive without overrunning.
+const HANGING_ARTICLE = 'Gallery exhibition 7-1-0 opens'
+const RATE_LIMITED_CLASSIFY_CALL = 2
 
 function offlineSetup() {
   const now = Date.now()
@@ -221,6 +230,11 @@ function offlineSetup() {
       const lines = content.split('\n').filter((l) => /^\[\d+\] /.test(l))
       if (body.system) {
         mark('classify')
+        if (started.classify.length === RATE_LIMITED_CLASSIFY_CALL) {
+          return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'rate limited' } }), {
+            status: 429, headers: { 'content-type': 'application/json', 'retry-after': '120' },
+          })
+        }
         await delay(LATENCY.classify)
         return anthropicReply(body, JSON.stringify(lines.map((_, index) => ({
           index, category: 'show_review', art_relevance_score: 0.9, nyc_relevance_score: 0.9,
@@ -228,6 +242,9 @@ function offlineSetup() {
         }))))
       }
       mark('relevance')
+      // One batch's Haiku call never answers, on every attempt: the per-call
+      // limit has to end it, or it outlasts the run.
+      if (content.includes(HANGING_ARTICLE)) { await delay(600_000, signal); return new Response('') }
       await delay(LATENCY.relevance)
       return anthropicReply(body, JSON.stringify(lines.map((_, i) => i)))
     }
@@ -358,7 +375,11 @@ if (!LIVE) {
   check('Top Stories embedding stopped at 240s too', (last('embed') ?? 0) < 240.5, `last Voyage call at ${last('embed')}s`)
   check('sorting stopped for time and said how many it left', result.stoppedForTime.sorting && result.leftForNextRun > 0)
   check('grouping stopped for time', g?.stoppedForTime === true)
-  check('no run errors other than the hung feeds', otherErrors.length === 0, JSON.stringify(otherErrors.slice(0, 3)))
+  const timedOut = otherErrors.filter((e) => /timed out|timeout|aborted/i.test(e.message))
+  const rateLimited = otherErrors.filter((e) => /429|rate/i.test(e.message))
+  check('the hanging Haiku call was cut off and recorded', timedOut.length === 1, JSON.stringify(otherErrors.slice(0, 3)))
+  check('the rate-limited call did not wait 120s', rateLimited.length === 1 && total < 300, JSON.stringify(otherErrors.slice(0, 3)))
+  check('no other run errors', otherErrors.length === timedOut.length + rateLimited.length, JSON.stringify(otherErrors.slice(0, 3)))
 }
 
 console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) FAILED.\n`)
