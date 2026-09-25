@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { requireUser } from '@/lib/auth'
 import { getFeedEvents } from '@/lib/feed'
 import { cursorAfter, FEED_PAGE_SIZE } from '@/lib/feed-types'
@@ -40,7 +41,7 @@ export default async function FeedPage() {
   return (
     <div className="ac-page">
       <div className="ac-shell ac-shell--wide">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
 
         <h1 className="ac-title">Feed</h1>
         <p className="ac-subtitle">What the people you follow have been doing.</p>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import dynamic from 'next/dynamic'
 import type { VenueExhibition, VenuePreread, VenueInstitutionPin } from '@/lib/types'
 import AccountNav from '@/components/account/AccountNav'
@@ -98,7 +99,7 @@ export default function VenuePage({
       {/* Nav — reuses ep-nav pattern */}
       <nav className="ep-nav" style={{ position: 'relative' }} aria-label="Site navigation">
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

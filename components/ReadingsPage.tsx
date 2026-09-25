@@ -2,6 +2,7 @@
 
 import { useState, useEffect, createContext, useContext } from 'react'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import type { Reading, TopStory, TopStoryOutlet } from '@/lib/types'
 import AccountNav from '@/components/account/AccountNav'
 import ReadingLog from '@/components/ReadingLog'
@@ -260,7 +261,7 @@ export default function ReadingsPage() {
     <div className="rd-page">
       <nav className="ei-nav">
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

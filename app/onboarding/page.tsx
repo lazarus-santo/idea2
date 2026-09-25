@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { redirect } from 'next/navigation'
 import { getOwnProfile, requireUser } from '@/lib/auth'
 import { profilePath } from '@/lib/profile'
@@ -42,7 +43,7 @@ export default async function OnboardingPage({ searchParams }: Props) {
   return (
     <div className="ac-page">
       <div className="ac-shell">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
         <h1 className="ac-title">Choose your username</h1>
         <p className="ac-subtitle">
           This is how you&rsquo;ll appear on Idea 2. You can change it later.

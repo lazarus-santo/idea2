@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { useState, useRef, useLayoutEffect, useMemo } from 'react'
 import type { ExhibitionDetailData } from '@/lib/types'
 import { sortByTier } from '@/lib/publication-tiers'
@@ -159,7 +160,7 @@ export default function ExhibitionDetail({
       <div className={`ep-hero${!exhibition.image_url ? ' ep-hero--no-image' : ''}`}>
         <nav className="ep-nav" aria-label="Site navigation">
           <div className="ep-nav-inner">
-            <Link href="/" className="ep-wordmark">Idea 2</Link>
+            <Link href="/" className="ep-wordmark"><LogoMark /></Link>
             <div className="ep-nav-links">
               <Link href="/exhibitions">Exhibitions</Link>
               <Link href="/readings">Readings</Link>

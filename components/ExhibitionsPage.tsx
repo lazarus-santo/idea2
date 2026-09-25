@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import type { Exhibition, MapExhibition } from '@/lib/types'
 import ExhibitionsSplitView from './ExhibitionsSplitView'
 import ExhibitionFilters from './ExhibitionFilters'
@@ -120,7 +121,7 @@ export default function ExhibitionsPage() {
     <div className={`ei-page${viewMode === 'split' ? ' ei-page--split' : ''}`}>
       <nav className="ei-nav">
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

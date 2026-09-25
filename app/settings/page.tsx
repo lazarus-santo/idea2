@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { getCurrentUser, requireOnboardedProfile } from '@/lib/auth'
 import { profilePath } from '@/lib/profile'
 import { getBlockedProfiles, getMutedProfiles } from '@/lib/relationships'
@@ -29,7 +30,7 @@ export default async function SettingsPage() {
   return (
     <div className="ac-page">
       <div className="ac-shell">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
         <h1 className="ac-title">Settings</h1>
         <p className="ac-subtitle">
           <Link href={profilePath(profile.username!)}>View your profile</Link>

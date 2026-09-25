@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import s from './EditorsPicksPage.module.css'
 import AccountNav from '@/components/account/AccountNav'
 
@@ -239,7 +240,7 @@ export default function EditorsPicksPage() {
     <div className={s.page}>
       <nav className="ei-nav">
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

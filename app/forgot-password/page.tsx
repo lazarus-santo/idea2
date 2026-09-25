@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import ForgotPasswordForm from '@/components/account/ForgotPasswordForm'
 import '@/app/account.css'
 
@@ -22,7 +23,7 @@ export default function ForgotPasswordPage() {
   return (
     <div className="ac-page">
       <div className="ac-shell">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
         <h1 className="ac-title">Reset your password</h1>
         <p className="ac-subtitle">
           Enter the email address you signed up with and we&rsquo;ll send you a link.

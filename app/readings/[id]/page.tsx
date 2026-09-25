@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import AccountNav from '@/components/account/AccountNav'
 import { getCurrentUser } from '@/lib/auth'
@@ -80,7 +81,7 @@ export default async function ReadingPage({ params }: PageProps) {
     <div className="rp-body">
       <nav className="ep-nav" aria-label="Site navigation">
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

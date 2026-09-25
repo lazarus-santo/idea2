@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { getSupabaseBrowser } from '@/lib/supabase-browser'
 import '@/app/account.css'
 
@@ -72,7 +73,7 @@ export default function AuthFinishPage() {
   return (
     <div className="ac-page">
       <div className="ac-shell">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
         {error ? (
           <>
             <h1 className="ac-title">That link didn&rsquo;t work</h1>

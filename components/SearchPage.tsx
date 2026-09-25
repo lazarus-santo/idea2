@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import AccountNav from '@/components/account/AccountNav'
 
 type Category = 'exhibition' | 'institution' | 'reading' | 'artist' | 'user'
@@ -299,7 +300,7 @@ export default function SearchPage() {
       {/* Nav */}
       <nav className="ei-nav">
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

@@ -1247,6 +1247,15 @@ a:hover { opacity: 0.75; }
   white-space: nowrap;
 }
 
+/* The "ii" mark inside .ep-wordmark and .ac-back. Sized in em so it tracks each
+   link's existing font-size at every breakpoint; 0.74em is the letter height
+   of the old "Idea 2" text (22px of the 30px line in Melodrama Bold). */
+.logo-mark {
+  display: block;
+  height: 0.74em;
+  width: auto;
+}
+
 .ep-nav-links {
   display: flex;
   align-items: center;

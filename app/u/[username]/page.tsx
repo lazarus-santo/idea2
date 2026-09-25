@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { notFound } from 'next/navigation'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { getCurrentUser } from '@/lib/auth'
@@ -194,7 +195,7 @@ export default async function ProfilePage({ params }: Props) {
   return (
     <div className="ac-page">
       <div className="ac-shell ac-shell--wide">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
 
         <div className="ac-profile-head">
           {card.avatar_url

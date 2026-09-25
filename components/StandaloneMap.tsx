@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import type { MapExhibition, VenueHours, ItineraryStop, DirectionLeg } from '@/lib/types'
@@ -1497,7 +1498,7 @@ export default function StandaloneMap() {
     <div className="mp-page">
       <nav style={{ position: 'relative', background: '#FFFCEC' }}>
         <div className="ep-nav-inner">
-          <Link href="/" className="ep-wordmark">Idea 2</Link>
+          <Link href="/" className="ep-wordmark"><LogoMark /></Link>
           <div className="ep-nav-links">
             <Link href="/exhibitions">Exhibitions</Link>
             <Link href="/readings">Readings</Link>

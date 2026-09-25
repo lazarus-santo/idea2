@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import ResetPasswordForm from '@/components/account/ResetPasswordForm'
 import '@/app/account.css'
 
@@ -17,7 +18,7 @@ export default function ResetPasswordPage() {
   return (
     <div className="ac-page">
       <div className="ac-shell">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
         <h1 className="ac-title">Choose a new password</h1>
         <p className="ac-subtitle">At least 8 characters.</p>
         <ResetPasswordForm />

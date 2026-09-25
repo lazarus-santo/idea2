@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import LogoMark from '@/components/LogoMark'
 import { Suspense } from 'react'
 import LoginForm from '@/components/account/LoginForm'
 import '@/app/account.css'
@@ -17,7 +18,7 @@ export default async function LoginPage({ searchParams }: Props) {
   return (
     <div className="ac-page">
       <div className="ac-shell">
-        <Link href="/" className="ac-back">Idea 2</Link>
+        <Link href="/" className="ac-back"><LogoMark /></Link>
         <h1 className="ac-title">Sign in</h1>
         <p className="ac-subtitle">
           An account is only for your own profile for now — the show log, following
